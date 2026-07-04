@@ -1,86 +1,107 @@
-# Running Route AI 🏃‍♂️🇰🇷
+# FreshRun Backend
 
-A FastAPI backend that generates running routes in South Korea using OpenAI
-Function Calling, enriched with real pedestrian routing and place data from
-Kakao / Naver Map APIs, and persisted via Supabase.
+[한국어](#한국어) | [English](#english)
 
-## Features
+---
 
-- **AI route generation** — OpenAI Function Calling returns a structured,
-  schema-validated route (distance, duration, ordered waypoints).
-- **Pitstop resolution** — snap an AI-suggested pitstop (e.g. `편의점`,
-  convenience store) to a real nearby place via the Map API.
-- **Pedestrian routing** — fetch real walking path geometry between waypoints.
-- **Supabase** — client wired up for persistence/auth.
+## 한국어
 
-## Project structure
+**FreshRun**은 AI 기반 한국 러닝 앱입니다 (iOS, 2026년 12월 출시 목표).
 
-```
-app/
-├── main.py                  # FastAPI entry point
-├── api/
-│   └── routes.py            # HTTP route handlers
-├── services/
-│   ├── openai_service.py    # OpenAI Function Calling → structured route
-│   ├── map_service.py       # Kakao/Naver place search + pedestrian routing
-│   └── route_service.py     # Orchestration glue
-├── models/
-│   └── schemas.py           # Pydantic schemas
-└── core/
-    ├── config.py            # Settings (pydantic-settings)
-    └── supabase_client.py   # Supabase client setup
-```
+이 저장소는 **백엔드(BE)** 입니다. 프론트엔드는 [Fresh-Run/FE](https://github.com/Fresh-Run/FE) (React Native + Expo)를 참고하세요.
 
-## Setup
+### 주요 기능
 
-### 1. Install dependencies
+- **AI 코스 생성** — Gemini + T맵 보행자 경로로 실제 달릴 수 있는 코스 생성 (free 티어 주 3회, 서버측 쿼터)
+- **러닝 기록·통계** — 기록 저장, 2탭 피드백 루프, 주간/월간/전체 통계 + 월별 캘린더
+- **크루** — 생성·가입·주간 랭킹·챌린지(목표 달성 알림)
+- **공개 코스 피드** — 좋아요·댓글·복사("이 코스 달리기")·북마크
+- **팔로우/피드** — 팔로우한 유저들의 공개 코스 피드, 공개 프로필(맞팔 표시)
+- **날씨** — 현재 날씨 + 미세먼지 등급 + 규칙 기반 AI 러닝지수 (위치 격자 캐싱)
+- **프리미엄 티어** — tier 저장 + 서버측 강제 (IAP는 출시 전 연동 예정)
 
-With **Poetry**:
+### 기술 스택
+
+- **FastAPI** (Python) — 전 데이터 접근은 service_role 클라이언트, 인증 필수
+- **Supabase** — Auth(JWT) + Postgres + RLS
+- **외부 API** — Gemini(코스 생성), T맵(보행자 경로), 카카오(장소 검색), OpenWeather(날씨·미세먼지)
+
+### 로컬 실행
 
 ```bash
-poetry install
-```
-
-Or with **pip**:
-
-```bash
+# 1. 가상환경 + 의존성
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-```
 
-### 2. Configure environment
-
-```bash
+# 2. 환경변수 — .env.example을 복사해 값 채우기
 cp .env.example .env
-# then fill in OPENAI_API_KEY, SUPABASE_*, and KAKAO_REST_API_KEY / NAVER_* keys
 ```
 
-### 3. Run
+필요한 환경변수 (값은 각 서비스 콘솔에서 발급):
+
+| 변수 | 용도 |
+|---|---|
+| `OPENAI_API_KEY`, `OPENAI_MODEL`, `OPENAI_BASE_URL` | 코스 생성 LLM (Gemini의 OpenAI 호환 엔드포인트 사용) |
+| `SUPABASE_URL`, `SUPABASE_KEY` | Supabase 프로젝트 URL + anon 키 (토큰 검증) |
+| `SUPABASE_SERVICE_ROLE_KEY` | 데이터 접근용 service_role 키 — **서버 전용, 절대 노출 금지** |
+| `TMAP_APP_KEY`, `KAKAO_REST_API_KEY`, `MAP_PROVIDER` | 보행자 경로·장소 검색 |
+| `OPENWEATHER_API_KEY` | 날씨 + 미세먼지 |
 
 ```bash
+# 3. 서버 실행
 uvicorn app.main:app --reload
 ```
 
-Open the interactive docs at http://localhost:8000/docs
+### API 문서
 
-## Example request
+서버 실행 후 http://localhost:8000/docs (Swagger UI)에서 전체 엔드포인트를 확인할 수 있습니다.
+
+DB 스키마 변경 SQL은 `db/`, 통합 테스트는 `tests/` (`python tests/test_<기능>_integration.py`)에 있습니다.
+
+---
+
+## English
+
+**FreshRun** is an AI-powered running app for South Korea (iOS, launching December 2026).
+
+This repository is the **backend (BE)**. The frontend lives at [Fresh-Run/FE](https://github.com/Fresh-Run/FE) (React Native + Expo).
+
+### Features
+
+- **AI course generation** — Gemini + T-map pedestrian routing produce runnable courses (free tier: 3/week, enforced server-side)
+- **Run tracking & stats** — run logs, two-tap feedback loop, weekly/monthly/all-time stats with a monthly calendar breakdown
+- **Crews** — create/join, weekly distance ranking, challenges with completion notifications
+- **Public course feed** — likes, comments, copy ("run this course"), bookmarks
+- **Follows & feed** — a feed of public courses from users you follow, public profiles with mutual-follow flags
+- **Weather** — current conditions + PM2.5/PM10 grades + a rule-based running index (grid-cell caching)
+- **Premium tier** — tier storage + server-side enforcement (IAP integration planned before launch)
+
+### Tech stack
+
+- **FastAPI** (Python) — all data access via the service_role client; auth required on every endpoint
+- **Supabase** — Auth (JWT) + Postgres + RLS
+- **External APIs** — Gemini (course generation), T-map (pedestrian routing), Kakao (place search), OpenWeather (weather & air quality)
+
+### Running locally
 
 ```bash
-curl -X POST http://localhost:8000/api/routes/generate \
-  -H "Content-Type: application/json" \
-  -d '{
-    "start": {"lat": 37.5283, "lng": 126.9326},
-    "target_distance_km": 5,
-    "pitstop_keyword": "편의점"
-  }'
+# 1. Virtualenv + dependencies
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+
+# 2. Environment — copy the example and fill in values
+cp .env.example .env
 ```
 
-## Notes on Korean Map APIs
+Required variables (issue keys from each service's console): `OPENAI_API_KEY` / `OPENAI_MODEL` / `OPENAI_BASE_URL` (Gemini via its OpenAI-compatible endpoint), `SUPABASE_URL` / `SUPABASE_KEY` / `SUPABASE_SERVICE_ROLE_KEY` (service_role is server-only — never expose), `TMAP_APP_KEY` / `KAKAO_REST_API_KEY` / `MAP_PROVIDER`, `OPENWEATHER_API_KEY`.
 
-- **Coordinate order**: Kakao expects `x=longitude, y=latitude`.
-- Kakao Mobility & Naver Directions are primarily *driving* APIs. For
-  sidewalk-accurate **pedestrian** routing — the right choice for runners —
-  use the [T-map Pedestrian API](https://tmapapi.sktelecom.com), scaffolded as
-  `_tmap_pedestrian_route` in `app/services/map_service.py`.
-- Switch providers with `MAP_PROVIDER=kakao|naver|tmap` in `.env`. Set
-  `TMAP_APP_KEY` when using `tmap`.
+```bash
+# 3. Run
+uvicorn app.main:app --reload
+```
+
+### API docs
+
+With the server running, browse all endpoints at http://localhost:8000/docs (Swagger UI).
+
+Schema migration SQL lives in `db/`; integration tests in `tests/` (`python tests/test_<feature>_integration.py`).
