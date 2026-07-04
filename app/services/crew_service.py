@@ -22,6 +22,7 @@ from app.models.schemas import (
     CrewMemberResponse,
     CrewRankingEntry,
     CrewResponse,
+    CrewRunItem,
     CrewUpdate,
     JoinRequestItem,
     JoinRequestResponse,
@@ -499,6 +500,81 @@ async def list_join_requests(
     nicknames = await profile_service.get_nicknames([r["user_id"] for r in rows])
     return [
         JoinRequestItem(**row, nickname=nicknames.get(row["user_id"]))
+        for row in rows
+    ]
+
+
+async def list_crew_runs(
+    crew_id: str, caller_id: str, limit: int = 20, offset: int = 0
+) -> list[CrewRunItem]:
+    """Crew activity feed: current members' runs, newest ran_at first.
+
+    Two-step query (member ids → runs IN). Fine up to ~200 members; for much
+    larger crews the IN-list URL gets long — switch to a Postgres RPC then.
+    Departed members drop out automatically (current-members semantics, same
+    as the ranking). Personal fields (notes/feedback) are never selected.
+    """
+    await ensure_member(crew_id, caller_id)
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+
+    supabase = get_supabase_admin()
+    members_res = await asyncio.to_thread(
+        lambda: supabase.table("crew_members")
+        .select("user_id")
+        .eq("crew_id", crew_id)
+        .execute()
+    )
+    member_ids = [r["user_id"] for r in members_res.data]
+    if not member_ids:
+        return []
+
+    runs_res = await asyncio.to_thread(
+        lambda: supabase.table("runs")
+        .select("id, user_id, ran_at, distance_km, duration_sec, "
+                "avg_pace_sec_per_km, route_id")
+        .in_("user_id", member_ids)
+        .order("ran_at", desc=True)
+        .range(offset, offset + limit - 1)
+        .execute()
+    )
+    rows = runs_res.data
+    if not rows:
+        return []
+
+    route_ids = list({r["route_id"] for r in rows if r.get("route_id")})
+
+    async def _public_route_summaries() -> dict[str, str]:
+        """{route_id: summary} for PUBLIC routes only — a private course must
+        not leak through the crew feed."""
+        if not route_ids:
+            return {}
+        res = await asyncio.to_thread(
+            lambda: supabase.table("routes")
+            .select("id, summary")
+            .in_("id", route_ids)
+            .eq("is_public", True)
+            .execute()
+        )
+        return {r["id"]: r["summary"] for r in res.data}
+
+    briefs, summaries = await asyncio.gather(
+        profile_service.get_profile_briefs([r["user_id"] for r in rows]),
+        _public_route_summaries(),
+    )
+    return [
+        CrewRunItem(
+            run_id=row["id"],
+            user_id=row["user_id"],
+            nickname=briefs.get(row["user_id"], {}).get("nickname"),
+            avatar_url=briefs.get(row["user_id"], {}).get("avatar_url"),
+            ran_at=row["ran_at"],
+            distance_km=row["distance_km"],
+            duration_sec=row["duration_sec"],
+            avg_pace_sec_per_km=row.get("avg_pace_sec_per_km"),
+            route_id=row.get("route_id"),
+            route_summary=summaries.get(row.get("route_id")),
+        )
         for row in rows
     ]
 

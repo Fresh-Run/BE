@@ -525,6 +525,27 @@ class CrewUpdate(BaseModel):
     color: Optional[str] = Field(None, description="색상 (예: #FF8800)")
 
 
+class CrewRunItem(BaseModel):
+    """One run in the crew activity feed.
+
+    Deliberately excludes personal fields (notes, liked, feedback_tags) —
+    crew members see stats, not private notes/feedback.
+    """
+
+    run_id: str
+    user_id: str
+    nickname: Optional[str] = None
+    avatar_url: Optional[str] = None
+    ran_at: str
+    distance_km: float
+    duration_sec: int
+    avg_pace_sec_per_km: Optional[int] = None
+    route_id: Optional[str] = None
+    route_summary: Optional[str] = Field(
+        None, description="연결된 코스 요약 — 공개 코스일 때만, 비공개면 null."
+    )
+
+
 class JoinRequestResponse(BaseModel):
     """One join request (returned to the requester; 202 body on approval crews)."""
 

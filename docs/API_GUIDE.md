@@ -98,6 +98,7 @@ fetch(`${API_BASE}/api/me/profile`, {
 | 신청 승인/거절 (크루장) | `POST /crews/{id}/join-requests/{rid}/approve` / `/reject` | 204. 승인 → 신청자에게 `join_approved` 알림 + 멤버 추가. 승인 시 정원 초과면 409(신청은 pending 유지). 이미 결정된 신청은 404 |
 | 탈퇴/강퇴/양도 | `DELETE /crews/{id}/leave`, `DELETE /crews/{id}/members/{target_id}`, `PATCH /crews/{id}/transfer` | |
 | 멤버/랭킹 | `GET /crews/{id}/members`, `/crews/{id}/ranking` | 랭킹: 이번 주 KST 거리순, `me` 플래그 |
+| **크루 러닝 피드** | `GET /crews/{id}/runs?limit&offset` | 크루원들의 최근 run, `ran_at` 최신순: `[{run_id, user_id, nickname, avatar_url, ran_at, distance_km, duration_sec, avg_pace_sec_per_km, route_id, route_summary}]`. 크루원만(403). 개인 메모/피드백은 절대 미포함, `route_summary`는 공개 코스만(비공개면 null). 탈퇴 멤버의 run은 자동 제외 |
 | 챌린지 | `GET /crews/{id}/challenges/current`, `POST /crews/{id}/challenges` | `achieved_km`, `progress_pct`, `is_completed` 실시간 계산 |
 | **공지 목록/상세** | `GET /crews/{id}/announcements?limit&offset`, `GET .../{announcement_id}` | `title`, `body`, `run_at`, `place_name/lat/lng`, `rsvp_open`, `rsvp{going,not_going,maybe}`, `my_rsvp`; 상세엔 `going_members[]` 명단 추가. 크루원만 조회 가능(403) |
 | 공지 작성/수정/삭제 | `POST/PATCH/DELETE /crews/{id}/announcements...` | 크루장만. 작성 시 크루원 전체 알림, 수정은 알림 없음 |

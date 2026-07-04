@@ -21,6 +21,7 @@ from app.models.schemas import (
     CrewMemberResponse,
     CrewRankingEntry,
     CrewResponse,
+    CrewRunItem,
     CrewUpdate,
     CurrentUser,
     FeedbackRequest,
@@ -1106,6 +1107,31 @@ async def delete_crew(
         raise HTTPException(status_code=403, detail="Only the owner can delete")
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"Failed to delete crew: {exc}")
+
+
+@router.get(
+    "/crews/{crew_id}/runs",
+    response_model=list[CrewRunItem],
+    summary="크루 러닝 피드 (크루원, 최신 활동순)",
+)
+async def list_crew_runs(
+    crew_id: str,
+    limit: int = 20,
+    offset: int = 0,
+    user: CurrentUser = Depends(get_current_user),
+) -> list[CrewRunItem]:
+    """Current members' recent runs. Personal notes/feedback are never included;
+    route_summary appears only for public courses."""
+    try:
+        return await crew_service.list_crew_runs(
+            crew_id, caller_id=user.user_id, limit=limit, offset=offset
+        )
+    except crew_service.CrewNotFound:
+        raise HTTPException(status_code=404, detail="Crew not found")
+    except crew_service.CrewAccessDenied:
+        raise HTTPException(status_code=403, detail="Members only")
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Failed to list crew runs: {exc}")
 
 
 # --- Crew announcements + RSVP ------------------------------------------------
