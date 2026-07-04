@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
 from app.core.auth import get_current_user
 from app.models.schemas import (
@@ -25,6 +25,8 @@ from app.models.schemas import (
     CurrentUser,
     FeedbackRequest,
     FollowUserItem,
+    JoinRequestItem,
+    JoinRequestResponse,
     MonthlyStatsResponse,
     NotificationResponse,
     Place,
@@ -854,16 +856,22 @@ async def get_crew(
 
 @router.post(
     "/crews/{crew_id}/join",
-    response_model=CrewResponse,
-    summary="Join a crew",
+    response_model=CrewResponse | JoinRequestResponse,
+    summary="Join a crew (open=200 즉시 가입 / approval=202 신청)",
 )
 async def join_crew(
     crew_id: str,
+    response: Response,
     user: CurrentUser = Depends(get_current_user),
-) -> CrewResponse:
-    """Join a public crew (rejected if full or already a member)."""
+) -> CrewResponse | JoinRequestResponse:
+    """Join a public crew.
+
+    Open crews admit immediately (200, CrewResponse — unchanged behaviour).
+    Approval crews create a pending request instead (202, JoinRequestResponse)
+    and notify the owner.
+    """
     try:
-        return await crew_service.join_crew(crew_id, user.user_id)
+        result = await crew_service.join_crew(crew_id, user.user_id)
     except crew_service.CrewNotFound:
         raise HTTPException(status_code=404, detail="Crew not found")
     except crew_service.CrewAccessDenied:
@@ -872,8 +880,134 @@ async def join_crew(
         raise HTTPException(status_code=409, detail="Already a member")
     except crew_service.CrewFull:
         raise HTTPException(status_code=409, detail="Crew is full")
+    except crew_service.AlreadyRequested:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "already_requested", "message": "이미 가입 신청이 대기 중입니다."},
+        )
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"Failed to join crew: {exc}")
+    if isinstance(result, JoinRequestResponse):
+        response.status_code = status.HTTP_202_ACCEPTED
+    return result
+
+
+# NOTE: /join-requests/me must be declared before /join-requests/{request_id}/...
+
+
+@router.get(
+    "/crews/{crew_id}/join-requests/me",
+    response_model=JoinRequestResponse,
+    summary="내 가입 신청 상태 (pending/rejected 등)",
+)
+async def get_my_join_request(
+    crew_id: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> JoinRequestResponse:
+    """The caller's most recent join request for this crew; 404 if none."""
+    try:
+        result = await crew_service.get_my_join_request(crew_id, user.user_id)
+    except crew_service.CrewNotFound:
+        raise HTTPException(status_code=404, detail="Crew not found")
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Failed to fetch join request: {exc}")
+    if result is None:
+        raise HTTPException(status_code=404, detail="No join request")
+    return result
+
+
+@router.delete(
+    "/crews/{crew_id}/join-requests/me",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="내 가입 신청 취소 (멱등)",
+)
+async def cancel_my_join_request(
+    crew_id: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> None:
+    """Cancel the caller's pending request; 204 even when there is none."""
+    try:
+        await crew_service.cancel_my_join_request(crew_id, user.user_id)
+    except crew_service.CrewNotFound:
+        raise HTTPException(status_code=404, detail="Crew not found")
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Failed to cancel join request: {exc}")
+
+
+@router.get(
+    "/crews/{crew_id}/join-requests",
+    response_model=list[JoinRequestItem],
+    summary="가입 신청 목록 (크루장, 최신순)",
+)
+async def list_join_requests(
+    crew_id: str,
+    limit: int = 20,
+    offset: int = 0,
+    user: CurrentUser = Depends(get_current_user),
+) -> list[JoinRequestItem]:
+    """Pending join requests with nicknames (owner only)."""
+    try:
+        return await crew_service.list_join_requests(
+            crew_id, caller_id=user.user_id, limit=limit, offset=offset
+        )
+    except crew_service.CrewNotFound:
+        raise HTTPException(status_code=404, detail="Crew not found")
+    except crew_service.NotOwner:
+        raise HTTPException(status_code=403, detail="Only the owner can view join requests")
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Failed to list join requests: {exc}")
+
+
+@router.post(
+    "/crews/{crew_id}/join-requests/{request_id}/approve",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="가입 신청 승인 (크루장 → 멤버 추가 + 알림)",
+)
+async def approve_join_request(
+    crew_id: str,
+    request_id: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> None:
+    """Approve: admit as member and notify the requester (join_approved)."""
+    try:
+        await crew_service.decide_join_request(
+            crew_id, caller_id=user.user_id, request_id=request_id, approve=True
+        )
+    except crew_service.CrewNotFound:
+        raise HTTPException(status_code=404, detail="Crew not found")
+    except crew_service.NotOwner:
+        raise HTTPException(status_code=403, detail="Only the owner can approve")
+    except crew_service.JoinRequestNotFound:
+        raise HTTPException(status_code=404, detail="Join request not found or already decided")
+    except crew_service.CrewFull:
+        raise HTTPException(status_code=409, detail="Crew is full")  # 신청은 pending 유지
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Failed to approve join request: {exc}")
+
+
+@router.post(
+    "/crews/{crew_id}/join-requests/{request_id}/reject",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="가입 신청 거절 (크루장, 무알림)",
+)
+async def reject_join_request(
+    crew_id: str,
+    request_id: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> None:
+    """Reject silently (no notification by design; requester can re-apply)."""
+    try:
+        await crew_service.decide_join_request(
+            crew_id, caller_id=user.user_id, request_id=request_id, approve=False
+        )
+    except crew_service.CrewNotFound:
+        raise HTTPException(status_code=404, detail="Crew not found")
+    except crew_service.NotOwner:
+        raise HTTPException(status_code=403, detail="Only the owner can reject")
+    except crew_service.JoinRequestNotFound:
+        raise HTTPException(status_code=404, detail="Join request not found or already decided")
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Failed to reject join request: {exc}")
 
 
 @router.delete(

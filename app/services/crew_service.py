@@ -12,6 +12,8 @@ import logging
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
+from postgrest.exceptions import APIError
+
 from app.core.supabase_client import get_supabase_admin
 from app.models.schemas import (
     ChallengeCreate,
@@ -21,8 +23,12 @@ from app.models.schemas import (
     CrewRankingEntry,
     CrewResponse,
     CrewUpdate,
+    JoinRequestItem,
+    JoinRequestResponse,
 )
 from app.services import notification_service, profile_service
+
+_UNIQUE_VIOLATION = "23505"
 
 _KST = timezone(timedelta(hours=9))
 
@@ -74,6 +80,14 @@ class NotOwner(CrewError):
 
 class TargetNotMember(CrewError):
     """Transfer target is not a member of the crew."""
+
+
+class AlreadyRequested(CrewError):
+    """The user already has a pending join request for this crew."""
+
+
+class JoinRequestNotFound(CrewError):
+    """No pending join request with that id in this crew."""
 
 
 class AlreadyOwner(CrewError):
@@ -211,6 +225,7 @@ async def create_crew(req: CrewCreate, owner_id: str) -> CrewResponse:
         "level": req.level.value,
         "max_members": req.max_members,
         "is_public": req.is_public,
+        "join_policy": req.join_policy,
         "active_days": req.active_days,
         "active_time": req.active_time,
         "color": req.color,
@@ -328,34 +343,217 @@ async def join_crew(crew_id: str, user_id: str) -> CrewResponse:
         raise CrewNotFound()
     crew = res.data[0]
     if not crew["is_public"]:
-        raise CrewAccessDenied()  # no invite flow yet
+        raise CrewAccessDenied()  # no invite flow yet (join_policy와 무관하게 차단)
     if await _is_member(crew_id, user_id):
         raise AlreadyMember()
 
+    if crew.get("join_policy", "open") == "approval":
+        return await _create_join_request(crew, user_id)
+
+    current = await _admit_member(crew, user_id)
+    # approval→open 전환 잔여 정리: 남아 있던 본인 pending 신청 자동 삭제.
+    await _clear_my_pending(crew_id, user_id)
+    return await _one_response(crew, current)
+
+
+async def _admit_member(crew: dict, user_id: str, *, notify_owner: bool = True) -> int:
+    """Capacity-check + membership insert. Returns the new member count.
+
+    Shared by open joins and request approval. A concurrent duplicate insert
+    (23505) counts as already-admitted (idempotent). notify_owner=False for
+    approvals — the owner just approved it themselves.
+    """
+    crew_id = crew["id"]
     counts = await _member_counts([crew_id])
     current = counts.get(crew_id, 0)
     if crew["max_members"] is not None and current >= crew["max_members"]:
         raise CrewFull()
 
-    await asyncio.to_thread(
-        lambda: supabase.table("crew_members")
-        .insert({"crew_id": crew_id, "user_id": user_id, "role": "member"})
-        .execute()
-    )
+    supabase = get_supabase_admin()
+    try:
+        await asyncio.to_thread(
+            lambda: supabase.table("crew_members")
+            .insert({"crew_id": crew_id, "user_id": user_id, "role": "member"})
+            .execute()
+        )
+    except APIError as exc:
+        if exc.code != _UNIQUE_VIOLATION:
+            raise
+        return current  # admitted concurrently — treat as success
     logger.info("User %s joined crew %s.", user_id, crew_id)
+
+    if notify_owner:
+        try:
+            await notification_service.create_notification(
+                recipient_id=crew["owner_id"],
+                actor_id=user_id,
+                type="crew_joined",
+                target_id=crew_id,
+                target_type="crew",
+            )
+        except Exception:
+            logger.warning("crew_joined 알림 생성 실패", exc_info=True)
+
+    return current + 1
+
+
+async def _create_join_request(crew: dict, user_id: str) -> JoinRequestResponse:
+    """Create a pending join request (approval crews) + notify the owner."""
+    supabase = get_supabase_admin()
+    try:
+        res = await asyncio.to_thread(
+            lambda: supabase.table("crew_join_requests")
+            .insert({"crew_id": crew["id"], "user_id": user_id})
+            .execute()
+        )
+    except APIError as exc:
+        if exc.code == _UNIQUE_VIOLATION:  # partial unique: one pending per user
+            raise AlreadyRequested() from exc
+        raise
+    row = res.data[0]
 
     try:
         await notification_service.create_notification(
             recipient_id=crew["owner_id"],
             actor_id=user_id,
-            type="crew_joined",
-            target_id=crew_id,
+            type="join_requested",
+            target_id=crew["id"],
             target_type="crew",
         )
     except Exception:
-        logger.warning("crew_joined 알림 생성 실패", exc_info=True)
+        logger.warning("join_requested 알림 생성 실패", exc_info=True)
 
-    return await _one_response(crew, current + 1)
+    nicknames = await profile_service.get_nicknames([user_id])
+    return JoinRequestResponse(**row, nickname=nicknames.get(user_id))
+
+
+async def _clear_my_pending(crew_id: str, user_id: str) -> None:
+    """Best-effort: drop the caller's leftover pending request for this crew."""
+    try:
+        supabase = get_supabase_admin()
+        await asyncio.to_thread(
+            lambda: supabase.table("crew_join_requests")
+            .delete()
+            .eq("crew_id", crew_id)
+            .eq("user_id", user_id)
+            .eq("status", "pending")
+            .execute()
+        )
+    except Exception:  # noqa: BLE001 — joining must not fail on cleanup
+        logger.warning("pending 가입신청 정리 실패 (crew=%s)", crew_id, exc_info=True)
+
+
+async def get_my_join_request(crew_id: str, user_id: str) -> JoinRequestResponse | None:
+    """The caller's most recent join request for this crew (any status)."""
+    await _crew_row(crew_id)
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("crew_join_requests")
+        .select("*")
+        .eq("crew_id", crew_id)
+        .eq("user_id", user_id)
+        .order("created_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    if not res.data:
+        return None
+    return JoinRequestResponse(**res.data[0])
+
+
+async def cancel_my_join_request(crew_id: str, user_id: str) -> None:
+    """Cancel the caller's pending request. Idempotent: no-op when absent."""
+    await _crew_row(crew_id)
+    supabase = get_supabase_admin()
+    await asyncio.to_thread(
+        lambda: supabase.table("crew_join_requests")
+        .delete()
+        .eq("crew_id", crew_id)
+        .eq("user_id", user_id)
+        .eq("status", "pending")
+        .execute()
+    )
+
+
+async def list_join_requests(
+    crew_id: str, caller_id: str, limit: int = 20, offset: int = 0
+) -> list[JoinRequestItem]:
+    """Pending join requests, newest first, with nicknames (owner only)."""
+    await ensure_owner(crew_id, caller_id)
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("crew_join_requests")
+        .select("id, user_id, created_at")
+        .eq("crew_id", crew_id)
+        .eq("status", "pending")
+        .order("created_at", desc=True)
+        .range(offset, offset + limit - 1)
+        .execute()
+    )
+    rows = res.data
+    if not rows:
+        return []
+    nicknames = await profile_service.get_nicknames([r["user_id"] for r in rows])
+    return [
+        JoinRequestItem(**row, nickname=nicknames.get(row["user_id"]))
+        for row in rows
+    ]
+
+
+async def decide_join_request(
+    crew_id: str, caller_id: str, request_id: str, *, approve: bool
+) -> None:
+    """Approve (admit + notify requester) or reject (silent) a pending request.
+
+    Works regardless of the crew's current join_policy, so an owner can keep
+    processing leftovers after switching approval → open.
+    """
+    crew = await ensure_owner(crew_id, caller_id, "*")
+
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("crew_join_requests")
+        .select("*")
+        .eq("id", request_id)
+        .eq("crew_id", crew_id)
+        .eq("status", "pending")
+        .limit(1)
+        .execute()
+    )
+    if not res.data:
+        raise JoinRequestNotFound()  # missing or already decided
+    requester_id = res.data[0]["user_id"]
+
+    if approve:
+        # CrewFull propagates and the request stays pending (retry when space frees).
+        await _admit_member(crew, requester_id, notify_owner=False)
+
+    await asyncio.to_thread(
+        lambda: supabase.table("crew_join_requests")
+        .update({
+            "status": "approved" if approve else "rejected",
+            "decided_at": datetime.now(timezone.utc).isoformat(),
+            "decided_by": caller_id,
+        })
+        .eq("id", request_id)
+        .eq("status", "pending")
+        .execute()
+    )
+
+    if approve:  # 거절은 무알림 (설계 결정)
+        try:
+            await notification_service.create_notification(
+                recipient_id=requester_id,
+                actor_id=caller_id,
+                type="join_approved",
+                target_id=crew_id,
+                target_type="crew",
+            )
+        except Exception:
+            logger.warning("join_approved 알림 생성 실패", exc_info=True)
 
 
 async def leave_crew(crew_id: str, user_id: str) -> None:

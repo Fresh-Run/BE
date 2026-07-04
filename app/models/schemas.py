@@ -442,6 +442,9 @@ class CrewCreate(BaseModel):
     level: CrewLevel = Field(CrewLevel.ANY, description="레벨")
     max_members: Optional[int] = Field(None, gt=0, description="최대 인원(없으면 무제한)")
     is_public: bool = Field(True, description="공개여부")
+    join_policy: Literal["open", "approval"] = Field(
+        "open", description="가입 방식: open=즉시 가입, approval=승인제"
+    )
     active_days: list[str] = Field(default_factory=list, description="활동 요일 (예: ['월','수'])")
     active_time: Optional[str] = Field(None, description="활동 시간")
     color: Optional[str] = Field(None, description="색상 (예: #FF8800)")
@@ -471,6 +474,7 @@ class CrewResponse(BaseModel):
     level: str
     max_members: Optional[int] = None
     is_public: bool
+    join_policy: str = Field("open", description="'open' 또는 'approval'.")
     active_days: list[str] = Field(default_factory=list)
     active_time: Optional[str] = None
     color: Optional[str] = None
@@ -513,9 +517,33 @@ class CrewUpdate(BaseModel):
     level: Optional[CrewLevel] = Field(None, description="레벨")
     max_members: Optional[int] = Field(None, gt=0, description="최대 인원")
     is_public: Optional[bool] = Field(None, description="공개 여부")
+    join_policy: Optional[Literal["open", "approval"]] = Field(
+        None, description="가입 방식 변경 (크루장만)"
+    )
     active_days: Optional[list[str]] = Field(None, description="활동 요일")
     active_time: Optional[str] = Field(None, description="활동 시간")
     color: Optional[str] = Field(None, description="색상 (예: #FF8800)")
+
+
+class JoinRequestResponse(BaseModel):
+    """One join request (returned to the requester; 202 body on approval crews)."""
+
+    id: str
+    crew_id: str
+    user_id: str
+    nickname: Optional[str] = None
+    status: str = Field(..., description="pending / approved / rejected")
+    created_at: str
+    decided_at: Optional[str] = None
+
+
+class JoinRequestItem(BaseModel):
+    """One entry in the owner's pending-request list."""
+
+    id: str
+    user_id: str
+    nickname: Optional[str] = None
+    created_at: str
 
 
 class AnnouncementCreate(BaseModel):
