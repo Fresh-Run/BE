@@ -1,0 +1,847 @@
+"""Orchestration: combine the OpenAI route generation with Map API data.
+
+This is the business-logic glue the API layer calls. It asks OpenAI for a
+candidate route, optionally resolves the pitstop against the real Map API,
+and enriches the response with actual pedestrian routing geometry.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import math
+from collections import defaultdict
+
+from postgrest.exceptions import APIError
+
+from app.core.supabase_client import get_supabase_admin
+from app.models.schemas import (
+    CommentResponse,
+    PublicRouteResponse,
+    RouteRequest,
+    RouteResponse,
+    StoredRoute,
+)
+from app.services import feedback_service, map_service, notification_service, openai_service, profile_service
+
+logger = logging.getLogger(__name__)
+
+
+class RouteNotFound(Exception):
+    """Route does not exist, or is hidden from this user."""
+
+
+class CommentNotFound(Exception):
+    """Comment does not exist under the given route."""
+
+
+class CommentAccessDenied(Exception):
+    """Caller is neither the comment author nor the route owner."""
+
+
+async def create_running_route(
+    req: RouteRequest, user_id: str | None = None
+) -> RouteResponse:
+    """Produce a running route for the given request.
+
+    Steps:
+      1. Ask OpenAI to design a route (structured via function calling).
+      2. (Optional) Resolve the pitstop keyword to a real nearby place.
+      3. (Optional) Fetch real pedestrian path geometry from the Map API.
+
+    user_id (from a validated token) is stored on the saved route; None for
+    anonymous requests.
+    """
+    # Step 0: learning loop — gather what nearby runners disliked, so the
+    # model can avoid it. Best-effort: returns [] on any failure.
+    avoid_tags = await feedback_service.collect_avoidance_hints(req.start)
+
+    # If the client points at a specific past route, add its negative
+    # feedback on top of the location-based hints (union, de-duplicated).
+    if req.avoid_from_route_id:
+        for tag in await feedback_service.collect_route_avoidance_hints(
+            req.avoid_from_route_id
+        ):
+            if tag not in avoid_tags:
+                avoid_tags.append(tag)
+
+    route = await openai_service.generate_route(
+        target_distance_km=req.target_distance_km,
+        start=req.start,
+        end=req.end,
+        pitstop_keyword=req.pitstop_keyword,
+        notes=req.notes,
+        avoid_tags=avoid_tags,
+    )
+
+    # Step 2: snap the pitstop to a real place if a keyword was given.
+    if req.pitstop_keyword:
+        try:
+            places = await map_service.search_places(req.pitstop_keyword, near=req.start)
+            if places:
+                nearest = places[0]
+                for wp in route.waypoints:
+                    if wp.is_pitstop:
+                        wp.name = nearest.name
+                        wp.coordinate = nearest.coordinate
+                        wp.description = nearest.address
+                        break
+        except Exception:  # noqa: BLE001 - map enrichment is best-effort
+            # If the Map API fails, keep the AI-suggested pitstop as-is.
+            logger.warning(
+                "Pitstop place lookup failed for %r; keeping AI suggestion.",
+                req.pitstop_keyword,
+                exc_info=True,
+            )
+
+    # Step 3: enrich with a real pedestrian path when we have >= 2 points.
+    if len(route.waypoints) >= 2:
+        try:
+            via = [wp.coordinate for wp in route.waypoints[1:-1]] or None
+            pedestrian = await map_service.get_pedestrian_route(
+                origin=route.waypoints[0].coordinate,
+                destination=route.waypoints[-1].coordinate,
+                waypoints=via,
+            )
+            route.polyline = pedestrian.path
+            route.total_distance_km = round(pedestrian.distance_m / 1000.0, 2)
+            route.estimated_duration_min = round(pedestrian.duration_s / 60.0, 1)
+        except Exception:  # noqa: BLE001 - keep AI estimates if routing fails
+            logger.warning(
+                "Pedestrian routing (%s) failed; falling back to AI distance "
+                "estimate. Polyline will be unavailable.",
+                map_service.settings.map_provider,
+                exc_info=True,
+            )
+
+    # Step 4: persist the generated route to Supabase (best-effort).
+    await _save_route(req, route, user_id)
+
+    return route
+
+
+async def _save_route(
+    req: RouteRequest, route: RouteResponse, user_id: str | None = None
+) -> None:
+    """Insert the generated route into the Supabase `routes` table.
+
+    Best-effort: saving is a side feature, so any failure is logged and
+    swallowed rather than breaking route generation. user_id is left NULL
+    until authentication is wired up.
+
+    supabase-py is synchronous, so the blocking call is run in a worker
+    thread to avoid stalling the async event loop.
+    """
+    # Start coordinate (from the first waypoint) powers the location-based
+    # learning loop; store it as top-level columns for fast proximity queries.
+    start_coord = route.waypoints[0].coordinate if route.waypoints else None
+
+    record = {
+        # Owner (from a validated token; None when anonymous)
+        "user_id": user_id,
+        # Input values (RouteRequest)
+        "target_distance_km": req.target_distance_km,
+        "pitstop_keyword": req.pitstop_keyword,
+        "notes": req.notes,
+        # Start coordinate (for the learning loop)
+        "start_lat": start_coord.lat if start_coord else None,
+        "start_lng": start_coord.lng if start_coord else None,
+        # Generated result (RouteResponse)
+        "summary": route.summary,
+        "total_distance_km": route.total_distance_km,
+        "estimated_duration_min": route.estimated_duration_min,
+        "waypoints": [wp.model_dump() for wp in route.waypoints],
+        "polyline": (
+            [c.model_dump() for c in route.polyline]
+            if route.polyline is not None
+            else None
+        ),
+    }
+
+    try:
+        supabase = get_supabase_admin()
+        result = await asyncio.to_thread(
+            lambda: supabase.table("routes").insert(record).execute()
+        )
+        saved_id = result.data[0]["id"] if result.data else "?"
+        logger.info("Saved generated route to Supabase (id=%s).", saved_id)
+    except Exception:  # noqa: BLE001 - persistence is best-effort
+        logger.warning(
+            "Failed to save generated route to Supabase; "
+            "route generation still succeeded.",
+            exc_info=True,
+        )
+
+
+async def list_routes(user_id: str, limit: int = 20) -> list[StoredRoute]:
+    """Return the caller's saved routes, newest first.
+
+    Scoped to `user_id` in app code (the service_role client bypasses RLS,
+    so this filter is what enforces "my data only" until RLS is enabled).
+    """
+    supabase = get_supabase_admin()
+    result = await asyncio.to_thread(
+        lambda: supabase.table("routes")
+        .select("*")
+        .eq("user_id", user_id)
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return [StoredRoute(**row) for row in result.data]
+
+
+async def get_route(route_id: str, user_id: str) -> StoredRoute | None:
+    """Return one of the caller's saved routes by id, or None.
+
+    Returns None if the route doesn't exist OR isn't owned by `user_id`,
+    so a non-owner cannot fetch someone else's route.
+    """
+    supabase = get_supabase_admin()
+    result = await asyncio.to_thread(
+        lambda: supabase.table("routes")
+        .select("*")
+        .eq("id", route_id)
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+    if not result.data:
+        return None
+    return StoredRoute(**result.data[0])
+
+
+_UNIQUE_VIOLATION = "23505"
+
+
+async def _copy_counts(route_ids: list[str]) -> dict[str, int]:
+    """Return {route_id: copy_count} for the given route ids (one IN query)."""
+    if not route_ids:
+        return {}
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("routes")
+        .select("copied_from")
+        .in_("copied_from", route_ids)
+        .execute()
+    )
+    counts: dict[str, int] = defaultdict(int)
+    for row in res.data:
+        counts[row["copied_from"]] += 1
+    return dict(counts)
+
+
+async def _like_counts(route_ids: list[str]) -> dict[str, int]:
+    """Return {route_id: like_count} for the given ids (one IN query)."""
+    if not route_ids:
+        return {}
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("route_likes")
+        .select("route_id")
+        .in_("route_id", route_ids)
+        .execute()
+    )
+    counts: dict[str, int] = defaultdict(int)
+    for row in res.data:
+        counts[row["route_id"]] += 1
+    return dict(counts)
+
+
+async def _liked_by_me(route_ids: list[str], user_id: str) -> set[str]:
+    """Return the set of route_ids that `user_id` has liked (one IN + eq query)."""
+    if not route_ids:
+        return set()
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("route_likes")
+        .select("route_id")
+        .in_("route_id", route_ids)
+        .eq("user_id", user_id)
+        .execute()
+    )
+    return {row["route_id"] for row in res.data}
+
+
+async def _comment_counts(route_ids: list[str]) -> dict[str, int]:
+    """Return {route_id: comment_count} for the given ids (one IN query)."""
+    if not route_ids:
+        return {}
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("route_comments")
+        .select("route_id")
+        .in_("route_id", route_ids)
+        .execute()
+    )
+    counts: dict[str, int] = defaultdict(int)
+    for row in res.data:
+        counts[row["route_id"]] += 1
+    return dict(counts)
+
+
+async def like_route(route_id: str, user_id: str) -> None:
+    """Add a like to a public route. Idempotent: double-liking is silently ignored.
+
+    Raises RouteNotFound if the route doesn't exist or is not public (treats
+    private routes the same as missing to avoid revealing their existence).
+    """
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("routes")
+        .select("is_public, user_id")
+        .eq("id", route_id)
+        .limit(1)
+        .execute()
+    )
+    if not res.data or not res.data[0]["is_public"]:
+        raise RouteNotFound()
+
+    route_owner = res.data[0].get("user_id")
+    liked_new = True
+    try:
+        await asyncio.to_thread(
+            lambda: supabase.table("route_likes")
+            .insert({"route_id": route_id, "user_id": user_id})
+            .execute()
+        )
+    except APIError as exc:
+        if exc.code != _UNIQUE_VIOLATION:  # 23505 = already liked, that's fine
+            raise
+        liked_new = False
+
+    if liked_new and route_owner:
+        try:
+            await notification_service.create_notification(
+                recipient_id=route_owner,
+                actor_id=user_id,
+                type="route_liked",
+                target_id=route_id,
+                target_type="route",
+            )
+        except Exception:
+            logger.warning("route_liked 알림 생성 실패", exc_info=True)
+
+
+async def unlike_route(route_id: str, user_id: str) -> None:
+    """Remove a like from a route. Idempotent: unliking a non-liked route is a no-op."""
+    supabase = get_supabase_admin()
+    await asyncio.to_thread(
+        lambda: supabase.table("route_likes")
+        .delete()
+        .eq("route_id", route_id)
+        .eq("user_id", user_id)
+        .execute()
+    )
+
+
+async def bookmark_route(route_id: str, user_id: str) -> None:
+    """Bookmark a public route. Idempotent: re-bookmarking is silently ignored.
+
+    Same visibility rule as likes (404 for missing/private routes). Bookmarks
+    are a private action, so unlike likes no notification is sent.
+    """
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("routes")
+        .select("is_public")
+        .eq("id", route_id)
+        .limit(1)
+        .execute()
+    )
+    if not res.data or not res.data[0]["is_public"]:
+        raise RouteNotFound()
+
+    try:
+        await asyncio.to_thread(
+            lambda: supabase.table("route_bookmarks")
+            .insert({"route_id": route_id, "user_id": user_id})
+            .execute()
+        )
+    except APIError as exc:
+        if exc.code != _UNIQUE_VIOLATION:  # 23505 = already bookmarked, fine
+            raise
+
+
+async def unbookmark_route(route_id: str, user_id: str) -> None:
+    """Remove a bookmark. Idempotent: removing a non-bookmark is a no-op."""
+    supabase = get_supabase_admin()
+    await asyncio.to_thread(
+        lambda: supabase.table("route_bookmarks")
+        .delete()
+        .eq("route_id", route_id)
+        .eq("user_id", user_id)
+        .execute()
+    )
+
+
+async def list_bookmarked_routes(
+    user_id: str, limit: int = 20, offset: int = 0
+) -> list[PublicRouteResponse]:
+    """The caller's bookmarked routes, most recently bookmarked first.
+
+    Routes that went private after being bookmarked are hidden (same
+    don't-reveal rule as elsewhere), so a page can come back shorter than
+    `limit` even when more bookmarks exist.
+    """
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("route_bookmarks")
+        .select("route_id")
+        .eq("user_id", user_id)
+        .order("created_at", desc=True)
+        .range(offset, offset + limit - 1)
+        .execute()
+    )
+    route_ids = [row["route_id"] for row in res.data]
+    if not route_ids:
+        return []
+
+    routes_res = await asyncio.to_thread(
+        lambda: supabase.table("routes")
+        .select("*")
+        .in_("id", route_ids)
+        .eq("is_public", True)
+        .execute()
+    )
+    if not routes_res.data:
+        return []
+
+    # Preserve bookmark order (the IN query returns rows unordered).
+    by_id = {r["id"]: r for r in routes_res.data}
+    rows = [by_id[rid] for rid in route_ids if rid in by_id]
+    return await _to_public_responses(rows, user_id)
+
+
+async def _to_public_responses(
+    rows: list[dict], user_id: str
+) -> list[PublicRouteResponse]:
+    """Enrich raw route rows with counts/is_liked/nicknames (batch, no N+1)."""
+    route_ids = [r["id"] for r in rows]
+    copy_counts, like_counts, liked_set, comment_counts, nicknames = await asyncio.gather(
+        _copy_counts(route_ids),
+        _like_counts(route_ids),
+        _liked_by_me(route_ids, user_id),
+        _comment_counts(route_ids),
+        profile_service.get_nicknames([r.get("user_id") for r in rows]),
+    )
+    return [
+        PublicRouteResponse(
+            **row,
+            owner_id=row.get("user_id"),
+            is_mine=(row.get("user_id") == user_id),
+            owner_nickname=nicknames.get(row.get("user_id")),
+            copy_count=copy_counts.get(row["id"], 0),
+            like_count=like_counts.get(row["id"], 0),
+            is_liked=row["id"] in liked_set,
+            comment_count=comment_counts.get(row["id"], 0),
+        )
+        for row in rows
+    ]
+
+
+async def list_following_feed(
+    user_id: str, limit: int = 20, offset: int = 0
+) -> list[PublicRouteResponse]:
+    """Public routes by users the caller follows, newest first (limit+offset).
+
+    Returns [] when the caller follows no one. The IN-list approach is fine
+    at MVP scale; switch to a join/RPC if following counts grow very large.
+    """
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("follows")
+        .select("following_id")
+        .eq("follower_id", user_id)
+        .execute()
+    )
+    following_ids = [row["following_id"] for row in res.data]
+    if not following_ids:
+        return []
+
+    result = await asyncio.to_thread(
+        lambda: supabase.table("routes")
+        .select("*")
+        .eq("is_public", True)
+        .in_("user_id", following_ids)
+        .order("created_at", desc=True)
+        .range(offset, offset + limit - 1)
+        .execute()
+    )
+    if not result.data:
+        return []
+    return await _to_public_responses(result.data, user_id)
+
+
+async def list_public_routes(
+    user_id: str, limit: int = 20, sort: str = "newest"
+) -> list[PublicRouteResponse]:
+    """Return public routes for the discovery feed.
+
+    sort='newest'  — DB-level ORDER BY created_at DESC + LIMIT (fast).
+    sort='popular' — fetch all public routes, batch-count copies, sort in
+                     Python by copy_count DESC, then apply limit. Suitable
+                     while the public route count is small; switch to an RPC
+                     aggregate when scale demands it.
+    """
+    supabase = get_supabase_admin()
+
+    if sort == "newest":
+        result = await asyncio.to_thread(
+            lambda: supabase.table("routes")
+            .select("*")
+            .eq("is_public", True)
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        rows = result.data
+    else:  # popular — need all rows to rank, then limit
+        result = await asyncio.to_thread(
+            lambda: supabase.table("routes")
+            .select("*")
+            .eq("is_public", True)
+            .execute()
+        )
+        rows = result.data
+
+    if not rows:
+        return []
+
+    route_ids = [r["id"] for r in rows]
+    copy_counts, like_counts, liked_set, comment_counts, nicknames = await asyncio.gather(
+        _copy_counts(route_ids),
+        _like_counts(route_ids),
+        _liked_by_me(route_ids, user_id),
+        _comment_counts(route_ids),
+        profile_service.get_nicknames([r.get("user_id") for r in rows]),
+    )
+
+    if sort == "popular":
+        rows = sorted(rows, key=lambda r: copy_counts.get(r["id"], 0), reverse=True)[:limit]
+
+    return [
+        PublicRouteResponse(
+            **row,
+            owner_id=row.get("user_id"),
+            is_mine=(row.get("user_id") == user_id),
+            owner_nickname=nicknames.get(row.get("user_id")),
+            copy_count=copy_counts.get(row["id"], 0),
+            like_count=like_counts.get(row["id"], 0),
+            is_liked=row["id"] in liked_set,
+            comment_count=comment_counts.get(row["id"], 0),
+        )
+        for row in rows
+    ]
+
+
+def _haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """Great-circle distance between two (lat, lng) points in kilometres."""
+    R = 6371.0
+    φ1, φ2 = math.radians(lat1), math.radians(lat2)
+    Δφ = math.radians(lat2 - lat1)
+    Δλ = math.radians(lng2 - lng1)
+    a = math.sin(Δφ / 2) ** 2 + math.cos(φ1) * math.cos(φ2) * math.sin(Δλ / 2) ** 2
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+async def search_nearby_routes(
+    lat: float,
+    lng: float,
+    radius_km: float,
+    sort_by: str,
+    user_id: str,
+    limit: int = 20,
+) -> list[PublicRouteResponse]:
+    """Return public routes whose start point lies within radius_km of (lat, lng).
+
+    Step 1 — SQL bounding box (fast, uses indexes on start_lat / start_lng).
+    Step 2 — Python Haversine to drop box-corner false positives.
+    Step 3 — sort and limit in Python (copy_count for 'popular', created_at for 'newest').
+    """
+    lat_delta = radius_km / 111.0
+    lng_delta = radius_km / (111.0 * math.cos(math.radians(lat)))
+
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("routes")
+        .select("*")
+        .eq("is_public", True)
+        .gte("start_lat", lat - lat_delta)
+        .lte("start_lat", lat + lat_delta)
+        .gte("start_lng", lng - lng_delta)
+        .lte("start_lng", lng + lng_delta)
+        .order("created_at", desc=True)
+        .execute()
+    )
+
+    # Step 2: precise circle filter (removes box-corner false positives)
+    rows = [
+        r for r in res.data
+        if r.get("start_lat") is not None
+        and r.get("start_lng") is not None
+        and _haversine_km(lat, lng, r["start_lat"], r["start_lng"]) <= radius_km
+    ]
+    if not rows:
+        return []
+
+    route_ids = [r["id"] for r in rows]
+    copy_counts, like_counts, liked_set, comment_counts, nicknames = await asyncio.gather(
+        _copy_counts(route_ids),
+        _like_counts(route_ids),
+        _liked_by_me(route_ids, user_id),
+        _comment_counts(route_ids),
+        profile_service.get_nicknames([r.get("user_id") for r in rows]),
+    )
+
+    if sort_by == "popular":
+        rows = sorted(rows, key=lambda r: copy_counts.get(r["id"], 0), reverse=True)
+
+    rows = rows[:limit]
+
+    return [
+        PublicRouteResponse(
+            **row,
+            owner_id=row.get("user_id"),
+            is_mine=(row.get("user_id") == user_id),
+            owner_nickname=nicknames.get(row.get("user_id")),
+            copy_count=copy_counts.get(row["id"], 0),
+            like_count=like_counts.get(row["id"], 0),
+            is_liked=row["id"] in liked_set,
+            comment_count=comment_counts.get(row["id"], 0),
+        )
+        for row in rows
+    ]
+
+
+def _sanitize(q: str) -> str:
+    """Remove chars that break PostgREST filter syntax or inject extra wildcards."""
+    return q.strip().replace(",", "").replace("*", "")
+
+
+async def search_public_routes(
+    q: str, user_id: str, limit: int = 20
+) -> list[PublicRouteResponse]:
+    """Search public routes by summary (case-insensitive partial match).
+
+    Returns [] when q is blank after sanitization.
+    Enriches results with copy_count, like_count, is_liked, comment_count, owner_nickname
+    using the same batch pattern as list_public_routes.
+    """
+    safe = _sanitize(q)
+    if not safe:
+        return []
+
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("routes")
+        .select("*")
+        .eq("is_public", True)
+        .ilike("summary", f"%{safe}%")
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    rows = res.data
+    if not rows:
+        return []
+
+    route_ids = [r["id"] for r in rows]
+    copy_counts, like_counts, liked_set, comment_counts, nicknames = await asyncio.gather(
+        _copy_counts(route_ids),
+        _like_counts(route_ids),
+        _liked_by_me(route_ids, user_id),
+        _comment_counts(route_ids),
+        profile_service.get_nicknames([r.get("user_id") for r in rows]),
+    )
+
+    return [
+        PublicRouteResponse(
+            **row,
+            owner_id=row.get("user_id"),
+            is_mine=(row.get("user_id") == user_id),
+            owner_nickname=nicknames.get(row.get("user_id")),
+            copy_count=copy_counts.get(row["id"], 0),
+            like_count=like_counts.get(row["id"], 0),
+            is_liked=row["id"] in liked_set,
+            comment_count=comment_counts.get(row["id"], 0),
+        )
+        for row in rows
+    ]
+
+
+async def set_route_public(
+    route_id: str, user_id: str, is_public: bool
+) -> StoredRoute | None:
+    """Publish/unpublish one of the caller's routes. None if not found/not theirs."""
+    supabase = get_supabase_admin()
+    result = await asyncio.to_thread(
+        lambda: supabase.table("routes")
+        .update({"is_public": is_public})
+        .eq("id", route_id)
+        .eq("user_id", user_id)
+        .execute()
+    )
+    if not result.data:
+        return None
+    return StoredRoute(**result.data[0])
+
+
+async def copy_route(route_id: str, user_id: str) -> StoredRoute:
+    """Copy a route ('이 코스 달리기') into the caller's account.
+
+    The source must be public OR owned by the caller. The copy is created
+    private, owned by the caller, with copied_from pointing at the source.
+    The source is left unchanged. Raises RouteNotFound otherwise.
+    """
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("routes")
+        .select("*")
+        .eq("id", route_id)
+        .limit(1)
+        .execute()
+    )
+    if not res.data:
+        raise RouteNotFound()
+    src = res.data[0]
+    # Can't copy someone else's private route (don't reveal it exists).
+    if not src["is_public"] and src.get("user_id") != user_id:
+        raise RouteNotFound()
+
+    record = {
+        "user_id": user_id,
+        "is_public": False,  # copies start private
+        "copied_from": route_id,
+        # Copy the route content (but not the source owner's private notes)
+        "target_distance_km": src.get("target_distance_km"),
+        "pitstop_keyword": src.get("pitstop_keyword"),
+        "start_lat": src.get("start_lat"),
+        "start_lng": src.get("start_lng"),
+        "summary": src["summary"],
+        "total_distance_km": src["total_distance_km"],
+        "estimated_duration_min": src.get("estimated_duration_min"),
+        "waypoints": src.get("waypoints") or [],
+        "polyline": src.get("polyline"),
+    }
+    out = await asyncio.to_thread(
+        lambda: supabase.table("routes").insert(record).execute()
+    )
+    logger.info("User %s copied route %s -> %s.", user_id, route_id, out.data[0]["id"])
+    return StoredRoute(**out.data[0])
+
+
+async def create_comment(route_id: str, user_id: str, content: str) -> CommentResponse:
+    """Add a comment to a public route.
+
+    Raises RouteNotFound if the route doesn't exist or is not public.
+    """
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("routes")
+        .select("is_public, user_id")
+        .eq("id", route_id)
+        .limit(1)
+        .execute()
+    )
+    if not res.data or not res.data[0]["is_public"]:
+        raise RouteNotFound()
+
+    route_owner = res.data[0].get("user_id")
+
+    out = await asyncio.to_thread(
+        lambda: supabase.table("route_comments")
+        .insert({"route_id": route_id, "user_id": user_id, "content": content})
+        .execute()
+    )
+    row = out.data[0]
+    nicknames = await profile_service.get_nicknames([user_id])
+
+    if route_owner:
+        try:
+            await notification_service.create_notification(
+                recipient_id=route_owner,
+                actor_id=user_id,
+                type="route_commented",
+                target_id=route_id,
+                target_type="route",
+            )
+        except Exception:
+            logger.warning("route_commented 알림 생성 실패", exc_info=True)
+
+    return CommentResponse(**row, nickname=nicknames.get(user_id))
+
+
+async def list_comments(route_id: str, limit: int = 50) -> list[CommentResponse]:
+    """Return comments on a public route, oldest first.
+
+    Raises RouteNotFound if the route doesn't exist or is not public.
+    """
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("routes")
+        .select("is_public")
+        .eq("id", route_id)
+        .limit(1)
+        .execute()
+    )
+    if not res.data or not res.data[0]["is_public"]:
+        raise RouteNotFound()
+
+    comments_res = await asyncio.to_thread(
+        lambda: supabase.table("route_comments")
+        .select("*")
+        .eq("route_id", route_id)
+        .order("created_at", desc=False)
+        .limit(limit)
+        .execute()
+    )
+    rows = comments_res.data
+    if not rows:
+        return []
+
+    nicknames = await profile_service.get_nicknames([r["user_id"] for r in rows])
+    return [CommentResponse(**row, nickname=nicknames.get(row["user_id"])) for row in rows]
+
+
+async def delete_comment(route_id: str, comment_id: str, caller_id: str) -> None:
+    """Delete a comment. Caller must be the comment author or the route owner.
+
+    Raises CommentNotFound if the comment doesn't exist under this route.
+    Raises CommentAccessDenied if the caller has neither permission.
+    """
+    supabase = get_supabase_admin()
+    comment_res = await asyncio.to_thread(
+        lambda: supabase.table("route_comments")
+        .select("user_id")
+        .eq("id", comment_id)
+        .eq("route_id", route_id)
+        .limit(1)
+        .execute()
+    )
+    if not comment_res.data:
+        raise CommentNotFound()
+
+    if comment_res.data[0]["user_id"] != caller_id:
+        route_res = await asyncio.to_thread(
+            lambda: supabase.table("routes")
+            .select("user_id")
+            .eq("id", route_id)
+            .limit(1)
+            .execute()
+        )
+        if not route_res.data or route_res.data[0]["user_id"] != caller_id:
+            raise CommentAccessDenied()
+
+    await asyncio.to_thread(
+        lambda: supabase.table("route_comments")
+        .delete()
+        .eq("id", comment_id)
+        .execute()
+    )

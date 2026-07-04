@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>FreshRun — 앱</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css" />
+<style>
+  * { -webkit-font-smoothing: antialiased; box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body { background: #EDEDE8; min-height: 100vh; font-family: 'Pretendard', -apple-system, system-ui, sans-serif; }
+  #root { min-height: 100vh; }
+  input::placeholder { color: #ABAFB5; }
+
+  /* range input reset (used by sliders) */
+  input[type=range] { -webkit-appearance: none; appearance: none; background: transparent; cursor: pointer; }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 22px; height: 22px; opacity: 0; }
+  input[type=range]::-moz-range-thumb { width: 22px; height: 22px; opacity: 0; border: none; }
+
+  /* Entrances are transform/opacity-only; resting state is the visible end-state. */
+  @keyframes frspin { to { transform: rotate(360deg); } }
+  @keyframes frpulse { 0% { transform: scale(0.8); opacity: 0.5; } 70% { transform: scale(1.9); opacity: 0; } 100% { transform: scale(1.9); opacity: 0; } }
+  @keyframes frpop { from { transform: scale(0.6); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+  @keyframes frfadein { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes frsheetup { from { transform: translateY(100%); } to { transform: none; } }
+  @keyframes frbubble { from { transform: scale(0.96) translateY(-6px); } to { transform: none; } }
+  @keyframes frInR { from { transform: translateX(18px); opacity: 0.4; } to { transform: none; opacity: 1; } }
+  @keyframes frInL { from { transform: translateX(-18px); opacity: 0.4; } to { transform: none; opacity: 1; } }
+  .fr-screen { animation-duration: .32s; animation-timing-function: cubic-bezier(.22,.61,.36,1); }
+
+  /* course flow */
+  @keyframes frcdraw { to { stroke-dashoffset: 0; } }
+  @keyframes frshim { to { background-position: -200% 0; } }
+  @keyframes frblink { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+  .frdots::after { content: ''; animation: frdots 1.4s steps(4,end) infinite; }
+  @keyframes frdots { 0% { content: ''; } 25% { content: '.'; } 50% { content: '..'; } 75% { content: '...'; } }
+
+  /* celebration + tracking */
+  @keyframes frconfetti { 0% { transform: translateY(0) rotate(0); opacity: 1; } 100% { transform: translateY(640px) rotate(540deg); opacity: 0; } }
+  @keyframes frwave { 0%,100% { transform: scaleY(0.5); } 50% { transform: scaleY(1.15); } }
+
+  @media (prefers-reduced-motion: reduce) {
+    .fr-screen, [style*="frpulse"], [style*="frpop"], [style*="frshim"], [style*="frblink"], [style*="frcdraw"], [style*="frconfetti"], [style*="frwave"] { animation: none !important; }
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="ios-frame.jsx"></script>
+<script type="text/babel" src="tweaks-panel.jsx"></script>
+<script type="text/babel" src="auth-ui.jsx"></script>
+<script type="text/babel" src="home-ui.jsx"></script>
+<script type="text/babel" src="home-cards.jsx"></script>
+<script type="text/babel" src="home-screens.jsx"></script>
+<script type="text/babel" src="community-screen.jsx"></script>
+<script type="text/babel" src="location-picker.jsx"></script>
+<script type="text/babel" src="crew-create.jsx"></script>
+<script type="text/babel" src="course-ui.jsx"></script>
+<script type="text/babel" src="course-form.jsx"></script>
+<script type="text/babel" src="run-choice.jsx"></script>
+<script type="text/babel" src="course-flow.jsx"></script>
+<script type="text/babel" src="app-icons.jsx"></script>
+<script type="text/babel" src="records-screen.jsx"></script>
+<script type="text/babel" src="monthly-insight.jsx"></script>
+<script type="text/babel" src="activity-detail.jsx"></script>
+<script type="text/babel" src="weather-detail.jsx"></script>
+<script type="text/babel" src="profile-screen.jsx"></script>
+<script type="text/babel" src="settings-screens.jsx"></script>
+<script type="text/babel" src="notifications-screen.jsx"></script>
+<script type="text/babel" src="celebrate-screens.jsx"></script>
+<script type="text/babel" src="course-preview.jsx"></script>
+<script type="text/babel" src="tracking-screen.jsx"></script>
+<script type="text/babel" src="i18n.jsx"></script>
+<script type="text/babel" src="app-nav.jsx"></script>
+</body>
+</html>

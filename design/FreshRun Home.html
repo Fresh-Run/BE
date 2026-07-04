@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>FreshRun — 홈</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css" />
+<style>
+  * { -webkit-font-smoothing: antialiased; box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body { font-family: 'Pretendard', -apple-system, system-ui, sans-serif; }
+  #root { min-height: 100vh; }
+  input::placeholder { color: #ABAFB5; }
+
+  @keyframes frspin { to { transform: rotate(360deg); } }
+  @keyframes frpulse { 0% { transform: scale(0.8); opacity: 0.5; } 70% { transform: scale(1.9); opacity: 0; } 100% { transform: scale(1.9); opacity: 0; } }
+  @keyframes frfadein { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes frsheetup { from { transform: translateY(100%); } to { transform: none; } }
+  @keyframes frbubble { from { transform: scale(0.96) translateY(-6px); } to { transform: none; } }
+
+  @media (prefers-reduced-motion: reduce) {
+    [style*="frsheetup"], [style*="frfadein"], [style*="frpulse"] { animation: none !important; }
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="ios-frame.jsx"></script>
+<script type="text/babel" src="design-canvas.jsx"></script>
+<script type="text/babel" src="auth-ui.jsx"></script>
+<script type="text/babel" src="home-ui.jsx"></script>
+<script type="text/babel" src="home-cards.jsx"></script>
+<script type="text/babel" src="home-screens.jsx"></script>
+<script type="text/babel" src="home-app.jsx"></script>
+</body>
+</html>

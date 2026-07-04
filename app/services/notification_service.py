@@ -1,0 +1,104 @@
+"""Notification service: create and query in-app notifications."""
+from __future__ import annotations
+
+import asyncio
+import logging
+
+from app.core.supabase_client import get_supabase_admin
+from app.models.schemas import NotificationResponse
+from app.services import profile_service
+
+logger = logging.getLogger(__name__)
+
+
+async def create_notification(
+    recipient_id: str,
+    actor_id: str,
+    type: str,
+    target_id: str,
+    target_type: str,
+    allow_self: bool = False,
+) -> None:
+    """Insert one notification row.
+
+    Silently skips when recipient == actor, unless allow_self=True
+    (used for challenge_completed where the triggering runner should
+    also receive the notification).
+    """
+    if not allow_self and recipient_id == actor_id:
+        return
+
+    supabase = get_supabase_admin()
+    await asyncio.to_thread(
+        lambda: supabase.table("notifications")
+        .insert(
+            {
+                "user_id": recipient_id,
+                "actor_id": actor_id,
+                "type": type,
+                "target_id": target_id,
+                "target_type": target_type,
+            }
+        )
+        .execute()
+    )
+
+
+async def list_notifications(user_id: str, limit: int = 20) -> list[NotificationResponse]:
+    """Return the caller's notifications, newest first."""
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("notifications")
+        .select("*")
+        .eq("user_id", user_id)
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    rows = res.data
+    if not rows:
+        return []
+
+    nicknames = await profile_service.get_nicknames(list({r["actor_id"] for r in rows}))
+    return [
+        NotificationResponse(**row, actor_nickname=nicknames.get(row["actor_id"]))
+        for row in rows
+    ]
+
+
+async def unread_count(user_id: str) -> int:
+    """Return the number of unread notifications for the caller."""
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("notifications")
+        .select("id", count="exact")
+        .eq("user_id", user_id)
+        .eq("is_read", False)
+        .execute()
+    )
+    return res.count or 0
+
+
+async def mark_read(notification_id: str, user_id: str) -> bool:
+    """Mark one notification as read. Returns False if not found or not owned."""
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("notifications")
+        .update({"is_read": True})
+        .eq("id", notification_id)
+        .eq("user_id", user_id)
+        .execute()
+    )
+    return bool(res.data)
+
+
+async def mark_all_read(user_id: str) -> None:
+    """Mark all of the caller's unread notifications as read."""
+    supabase = get_supabase_admin()
+    await asyncio.to_thread(
+        lambda: supabase.table("notifications")
+        .update({"is_read": True})
+        .eq("user_id", user_id)
+        .eq("is_read", False)
+        .execute()
+    )

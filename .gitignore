@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Environment / secrets — .env 계열 전부 제외, 예시 파일만 추적
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials*.json
+
+# Legacy frontend prototype (design/이 최신 시안)
+frontend/
+
+# Design-canvas sidecar state
+.design-canvas.state.json
+
+# IDE
+.vscode/
+.idea/
+.claude/
+
+# OS
+.DS_Store

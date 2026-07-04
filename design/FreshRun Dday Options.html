@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>FreshRun — D-day 배지 옵션</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css" />
+<style>
+  * { box-sizing: border-box; -webkit-font-smoothing: antialiased; }
+  body { margin: 0; background: #EDEDE8; font-family: 'Pretendard', sans-serif; padding: 36px 0 60px; }
+  .wrap { width: 412px; margin: 0 auto; }
+  h1 { font-size: 22px; font-weight: 800; color: #16171A; letter-spacing: -0.6px; margin: 0 0 4px; }
+  .sub { font-size: 13.5px; color: #6B6E74; margin: 0 0 24px; }
+  .opt { margin-bottom: 16px; }
+  .optlab { display:flex; align-items:baseline; gap:8px; margin: 0 4px 8px; }
+  .optn { font-size: 13px; font-weight: 800; color:#16171A; }
+  .optd { font-size: 12px; color:#8B8E94; }
+  /* crew card chrome (matches app) */
+  .card { background:#fff; border:1px solid #E7E7E0; border-radius:20px; padding:15px; box-shadow:0 1px 2px rgba(20,22,18,0.04),0 8px 24px rgba(20,22,18,0.05); }
+  .top { display:flex; align-items:center; gap:13px; }
+  .thumb { width:48px;height:48px;border-radius:14px;background:#0C1206; position:relative; overflow:hidden; flex-shrink:0; }
+  .cn { font-size:15.5px; font-weight:700; color:#16171A; letter-spacing:-0.4px; }
+  .cmeta { font-size:12px; color:#A2A6AC; margin-top:3px; }
+  .progrow { display:flex; align-items:center; gap:10px; margin-top:14px; }
+  .progwrap { flex:1; }
+  .ptitle { display:flex; justify-content:space-between; margin-bottom:6px; }
+  .pt { font-size:12px; font-weight:600; color:#6B6E74; }
+  .pv { font-size:11.5px; font-weight:700; color:#A2A6AC; }
+  .track { height:6px; border-radius:99px; background:#F4F4EF; overflow:hidden; }
+  .fill { height:100%; background:#74E827; border-radius:99px; }
+  /* badge variants */
+  .b { font-size:11.5px; font-weight:800; letter-spacing:-0.2px; white-space:nowrap; flex-shrink:0; display:inline-flex; align-items:center; gap:4px; }
+  .b-text { color:#3C7A14; padding:4px 2px; }
+  .b-lime { color:#0D1A06; background:#74E827; border-radius:8px; padding:5px 9px; }
+  .b-tint { color:#3C7A14; background:#EAF8DA; border-radius:8px; padding:5px 9px; }
+  .b-outline { color:#3C7A14; border:1.5px solid #B6E886; border-radius:8px; padding:3.5px 8px; }
+  .b-gray { color:#8B8E94; background:#F4F4EF; border-radius:8px; padding:5px 9px; }
+  .b-dot { color:#3C7A14; padding:4px 2px; }
+  .dot { width:5px;height:5px;border-radius:99px;background:#74E827; }
+  svg{display:block;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>D-day 배지 — 색 옵션</h1>
+  <p class="sub">진행률 바 옆 배지. 마음에 드는 번호(또는 조합)를 알려주세요.</p>
+  <div id="list"></div>
+</div>
+<script>
+const ROUTE = '<svg viewBox="0 0 48 48" preserveAspectRatio="none" style="position:absolute;inset:0;"><path d="M8 38 C16 30 18 40 26 30 S38 14 42 12" fill="none" stroke="#7CF03D" stroke-width="3" stroke-linecap="round"/></svg>';
+const CLOCK = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#3C7A14" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.4v5l3 1.8"/></svg>';
+
+const OPTS = [
+  ['1 · 텍스트만 (배경 없음)', '가장 깔끔. 그린 텍스트만', '<span class="b b-text">D-12</span>'],
+  ['2 · 텍스트 + 점', '작은 라임 점 + 그린 텍스트', '<span class="b b-dot"><span class="dot"></span>D-12</span>'],
+  ['3 · 텍스트 + 시계 아이콘', '카운트다운 느낌 강조', '<span class="b b-dot">'+CLOCK+'D-12</span>'],
+  ['4 · 라임 채움', '밝고 눈에 띔 (어두운 글자)', '<span class="b b-lime">D-12</span>'],
+  ['5 · 연한 라임 틴트', '부드러운 라임 배경 + 그린 글자', '<span class="b b-tint">D-12</span>'],
+  ['6 · 아웃라인', '투명 배경 + 라임 테두리', '<span class="b b-outline">D-12</span>'],
+  ['7 · 중립 회색', '차분하게 한 발 뒤로', '<span class="b b-gray">D-12</span>'],
+];
+
+const list = document.getElementById('list');
+OPTS.forEach(o => {
+  const el = document.createElement('div');
+  el.className = 'opt';
+  el.innerHTML = `
+    <div class="optlab"><span class="optn">${o[0]}</span><span class="optd">${o[1]}</span></div>
+    <div class="card">
+      <div class="top">
+        <div class="thumb">${ROUTE}</div>
+        <div style="flex:1;min-width:0;">
+          <div class="cn">성수 새벽 크루</div>
+          <div class="cmeta">42명 · 성수 · 뚝섬</div>
+        </div>
+        <div style="text-align:right;flex-shrink:0;"><div style="font-size:10.5px;font-weight:600;color:#A2A6AC;">내 순위</div><div style="font-size:17px;font-weight:800;color:#3C7A14;margin-top:1px;">#3</div></div>
+      </div>
+      <div class="progrow">
+        <div class="progwrap">
+          <div class="ptitle"><span class="pt">주간 50K 릴레이</span><span class="pv">36.2 / 50km</span></div>
+          <div class="track"><div class="fill" style="width:72%"></div></div>
+        </div>
+        ${o[2]}
+      </div>
+    </div>`;
+  list.appendChild(el);
+});
+</script>
+</body>
+</html>

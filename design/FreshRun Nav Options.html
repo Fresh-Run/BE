@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="design_doc_mode" content="canvas" />
+<title>FreshRun — 플로팅 내비게이션 옵션</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css" />
+<style>
+  * { box-sizing: border-box; -webkit-font-smoothing: antialiased; }
+  body { margin: 0; font-family: 'Pretendard', -apple-system, system-ui, sans-serif; }
+  .frame { position: absolute; width: 372px; height: 430px; }
+  .label { position: absolute; font-family: 'Pretendard', sans-serif; }
+  .phone { position: relative; width: 372px; height: 430px; background: #FAFAF7; border-radius: 40px; overflow: hidden; box-shadow: 0 30px 70px rgba(20,22,18,0.16); border: 1px solid #ECECE5; }
+  .screen { position: absolute; inset: 0; padding: 0 18px; }
+  .nav-zone { position: absolute; left: 0; right: 0; bottom: 0; height: 130px; }
+  /* faded content backdrop */
+  .statusbar { display:flex; justify-content:space-between; align-items:center; padding: 16px 6px 0; }
+  .stime { font-size: 14px; font-weight: 700; color:#16171A; }
+  .greet { display:flex; align-items:center; gap:11px; padding: 14px 4px 0; }
+  .ava { width:42px; height:42px; border-radius:999px; background:#74E827; display:flex; align-items:center; justify-content:center; font-size:14px; font-weight:800; color:#0D1A06; }
+  .gname { font-size:18px; font-weight:800; color:#16171A; letter-spacing:-0.5px; }
+  .gsub { font-size:12px; color:#A2A6AC; font-weight:600; margin-top:2px; }
+  .wx { margin: 16px 0 0; height:60px; border-radius:16px; background:#fff; border:1px solid #E7E7E0; box-shadow:0 1px 2px rgba(20,22,18,0.04),0 8px 24px rgba(20,22,18,0.05); display:flex; align-items:center; gap:12px; padding:0 16px; }
+  .wxt { font-size:22px; font-weight:800; color:#16171A; letter-spacing:-1px; }
+  .wxs { font-size:12px; color:#6B6E74; font-weight:600; }
+  .card { margin-top:16px; border-radius:20px; background:#fff; border:1px solid #E7E7E0; box-shadow:0 1px 2px rgba(20,22,18,0.04),0 8px 24px rgba(20,22,18,0.05); padding:14px; }
+  .cr { display:flex; align-items:center; gap:10px; }
+  .crd { width:34px;height:34px;border-radius:999px;background:#EAF3EC;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;color:#3C7A14; }
+  .cn { font-size:14px; font-weight:700; color:#16171A; }
+  .cmeta { font-size:11.5px; color:#A2A6AC; margin-top:2px; }
+  .map { margin-top:12px; height:96px; border-radius:14px; background:#0C1206; position:relative; overflow:hidden; }
+  .route { position:absolute; inset:0; }
+  .fade { position:absolute; left:0; right:0; bottom:0; height:150px; background:linear-gradient(180deg, rgba(250,250,247,0), #FAFAF7 78%); pointer-events:none; }
+
+  /* nav primitives */
+  .ni { display:flex; flex-direction:column; align-items:center; gap:4px; flex:1; }
+  .nlab { font-size:10.5px; font-weight:600; letter-spacing:-0.2px; white-space:nowrap; }
+  svg { display:block; }
+</style>
+</head>
+<body>
+<div class="label" style="left:40px; top:24px; font-size:24px; font-weight:800; color:#16171A; letter-spacing:-0.6px;">플로팅 내비게이션 — 4가지 옵션</div>
+<div class="label" style="left:40px; top:58px; font-size:14px; font-weight:500; color:#6B6E74;">기존 라임 그린·흰 카드·소프트 섀도우 그대로. 마음에 드는 번호를 알려주세요.</div>
+
+<div id="root"></div>
+
+<script>
+const ACCENT='#74E827', ACCENT_TX='#0D1A06', TEXT='#16171A', FAINT='#A2A6AC', SUB='#6B6E74', SURF='#fff', BORDER='#E7E7E0';
+const FLOAT_SHADOW='0 10px 30px rgba(20,22,18,0.16), 0 2px 8px rgba(20,22,18,0.07)';
+
+function icon(name, color, sw){
+  sw = sw || 1.9;
+  const P = {
+    home:'<path d="M3 10.8 12 3.5l9 7.3" /><path d="M5.4 9.6V20h13.2V9.6" />',
+    users:'<circle cx="9" cy="8" r="3"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0"/><path d="M16 5.5a3 3 0 0 1 0 5.8"/><path d="M20.5 19a5.5 5.5 0 0 0-3-5"/>',
+    plus:'<path d="M12 5.5v13M5.5 12h13" />',
+    clock:'<circle cx="12" cy="12" r="8.5"/><path d="M12 7.2v5l3.2 1.9" />',
+    person:'<circle cx="12" cy="8" r="4"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0"/>',
+  }[name];
+  return '<svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="'+color+'" stroke-width="'+sw+'" stroke-linecap="round" stroke-linejoin="round">'+P+'</svg>';
+}
+
+// faded home backdrop shared by every frame
+function backdrop(){
+  return `
+  <div class="screen">
+    <div class="statusbar"><span class="stime">9:41</span><span style="font-size:13px;color:#16171A;font-weight:700;">●●● ▾ ▮</span></div>
+    <div class="greet"><div class="ava">수진</div><div><div class="gname">안녕하세요, 수진님</div><div class="gsub">토요일, 6월 16일</div></div></div>
+    <div class="wx"><div style="width:34px;height:34px;border-radius:10px;background:#EAF8DA;display:flex;align-items:center;justify-content:center;">☀️</div><div><div class="wxt">18°</div></div><div class="wxs">맑음 · 러닝하기 좋아요</div></div>
+    <div class="card">
+      <div class="cr"><div class="crd">이</div><div><div class="cn">이서연</div><div class="cmeta">남산공원 · 1시간 전</div></div></div>
+    </div>
+    <div class="fade"></div>
+  </div>`;
+}
+
+// ── Option 1: Unified floating pill (all 5, raised center +) ──
+function nav1(){
+  const item=(n,l,act)=>`<div class="ni"><span>${icon(n, act?TEXT:FAINT, act?2.2:1.9)}</span><span class="nlab" style="color:${act?TEXT:FAINT};font-weight:${act?700:600}">${l}</span></div>`;
+  return `<div style="position:absolute;left:16px;right:16px;bottom:24px;height:66px;background:${SURF};border-radius:33px;box-shadow:${FLOAT_SHADOW};display:flex;align-items:center;padding:0 14px;">
+    ${item('home','홈',true)}${item('users','커뮤니티')}
+    <div class="ni"><div style="width:50px;height:50px;border-radius:18px;background:${ACCENT};display:flex;align-items:center;justify-content:center;box-shadow:0 6px 16px rgba(116,232,39,0.5);margin-top:-2px;">${icon('plus',ACCENT_TX,2.4)}</div></div>
+    ${item('clock','기록')}${item('person','프로필')}
+  </div>`;
+}
+
+// ── Option 2: Pill (4 tabs) + separate raised FAB above center ──
+function nav2(){
+  const item=(n,l,act)=>`<div class="ni"><span>${icon(n, act?TEXT:FAINT, act?2.2:1.9)}</span><span class="nlab" style="color:${act?TEXT:FAINT};font-weight:${act?700:600}">${l}</span></div>`;
+  return `
+  <div style="position:absolute;left:50%;bottom:96px;transform:translateX(-50%);width:62px;height:62px;border-radius:999px;background:${ACCENT};display:flex;align-items:center;justify-content:center;box-shadow:0 10px 24px rgba(116,232,39,0.55);">${icon('plus',ACCENT_TX,2.5)}</div>
+  <div style="position:absolute;left:16px;right:16px;bottom:24px;height:64px;background:${SURF};border-radius:30px;box-shadow:${FLOAT_SHADOW};display:flex;align-items:center;padding:0 10px;">
+    ${item('home','홈',true)}${item('users','커뮤니티')}
+    <div style="flex:1.1"></div>
+    ${item('clock','기록')}${item('person','프로필')}
+  </div>`;
+}
+
+// ── Option 3: Compact dock, active tab expands to a lime pill ──
+function nav3(){
+  const ico=(n,act)=>`<div style="width:46px;height:46px;border-radius:999px;display:flex;align-items:center;justify-content:center;">${icon(n,act?TEXT:FAINT,2)}</div>`;
+  const active=(n,l)=>`<div style="display:flex;align-items:center;gap:7px;height:46px;padding:0 16px;border-radius:999px;background:${ACCENT};">${icon(n,ACCENT_TX,2.2)}<span class="nlab" style="color:${ACCENT_TX};font-weight:800;font-size:13px;">${l}</span></div>`;
+  return `<div style="position:absolute;left:50%;bottom:26px;transform:translateX(-50%);display:flex;align-items:center;gap:4px;background:${SURF};border-radius:999px;box-shadow:${FLOAT_SHADOW};padding:6px 8px;">
+    ${active('home','홈')}${ico('users')}
+    <div style="width:46px;height:46px;border-radius:999px;background:${ACCENT_TX};display:flex;align-items:center;justify-content:center;">${icon('plus','#fff',2.4)}</div>
+    ${ico('clock')}${ico('person')}
+  </div>`;
+}
+
+// ── Option 4: Floating bar with concave center cradle for + ──
+function nav4(){
+  const item=(n,l,act)=>`<div class="ni"><span>${icon(n, act?TEXT:FAINT, act?2.2:1.9)}</span><span class="nlab" style="color:${act?TEXT:FAINT};font-weight:${act?700:600}">${l}</span></div>`;
+  return `
+  <div style="position:absolute;left:16px;right:16px;bottom:24px;height:68px;">
+    <svg width="100%" height="68" viewBox="0 0 340 68" preserveAspectRatio="none" style="position:absolute;inset:0;filter:drop-shadow(0 10px 26px rgba(20,22,18,0.15));"><path d="M34 0 H132 a18 18 0 0 1 17 12 a21 21 0 0 0 42 0 a18 18 0 0 1 17 -12 H306 a34 34 0 0 1 34 34 a34 34 0 0 1 -34 34 H34 A34 34 0 0 1 0 34 A34 34 0 0 1 34 0 Z" fill="#fff"/></svg>
+    <div style="position:absolute;left:50%;top:-22px;transform:translateX(-50%);width:56px;height:56px;border-radius:999px;background:${ACCENT};display:flex;align-items:center;justify-content:center;box-shadow:0 8px 20px rgba(116,232,39,0.55);">${icon('plus',ACCENT_TX,2.5)}</div>
+    <div style="position:absolute;inset:0;display:flex;align-items:center;padding:0 16px;">
+      ${item('home','홈',true)}${item('users','커뮤니티')}<div style="flex:1.1"></div>${item('clock','기록')}${item('person','프로필')}
+    </div>
+  </div>`;
+}
+
+const OPTS=[
+  ['1  ·  통합 플로팅 알약', '5개 탭 한 줄, 가운데 + 살짝 띄움', nav1],
+  ['2  ·  알약 + 독립 FAB', '탭 4개 알약, + 는 위로 떠 있는 원형', nav2],
+  ['3  ·  컴팩트 독 (활성 확장)', '아이콘 위주, 활성 탭만 라벨 확장', nav3],
+  ['4  ·  센터 크래들', '가운데가 파여 + 가 안착', nav4],
+];
+
+const root=document.getElementById('root');
+OPTS.forEach((o,i)=>{
+  const left=40+i*404, top=110;
+  const lab=document.createElement('div'); lab.className='label';
+  lab.style.cssText=`left:${left}px; top:${top-44}px; width:372px;`;
+  lab.innerHTML=`<div style="font-size:16px;font-weight:800;color:#16171A;letter-spacing:-0.4px;">옵션 ${o[0]}</div><div style="font-size:12.5px;color:#6B6E74;margin-top:2px;">${o[1]}</div>`;
+  root.appendChild(lab);
+  const f=document.createElement('div'); f.className='frame'; f.style.cssText=`left:${left}px; top:${top}px;`;
+  f.innerHTML=`<div class="phone">${backdrop()}<div class="nav-zone">${o[2]()}</div></div>`;
+  root.appendChild(f);
+});
+</script>
+</body>
+</html>
