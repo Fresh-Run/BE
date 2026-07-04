@@ -8,6 +8,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.core.auth import get_current_user
 from app.models.schemas import (
+    AnnouncementCreate,
+    AnnouncementDetailResponse,
+    AnnouncementResponse,
+    AnnouncementUpdate,
     ChallengeCreate,
     ChallengeResponse,
     CommentCreate,
@@ -30,6 +34,7 @@ from app.models.schemas import (
     PublicRouteResponse,
     PublishRequest,
     QuotaResponse,
+    RsvpRequest,
     RouteRequest,
     RouteResponse,
     RunRequest,
@@ -40,6 +45,7 @@ from app.models.schemas import (
     WeatherResponse,
 )
 from app.services import (
+    announcement_service,
     crew_service,
     follow_service,
     map_service,
@@ -966,6 +972,183 @@ async def delete_crew(
         raise HTTPException(status_code=403, detail="Only the owner can delete")
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"Failed to delete crew: {exc}")
+
+
+# --- Crew announcements + RSVP ------------------------------------------------
+
+
+@router.post(
+    "/crews/{crew_id}/announcements",
+    response_model=AnnouncementResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="크루 공지 작성 (크루장, 크루원 전체 알림)",
+)
+async def create_announcement(
+    crew_id: str,
+    req: AnnouncementCreate,
+    user: CurrentUser = Depends(get_current_user),
+) -> AnnouncementResponse:
+    """Create an announcement (owner only). All members get one notification."""
+    try:
+        return await announcement_service.create_announcement(
+            crew_id, caller_id=user.user_id, req=req
+        )
+    except crew_service.CrewNotFound:
+        raise HTTPException(status_code=404, detail="Crew not found")
+    except crew_service.NotOwner:
+        raise HTTPException(status_code=403, detail="Only the owner can post announcements")
+    except announcement_service.InvalidAnnouncement:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid_announcement",
+                    "message": "좌표는 쌍으로, 마감시각은 러닝 일시가 있을 때 그 이전으로 설정하세요."},
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Failed to create announcement: {exc}")
+
+
+@router.get(
+    "/crews/{crew_id}/announcements",
+    response_model=list[AnnouncementResponse],
+    summary="크루 공지 목록 (크루원, 최신순)",
+)
+async def list_announcements(
+    crew_id: str,
+    limit: int = 20,
+    offset: int = 0,
+    user: CurrentUser = Depends(get_current_user),
+) -> list[AnnouncementResponse]:
+    """Announcements with RSVP tallies and my_rsvp, newest first."""
+    try:
+        return await announcement_service.list_announcements(
+            crew_id, caller_id=user.user_id, limit=limit, offset=offset
+        )
+    except crew_service.CrewNotFound:
+        raise HTTPException(status_code=404, detail="Crew not found")
+    except crew_service.CrewAccessDenied:
+        raise HTTPException(status_code=403, detail="Members only")
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Failed to list announcements: {exc}")
+
+
+@router.get(
+    "/crews/{crew_id}/announcements/{announcement_id}",
+    response_model=AnnouncementDetailResponse,
+    summary="크루 공지 상세 (집계 + 참석자 명단)",
+)
+async def get_announcement(
+    crew_id: str,
+    announcement_id: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> AnnouncementDetailResponse:
+    """Announcement detail with the going-member roster."""
+    try:
+        return await announcement_service.get_announcement(
+            crew_id, caller_id=user.user_id, announcement_id=announcement_id
+        )
+    except crew_service.CrewNotFound:
+        raise HTTPException(status_code=404, detail="Crew not found")
+    except crew_service.CrewAccessDenied:
+        raise HTTPException(status_code=403, detail="Members only")
+    except announcement_service.AnnouncementNotFound:
+        raise HTTPException(status_code=404, detail="Announcement not found")
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Failed to fetch announcement: {exc}")
+
+
+@router.patch(
+    "/crews/{crew_id}/announcements/{announcement_id}",
+    response_model=AnnouncementResponse,
+    summary="크루 공지 수정 (크루장, 알림 없음)",
+)
+async def update_announcement(
+    crew_id: str,
+    announcement_id: str,
+    req: AnnouncementUpdate,
+    user: CurrentUser = Depends(get_current_user),
+) -> AnnouncementResponse:
+    """Partial update (owner only). Edits do not re-notify members."""
+    try:
+        return await announcement_service.update_announcement(
+            crew_id, caller_id=user.user_id, announcement_id=announcement_id, req=req
+        )
+    except crew_service.CrewNotFound:
+        raise HTTPException(status_code=404, detail="Crew not found")
+    except crew_service.NotOwner:
+        raise HTTPException(status_code=403, detail="Only the owner can edit announcements")
+    except announcement_service.AnnouncementNotFound:
+        raise HTTPException(status_code=404, detail="Announcement not found")
+    except announcement_service.InvalidAnnouncement:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid_announcement",
+                    "message": "좌표는 쌍으로, 마감시각은 러닝 일시가 있을 때 그 이전으로 설정하세요."},
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Failed to update announcement: {exc}")
+
+
+@router.delete(
+    "/crews/{crew_id}/announcements/{announcement_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="크루 공지 삭제 (크루장, 투표도 함께 삭제)",
+)
+async def delete_announcement(
+    crew_id: str,
+    announcement_id: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> None:
+    """Delete an announcement (owner only); its RSVPs cascade."""
+    try:
+        await announcement_service.delete_announcement(
+            crew_id, caller_id=user.user_id, announcement_id=announcement_id
+        )
+    except crew_service.CrewNotFound:
+        raise HTTPException(status_code=404, detail="Crew not found")
+    except crew_service.NotOwner:
+        raise HTTPException(status_code=403, detail="Only the owner can delete announcements")
+    except announcement_service.AnnouncementNotFound:
+        raise HTTPException(status_code=404, detail="Announcement not found")
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Failed to delete announcement: {exc}")
+
+
+@router.put(
+    "/crews/{crew_id}/announcements/{announcement_id}/rsvp",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="참석 투표 (크루원, 재투표=덮어쓰기)",
+)
+async def rsvp_announcement(
+    crew_id: str,
+    announcement_id: str,
+    req: RsvpRequest,
+    user: CurrentUser = Depends(get_current_user),
+) -> None:
+    """Cast or overwrite the caller's attendance vote (one per member)."""
+    try:
+        await announcement_service.rsvp(
+            crew_id, caller_id=user.user_id,
+            announcement_id=announcement_id, status=req.status,
+        )
+    except crew_service.CrewNotFound:
+        raise HTTPException(status_code=404, detail="Crew not found")
+    except crew_service.CrewAccessDenied:
+        raise HTTPException(status_code=403, detail="Members only")
+    except announcement_service.AnnouncementNotFound:
+        raise HTTPException(status_code=404, detail="Announcement not found")
+    except announcement_service.RsvpNotAvailable:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "rsvp_not_available",
+                    "message": "러닝 일시가 없는 공지에는 투표할 수 없습니다."},
+        )
+    except announcement_service.RsvpClosed:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "rsvp_closed", "message": "참석 투표가 마감되었습니다."},
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Failed to submit RSVP: {exc}")
 
 
 # --- Notifications -----------------------------------------------------------

@@ -151,6 +151,50 @@ async def _is_member(crew_id: str, user_id: str) -> bool:
     return bool(res.data)
 
 
+async def _crew_row(crew_id: str, columns: str = "owner_id") -> dict:
+    """Fetch one crews row, or raise CrewNotFound."""
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("crews")
+        .select(columns)
+        .eq("id", crew_id)
+        .limit(1)
+        .execute()
+    )
+    if not res.data:
+        raise CrewNotFound()
+    return res.data[0]
+
+
+async def ensure_member(crew_id: str, user_id: str) -> None:
+    """Guard: crew must exist (CrewNotFound) and user must be a member
+    (CrewAccessDenied). Shared by crew sub-resources (announcements, RSVPs)."""
+    await _crew_row(crew_id)
+    if not await _is_member(crew_id, user_id):
+        raise CrewAccessDenied()
+
+
+async def ensure_owner(crew_id: str, caller_id: str, columns: str = "owner_id") -> dict:
+    """Guard: crew must exist and caller must be the owner. Returns the crew row.
+
+    If a manager/운영진 role is added later, widen the check here only.
+    """
+    crew = await _crew_row(crew_id, columns)
+    if crew["owner_id"] != caller_id:
+        raise NotOwner()
+    return crew
+
+
+async def _cleanup_member_rsvps(crew_id: str, user_id: str) -> None:
+    """Drop a departing member's RSVP votes (best-effort; tallies stay member-only)."""
+    from app.services import announcement_service  # local import: avoids circular
+
+    try:
+        await announcement_service.remove_member_rsvps(crew_id, user_id)
+    except Exception:  # noqa: BLE001 — leaving must not fail on vote cleanup
+        logger.warning("탈퇴/강퇴 멤버 RSVP 정리 실패 (crew=%s)", crew_id, exc_info=True)
+
+
 # --- Operations --------------------------------------------------------------
 
 
@@ -316,21 +360,13 @@ async def join_crew(crew_id: str, user_id: str) -> CrewResponse:
 
 async def leave_crew(crew_id: str, user_id: str) -> None:
     """Remove the user from a crew. The owner cannot leave."""
-    supabase = get_supabase_admin()
-    res = await asyncio.to_thread(
-        lambda: supabase.table("crews")
-        .select("owner_id")
-        .eq("id", crew_id)
-        .limit(1)
-        .execute()
-    )
-    if not res.data:
-        raise CrewNotFound()
-    if res.data[0]["owner_id"] == user_id:
+    crew = await _crew_row(crew_id)
+    if crew["owner_id"] == user_id:
         raise OwnerCannotLeave()
     if not await _is_member(crew_id, user_id):
         raise NotAMember()
 
+    supabase = get_supabase_admin()
     await asyncio.to_thread(
         lambda: supabase.table("crew_members")
         .delete()
@@ -338,6 +374,7 @@ async def leave_crew(crew_id: str, user_id: str) -> None:
         .eq("user_id", user_id)
         .execute()
     )
+    await _cleanup_member_rsvps(crew_id, user_id)
     logger.info("User %s left crew %s.", user_id, crew_id)
 
 
@@ -354,15 +391,7 @@ async def transfer_ownership(
     RPC could make it atomic later.
     """
     supabase = get_supabase_admin()
-    res = await asyncio.to_thread(
-        lambda: supabase.table("crews").select("*").eq("id", crew_id).limit(1).execute()
-    )
-    if not res.data:
-        raise CrewNotFound()
-    crew = res.data[0]
-
-    if crew["owner_id"] != caller_id:
-        raise NotOwner()
+    crew = await ensure_owner(crew_id, caller_id, "*")
     if new_owner_id == caller_id:
         raise AlreadyOwner()
     if not await _is_member(crew_id, new_owner_id):
@@ -569,13 +598,7 @@ async def create_challenge(
     supabase = get_supabase_admin()
 
     # 1. Confirm crew exists and caller is owner.
-    crew_res = await asyncio.to_thread(
-        lambda: supabase.table("crews").select("owner_id").eq("id", crew_id).limit(1).execute()
-    )
-    if not crew_res.data:
-        raise CrewNotFound()
-    if crew_res.data[0]["owner_id"] != caller_id:
-        raise NotOwner()
+    await ensure_owner(crew_id, caller_id)
 
     # 2. Guard: reject if any non-ended challenge already exists.
     now_utc = datetime.now(timezone.utc).isoformat()
@@ -690,15 +713,7 @@ async def update_crew(crew_id: str, caller_id: str, req: CrewUpdate) -> CrewResp
     what the client sends — they are simply not present in CrewUpdate.
     """
     supabase = get_supabase_admin()
-
-    res = await asyncio.to_thread(
-        lambda: supabase.table("crews").select("*").eq("id", crew_id).limit(1).execute()
-    )
-    if not res.data:
-        raise CrewNotFound()
-    crew = res.data[0]
-    if crew["owner_id"] != caller_id:
-        raise NotOwner()
+    crew = await ensure_owner(crew_id, caller_id, "*")
 
     # mode='json' serialises enums (e.g. CrewLevel) to their string values.
     data = req.model_dump(mode="json", exclude_none=True)
@@ -724,20 +739,13 @@ async def kick_member(crew_id: str, caller_id: str, target_id: str) -> None:
         OwnerCannotKickSelf — owner tried to kick themselves.
         NotAMember        — target is not currently a member.
     """
-    supabase = get_supabase_admin()
-
-    res = await asyncio.to_thread(
-        lambda: supabase.table("crews").select("owner_id").eq("id", crew_id).limit(1).execute()
-    )
-    if not res.data:
-        raise CrewNotFound()
-    if res.data[0]["owner_id"] != caller_id:
-        raise NotOwner()
+    await ensure_owner(crew_id, caller_id)
     if target_id == caller_id:
         raise OwnerCannotKickSelf()
     if not await _is_member(crew_id, target_id):
         raise NotAMember()
 
+    supabase = get_supabase_admin()
     await asyncio.to_thread(
         lambda: supabase.table("crew_members")
         .delete()
@@ -745,24 +753,16 @@ async def kick_member(crew_id: str, caller_id: str, target_id: str) -> None:
         .eq("user_id", target_id)
         .execute()
     )
+    await _cleanup_member_rsvps(crew_id, target_id)
     logger.info("User %s kicked from crew %s by owner %s.", target_id, crew_id, caller_id)
 
 
 async def delete_crew(crew_id: str, caller_id: str) -> None:
-    """Delete a crew (owner only). Memberships are removed via ON DELETE CASCADE."""
-    supabase = get_supabase_admin()
-    res = await asyncio.to_thread(
-        lambda: supabase.table("crews")
-        .select("owner_id")
-        .eq("id", crew_id)
-        .limit(1)
-        .execute()
-    )
-    if not res.data:
-        raise CrewNotFound()
-    if res.data[0]["owner_id"] != caller_id:
-        raise NotOwner()
+    """Delete a crew (owner only). Memberships, announcements, and RSVPs are
+    removed via the ON DELETE CASCADE chain (crews → announcements → rsvps)."""
+    await ensure_owner(crew_id, caller_id)
 
+    supabase = get_supabase_admin()
     await asyncio.to_thread(
         lambda: supabase.table("crews").delete().eq("id", crew_id).execute()
     )

@@ -7,7 +7,7 @@ REST API expects coordinates as `x=longitude, y=latitude`.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -516,6 +516,84 @@ class CrewUpdate(BaseModel):
     active_days: Optional[list[str]] = Field(None, description="활동 요일")
     active_time: Optional[str] = Field(None, description="활동 시간")
     color: Optional[str] = Field(None, description="색상 (예: #FF8800)")
+
+
+class AnnouncementCreate(BaseModel):
+    """Input to create a crew announcement. author comes from the token."""
+
+    title: str = Field(..., min_length=1, max_length=100, description="공지 제목")
+    body: str = Field(..., min_length=1, max_length=2000, description="공지 본문")
+    run_at: Optional[str] = Field(None, description="러닝 일시 (ISO 8601). 있어야 RSVP 가능.")
+    place_name: Optional[str] = Field(None, description="장소명")
+    place_lat: Optional[float] = None
+    place_lng: Optional[float] = None
+    rsvp_closes_at: Optional[str] = Field(
+        None, description="참석 투표 마감 (ISO 8601, run_at 이전이어야 함). 없으면 run_at이 마감."
+    )
+
+
+class AnnouncementUpdate(BaseModel):
+    """Partial-update input. Only provided fields are written; no notification."""
+
+    title: Optional[str] = Field(None, min_length=1, max_length=100)
+    body: Optional[str] = Field(None, min_length=1, max_length=2000)
+    run_at: Optional[str] = None
+    place_name: Optional[str] = None
+    place_lat: Optional[float] = None
+    place_lng: Optional[float] = None
+    rsvp_closes_at: Optional[str] = None
+
+
+class RsvpRequest(BaseModel):
+    """One member's attendance vote (re-voting overwrites)."""
+
+    status: Literal["going", "not_going", "maybe"] = Field(
+        ..., description="참석 / 불참 / 미정"
+    )
+
+
+class RsvpTally(BaseModel):
+    """Aggregated RSVP counts for one announcement (current members only)."""
+
+    going: int = 0
+    not_going: int = 0
+    maybe: int = 0
+
+
+class RsvpMember(BaseModel):
+    """One attendee in the 참석자 명단."""
+
+    user_id: str
+    nickname: Optional[str] = None
+
+
+class AnnouncementResponse(BaseModel):
+    """A crew announcement with RSVP tallies and the caller's vote."""
+
+    id: str
+    crew_id: str
+    author_id: Optional[str] = Field(None, description="작성자. 탈퇴 시 null.")
+    author_nickname: Optional[str] = None
+    title: str
+    body: str
+    run_at: Optional[str] = None
+    place_name: Optional[str] = None
+    place_lat: Optional[float] = None
+    place_lng: Optional[float] = None
+    rsvp_closes_at: Optional[str] = None
+    rsvp_open: bool = Field(
+        False, description="run_at이 있고 마감(coalesce(rsvp_closes_at, run_at)) 전이면 true."
+    )
+    rsvp: RsvpTally = Field(default_factory=RsvpTally)
+    my_rsvp: Optional[str] = Field(None, description="내 투표 상태; 안 했으면 null.")
+    created_at: str
+    updated_at: str
+
+
+class AnnouncementDetailResponse(AnnouncementResponse):
+    """Announcement detail — adds the attendee roster."""
+
+    going_members: list[RsvpMember] = Field(default_factory=list)
 
 
 class ChallengeCreate(BaseModel):

@@ -28,3 +28,6 @@ frontend/
 
 # OS
 .DS_Store
+
+# Design mockups (로컬 참고용, 저장소에는 미포함)
+design/
