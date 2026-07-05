@@ -163,8 +163,13 @@ def run():
             assert api(c, "PUT", f"/crews/{crew_id}/announcements/{ann_id}/rsvp",
                        tok1, json={"status": "going"}).status_code == 204
 
-            # ① 공개 프로필
-            d = api(c, "GET", f"/users/{uid1}", tok2).json()
+            # ① 공개 프로필 — 실제 라우트는 /users/{id}/profile (과거 버그: /users/{id}는
+            #    404라 assert가 공허 통과했음). 응답이 진짜 프로필인지 먼저 확정.
+            r = api(c, "GET", f"/users/{uid1}/profile", tok2)
+            assert r.status_code == 200, r.text[:200]
+            d = r.json()
+            assert d.get("user_id") == uid1 and d.get("nickname"), \
+                f"공개 프로필 응답이 비어있음(공허 assert 방지): {d}"
             assert_no_body_keys(d, "공개 프로필")
             # ② 팔로워 목록 (u2의 팔로워 = u1)
             d = api(c, "GET", f"/users/{uid2}/followers", tok2).json()

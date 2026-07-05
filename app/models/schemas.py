@@ -6,10 +6,11 @@ REST API expects coordinates as `x=longitude, y=latitude`.
 
 from __future__ import annotations
 
+from datetime import datetime
 from enum import Enum
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class FeedbackTag(str, Enum):
@@ -747,12 +748,16 @@ class RunRequest(BaseModel):
         None,
         description="ID of the route that was run. Omit for a free (route-less) run.",
     )
-    distance_km: float = Field(..., gt=0, description="Actual distance run, in km.")
-    duration_sec: int = Field(..., gt=0, description="Elapsed time, in seconds.")
+    # 상한 350km = 세계 최장 울트라(현실 초장거리) 여유. 상한 없으면 9999km
+    # 1회 전송으로 랭킹·챌린지·PB·통계 오염 가능 (unverified도 집계 포함).
+    distance_km: float = Field(..., gt=0, le=350, description="Actual distance run, in km.")
+    duration_sec: int = Field(
+        ..., gt=0, le=7 * 24 * 3600, description="Elapsed time, in seconds (≤7일)."
+    )
     avg_pace_sec_per_km: Optional[int] = Field(
         None, gt=0, description="Average pace in seconds per km (optional)."
     )
-    notes: Optional[str] = Field(None, description="Free-form notes about the run.")
+    notes: Optional[str] = Field(None, max_length=2000, description="Free-form notes about the run.")
     gps_track: Optional[list[GpsPoint]] = Field(
         None,
         max_length=5000,
@@ -761,6 +766,18 @@ class RunRequest(BaseModel):
             "최대 5000pt). 있으면 서버가 검증·스플릿·경로를 계산한다. optional."
         ),
     )
+
+    @model_validator(mode="after")
+    def _pace_sanity(self) -> "RunRequest":
+        # duration/distance 평균 페이스가 인간 하한(1'30"/km ≈ 세계기록 미만)보다
+        # 빠르면 물리적으로 불가능한 자기신고 → 거부. GPS suspect 판정과 별개로
+        # 트랙 없는 자율신고 run의 최소 방어선.
+        if self.distance_km > 0 and self.duration_sec / self.distance_km < 90:
+            raise ValueError(
+                "duration_sec 대비 distance_km가 물리적으로 불가능한 페이스입니다 "
+                "(평균 1'30\"/km 미만)."
+            )
+        return self
 
 
 class RunResponse(BaseModel):
@@ -1017,17 +1034,38 @@ class JoinRequestItem(BaseModel):
     created_at: str
 
 
+def _require_aware_iso(value: Optional[str]) -> Optional[str]:
+    """ISO 8601 + 타임존 필수 검증. naive 입력은 서버가 UTC로 오해석해 KST 의도가
+    9시간 시프트되므로(감사 M2) 아예 거부한다. None은 통과(선택 필드)."""
+    if value is None:
+        return value
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError("ISO 8601 형식이 아닙니다 (예: 2026-07-07T20:00:00+09:00).") from exc
+    if parsed.tzinfo is None:
+        raise ValueError(
+            "타임존이 필요합니다 — ISO 8601 with timezone offset "
+            "(예: 2026-07-07T20:00:00+09:00 또는 ...Z)."
+        )
+    return value
+
+
 class AnnouncementCreate(BaseModel):
     """Input to create a crew announcement. author comes from the token."""
 
     title: str = Field(..., min_length=1, max_length=100, description="공지 제목")
     body: str = Field(..., min_length=1, max_length=2000, description="공지 본문")
-    run_at: Optional[str] = Field(None, description="러닝 일시 (ISO 8601). 있어야 RSVP 가능.")
-    place_name: Optional[str] = Field(None, description="장소명")
+    run_at: Optional[str] = Field(None, description="러닝 일시 (ISO 8601 + 타임존). 있어야 RSVP 가능.")
+    place_name: Optional[str] = Field(None, max_length=100, description="장소명")
     place_lat: Optional[float] = None
     place_lng: Optional[float] = None
     rsvp_closes_at: Optional[str] = Field(
-        None, description="참석 투표 마감 (ISO 8601, run_at 이전이어야 함). 없으면 run_at이 마감."
+        None, description="참석 투표 마감 (ISO 8601 + 타임존, run_at 이전). 없으면 run_at이 마감."
+    )
+
+    _tz = field_validator("run_at", "rsvp_closes_at")(
+        staticmethod(_require_aware_iso)
     )
 
 
@@ -1037,10 +1075,14 @@ class AnnouncementUpdate(BaseModel):
     title: Optional[str] = Field(None, min_length=1, max_length=100)
     body: Optional[str] = Field(None, min_length=1, max_length=2000)
     run_at: Optional[str] = None
-    place_name: Optional[str] = None
+    place_name: Optional[str] = Field(None, max_length=100)
     place_lat: Optional[float] = None
     place_lng: Optional[float] = None
     rsvp_closes_at: Optional[str] = None
+
+    _tz = field_validator("run_at", "rsvp_closes_at")(
+        staticmethod(_require_aware_iso)
+    )
 
 
 class RsvpRequest(BaseModel):
@@ -1098,10 +1140,12 @@ class AnnouncementDetailResponse(AnnouncementResponse):
 class ChallengeCreate(BaseModel):
     """Input to create a crew challenge. crew_id and created_by come from the URL/token."""
 
-    title: str = Field(..., min_length=1, description="챌린지 제목 (예: '이번 주 100km 달성!')")
-    goal_km: float = Field(..., gt=0, description="목표 거리(km)")
-    starts_at: str = Field(..., description="시작 시각 (ISO 8601, 예: 2026-07-07T00:00:00+09:00)")
-    ends_at: str = Field(..., description="종료 시각 (ISO 8601, 예: 2026-07-13T23:59:59+09:00)")
+    title: str = Field(..., min_length=1, max_length=100, description="챌린지 제목 (예: '이번 주 100km 달성!')")
+    goal_km: float = Field(..., gt=0, le=100000, description="목표 거리(km)")
+    starts_at: str = Field(..., description="시작 시각 (ISO 8601 + 타임존, 예: 2026-07-07T00:00:00+09:00)")
+    ends_at: str = Field(..., description="종료 시각 (ISO 8601 + 타임존, 예: 2026-07-13T23:59:59+09:00)")
+
+    _tz = field_validator("starts_at", "ends_at")(staticmethod(_require_aware_iso))
 
 
 class ChallengeResponse(BaseModel):
@@ -1113,7 +1157,9 @@ class ChallengeResponse(BaseModel):
     goal_km: float
     starts_at: str
     ends_at: str
-    created_by: str
+    created_by: Optional[str] = Field(
+        None, description="생성자. 크루 위임 후 계정 삭제 시 null (H2 정책)."
+    )
     created_at: str
     # real-time computed fields
     achieved_km: float = Field(..., description="기간 내 크루 누적 거리(km)")

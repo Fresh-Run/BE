@@ -91,7 +91,7 @@ fetch(`${API_BASE}/api/me/profile`, {
 |---|---|---|
 | 월 선택 통계 + 캘린더 | `GET /me/stats/monthly?year&month` | `stats`(합계·평균페이스·전월 대비 delta), `days[{date,distance_km,run_count}]` — 뛴 날만 옴, 캘린더 점 찍기용 (KST 기준). **무료** |
 | **AI 월간 인사이트 (프리미엄)** | `GET /me/insights/monthly?year&month` | 프리미엄 월간 리포트 화면 전체 데이터. free는 **403 `premium_required`**(§5), month 1~12 외 422. 스키마는 표 아래 참고 |
-| 러닝 기록 저장 | `POST /runs` | body: `distance_km`, `duration_sec`, `route_id?`, `avg_pace_sec_per_km?`, `notes?`, **`gps_track?`** (아래 규약). 응답에 `new_records[]` — **비어있지 않으면 "새로운 기록 경신!" 축하 모달을 띄우면 됩니다** (`{type, previous, current, improvement_pct}` — 이전/현재 비교 카드 + "N% 향상" 칩 그대로). 첫 run은 항상 `[]` |
+| 러닝 기록 저장 | `POST /runs` | body: `distance_km`(0<d≤350), `duration_sec`(≤7일), `route_id?`, `avg_pace_sec_per_km?`, `notes?`(≤2000자), **`gps_track?`** (아래 규약). **평균 페이스가 1'30"/km보다 빠르면(물리적 불가) 422** — 자율신고 부정 방어. 응답에 `new_records[]` — **비어있지 않으면 "새로운 기록 경신!" 축하 모달을 띄우면 됩니다** (`{type, previous, current, improvement_pct}` — 이전/현재 비교 카드 + "N% 향상" 칩 그대로). 첫 run은 항상 `[]` |
 | 기록 목록 | `GET /runs?limit&route_id?` | `RunResponse[]` 최신순 — GPS run은 `splits[]`·`has_track`·`verification` 포함 |
 | 기록 단건 | `GET /runs/{run_id}` | 본인 것만, 아니면 404 |
 | **러닝 경로 (지도)** | `GET /runs/{run_id}/track` | `{polyline[{lat,lng}], server_distance_km, elev_gain_m, point_count_raw/kept}` — 활동 상세 지도용. 트랙 없는 run(기존/수동)은 404 (`has_track`으로 사전 판단) |
@@ -177,8 +177,10 @@ fetch(`${API_BASE}/api/me/profile`, {
 | **코드로 가입** | `POST /crews/join-by-code` body `{code}` | 200 `CrewResponse` (바로 크루 화면 이동). **join_policy·비공개 무관 즉시 가입** — 크루 생성 화면의 "비공개: 초대 링크로만 가입 가능해요"가 이 경로. 대소문자·공백은 서버가 정규화. 이미 멤버/정원 409, 잘못된 코드 404. 승인제에 신청해뒀던 pending은 자동 정리 |
 | 멤버/랭킹 | `GET /crews/{id}/members`, `/crews/{id}/ranking` | 랭킹: 이번 주 KST 거리순, `me` 플래그 |
 | **크루 러닝 피드** | `GET /crews/{id}/runs?limit&offset` | 크루원들의 최근 run, `ran_at` 최신순: `[{run_id, user_id, nickname, avatar_url, ran_at, distance_km, duration_sec, avg_pace_sec_per_km, route_id, route_summary}]`. 크루원만(403). 개인 메모/피드백은 절대 미포함, `route_summary`는 공개 코스만(비공개면 null). 탈퇴 멤버의 run은 자동 제외 |
-| 챌린지 | `GET /crews/{id}/challenges/current`, `POST /crews/{id}/challenges` | `achieved_km`, `progress_pct`, `is_completed` 실시간 계산 |
-| **공지 목록/상세** | `GET /crews/{id}/announcements?limit&offset`, `GET .../{announcement_id}` | `title`, `body`, `run_at`, `place_name/lat/lng`, `rsvp_open`, `rsvp{going,not_going,maybe}`, `my_rsvp`; 상세엔 `going_members[]` 명단 추가. 크루원만 조회 가능(403) |
+| 챌린지 | `GET /crews/{id}/challenges/current`, `POST /crews/{id}/challenges` | `achieved_km`, `progress_pct`, `is_completed` 실시간 계산. 생성 시 `starts_at`/`ends_at`은 **ISO 8601 + 타임존 필수** (아래 노트) |
+| **공지 목록/상세** | `GET /crews/{id}/announcements?limit&offset`, `GET .../{announcement_id}` | `title`, `body`, `run_at`, `place_name/lat/lng`, `rsvp_open`, `rsvp{going,not_going,maybe}`, `my_rsvp`; 상세엔 `going_members[]` 명단 추가. 크루원만 조회 가능(403). 작성 시 `run_at`/`rsvp_closes_at`은 **ISO 8601 + 타임존 필수** |
+
+> **⚠️ 날짜·시각 필드는 타임존 필수 (프론트 필독)**: 챌린지 `starts_at`/`ends_at`, 공지 `run_at`/`rsvp_closes_at`은 **반드시 타임존 오프셋을 포함한 ISO 8601**로 보내세요 — `2026-07-07T20:00:00+09:00`(KST) 또는 `...Z`(UTC). **타임존 없는 `2026-07-07T20:00:00`은 422**로 거부됩니다 (서버가 UTC로 오해석하면 KST 의도가 9시간 밀리기 때문). 에러 메시지에 "timezone" 안내가 포함됩니다.
 | 공지 작성/수정/삭제 | `POST/PATCH/DELETE /crews/{id}/announcements...` | 크루장만. 작성 시 크루원 전체 알림, 수정은 알림 없음 |
 | **참석 투표** | `PUT /crews/{id}/announcements/{aid}/rsvp` | body: `{"status": "going"\|"not_going"\|"maybe"}` → 204. 재투표=덮어쓰기 |
 | 알림 | `GET /notifications`, `GET /notifications/unread-count`, `PATCH /notifications/read-all`, `PATCH /notifications/{id}/read` | `type` 8종: `route_liked`, `route_commented`, `crew_joined`, `challenge_completed`, `user_followed`, `crew_announcement`, `join_requested`(크루장에게→신청 목록으로 딥링크), `join_approved`(신청자에게→크루로 딥링크) (+`actor_nickname`, `target_id/target_type`) |
