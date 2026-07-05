@@ -426,12 +426,50 @@ class PeriodStats(BaseModel):
     delta_distance_km: Optional[float] = None
 
 
+class RecordEntry(BaseModel):
+    """하나의 개인 최고 기록(PB)과 그것을 달성한 run.
+
+    value의 단위는 종류별: best_pace → sec/km, best_5k·longest_duration → sec,
+    longest_distance → km.
+    """
+
+    value: float
+    run_id: str
+    ran_at: str = Field(..., description="달성 run의 시각 (표기용, e.g. '5월 28일').")
+    distance_km: float = Field(..., description="달성 run의 거리 (표기용).")
+
+
+class RecordsBlock(BaseModel):
+    """전 기간 개인 최고 기록 4종 — 자격 run이 없으면 항목별 null."""
+
+    best_pace: Optional[RecordEntry] = Field(
+        None, description="최고 페이스 (sec/km). 1km 이상 run만 자격."
+    )
+    best_5k: Optional[RecordEntry] = Field(
+        None, description="최고 5K (sec, 평균 페이스 환산). 5km 이상 run만 자격."
+    )
+    longest_distance: Optional[RecordEntry] = Field(None, description="최장 거리 (km).")
+    longest_duration: Optional[RecordEntry] = Field(None, description="최장 시간 (sec).")
+
+
+class NewRecord(BaseModel):
+    """run 저장으로 경신된 PB 하나 (축하 모달용 이전/현재/향상률)."""
+
+    type: Literal["best_pace", "best_5k", "longest_distance", "longest_duration"]
+    previous: float = Field(..., description="종전 기록 (단위는 type별, RecordEntry 참고).")
+    current: float = Field(..., description="이번 run의 기록.")
+    improvement_pct: float = Field(..., description="향상률 % (시안 '4.5% 향상' 칩용).")
+
+
 class StatsResponse(BaseModel):
     """Personal running statistics: this week, this month, all time."""
 
     week: PeriodStats
     month: PeriodStats
     all_time: PeriodStats
+    records: RecordsBlock = Field(
+        default_factory=RecordsBlock, description="전 기간 개인 최고 기록 (PB) 4종."
+    )
 
 
 class DailyRunStat(BaseModel):
@@ -518,6 +556,11 @@ class RunResponse(BaseModel):
     liked: Optional[bool] = Field(None, description="True=좋았어요, False=별로예요.")
     feedback_tags: list[str] = Field(default_factory=list)
     feedback_at: Optional[str] = Field(None, description="When feedback was submitted.")
+    # PB 경신 (POST /runs 응답에서만 채워짐 — 비어있지 않으면 축하 모달 대상)
+    new_records: list[NewRecord] = Field(
+        default_factory=list,
+        description="이번 저장으로 경신된 PB 목록. 첫 run(이전 기록 없음)은 항상 [].",
+    )
 
 
 class FeedbackRequest(BaseModel):

@@ -58,7 +58,7 @@ fetch(`${API_BASE}/api/me/profile`, {
 
 | 데이터 | 메서드/경로 | 주요 응답 필드 |
 |---|---|---|
-| 주간 통계 (이번 주 Nkm) | `GET /me/stats` | `week.total_distance_km`, `week.run_count`, `week.delta_distance_km` (지난주 대비), `month`, `all_time` |
+| 주간 통계 (이번 주 Nkm) | `GET /me/stats` | `week.total_distance_km`, `week.run_count`, `week.delta_distance_km` (지난주 대비), `month`, `all_time`, `records`(PB 4종, 아래 참고) |
 | 날씨 + 러닝지수 | `GET /weather?lat&lng` | `temp_c`, `feels_like_c`, `condition`(한글), `pm25/pm10.{value,grade}`, `running_index.{score,label,comment,personalized}` — pm은 부분 장애 시 null 가능. **`personalized: true`면 comment가 내 weather 설정 기준**(예: "설정하신 미세먼지 기준(PM10 50)을 넘었어요"). score/label은 항상 공용 기준 |
 | AI 코스 생성 | `POST /routes/generate` | body: `start{lat,lng}`, `target_distance_km?`, `terrain?`, `scenic?`, `avoid_hills?`, `prefer_loop?`, `surface?`, `pitstop_keyword?`, `notes?` → `summary`, `waypoints[]`, `polyline[]`. **free는 주 3회, 초과 시 429** (§5). 우선순위는 표 아래 참고 |
 | 남은 생성 횟수 표시 | `GET /me/quota` | `tier`, `ai_generation.{used,limit,remaining,reset_at,unlimited}` |
@@ -72,10 +72,25 @@ fetch(`${API_BASE}/api/me/profile`, {
 | 데이터 | 메서드/경로 | 주요 응답 필드 |
 |---|---|---|
 | 월 선택 통계 + 캘린더 | `GET /me/stats/monthly?year&month` | `stats`(합계·평균페이스·전월 대비 delta), `days[{date,distance_km,run_count}]` — 뛴 날만 옴, 캘린더 점 찍기용 (KST 기준) |
-| 러닝 기록 저장 | `POST /runs` | body: `distance_km`, `duration_sec`, `route_id?`, `avg_pace_sec_per_km?`, `notes?` |
+| 러닝 기록 저장 | `POST /runs` | body: `distance_km`, `duration_sec`, `route_id?`, `avg_pace_sec_per_km?`, `notes?`. 응답에 `new_records[]` — **비어있지 않으면 "새로운 기록 경신!" 축하 모달을 띄우면 됩니다** (`{type, previous, current, improvement_pct}` — 이전/현재 비교 카드 + "N% 향상" 칩 그대로). 첫 run은 항상 `[]` |
 | 기록 목록 | `GET /runs?limit&route_id?` | `RunResponse[]` 최신순 |
 | 기록 단건 | `GET /runs/{run_id}` | 본인 것만, 아니면 404 |
 | 2탭 피드백 | `PATCH /runs/{run_id}/feedback` | body: `liked`(bool), `tags[]` (허용 태그는 Swagger의 FeedbackTag) |
+
+> **개인 최고 기록 (PB)** — `GET /me/stats`의 `records` 블록 (프로필 헤더 "최고 페이스", 기록 화면용):
+>
+> ```jsonc
+> "records": {                     // 각 항목은 자격 run이 없으면 null
+>   "best_pace":        { "value": 286,  "run_id": "…", "ran_at": "…", "distance_km": 5.2 },  // sec/km, 1km 이상 run만
+>   "best_5k":          { "value": 1478, "run_id": "…", "ran_at": "…", "distance_km": 6.1 },  // sec, 5km 이상 run의 평균 페이스 환산
+>   "longest_distance": { "value": 10.0, "run_id": "…", "ran_at": "…", "distance_km": 10.0 }, // km
+>   "longest_duration": { "value": 3165, "run_id": "…", "ran_at": "…", "distance_km": 8.4 }   // sec
+> }
+> ```
+>
+> `value` 단위는 종류별(주석 참고), `ran_at`·`distance_km`는 "5월 28일 · 6.1km" 같은 서브 표기용. 동률이면 먼저 달성한 run이 유지됩니다. PB는 저장 테이블 없이 조회 시 계산이라 run 삭제·수정에도 항상 정확합니다.
+>
+> **배지 노트**: 별도 배지 시스템은 없습니다. 시안의 "디지털 배지"(챌린지 완료 리워드)는 완료된 챌린지 데이터(`challenge_completed` 알림 + 챌린지 목록)로 그리면 됩니다 — 배지 컬렉션 화면이 시안에 추가되면 백엔드 후속 예정.
 
 ### 커뮤니티 / 소셜
 
@@ -118,7 +133,7 @@ fetch(`${API_BASE}/api/me/profile`, {
 |---|---|---|
 | 내 정보 | `GET /me` (auth 확인), `GET /me/profile` | `nickname`, `avatar_url`, `bio`, `tier` |
 | 프로필 생성/수정 | `PATCH /me/profile` | `nickname`(2~20자, 중복 시 409). **tier는 보내도 무시됨** (관리자/IAP 전용) |
-| 누적 통계 | `GET /me/stats` | `all_time.{total_distance_km,run_count,avg_pace_sec_per_km}` |
+| 누적 통계 | `GET /me/stats` | `all_time.{total_distance_km,run_count,avg_pace_sec_per_km}` — 프로필 헤더 "최고 페이스"는 같은 응답의 `records.best_pace.value`(sec/km) 사용 |
 | 티어/쿼터 | `GET /me/quota` | premium이면 `ai_generation.unlimited=true` |
 | **설정 조회** | `GET /me/settings` | 항상 **기본값이 머지된 완전한 객체** — null 체크 없이 바로 바인딩 가능. 프로필 미생성 유저도 기본값 반환 |
 | **설정 저장** | `PATCH /me/settings` | **보낸 키만 deep merge** (예: `{"run":{"haptics":false}}`는 haptics만 변경), 멱등, 응답은 머지 후 전체 객체. 화이트리스트 밖 키/범위 밖 값 → **422** (저장 안 됨). 프로필 미생성 404 |

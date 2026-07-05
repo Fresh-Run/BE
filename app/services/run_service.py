@@ -15,7 +15,10 @@ from app.models.schemas import (
     FeedbackTag,
     KudosUserItem,
     MonthlyStatsResponse,
+    NewRecord,
     PeriodStats,
+    RecordEntry,
+    RecordsBlock,
     RunRequest,
     RunResponse,
     StatsResponse,
@@ -45,6 +48,16 @@ async def create_run(req: RunRequest, user_id: str | None = None) -> RunResponse
     anonymous requests. supabase-py is synchronous, so the blocking call
     runs in a worker thread.
     """
+    # PB 경신 감지 — 저장 "전" 스냅샷과 비교해야 자기 자신이 끼지 않는다.
+    # Best-effort: 감지 실패가 run 저장을 막으면 안 됨 (new_records=[]로 진행).
+    new_records: list[NewRecord] = []
+    if user_id:
+        try:
+            prev_rows = await _fetch_runs_range(user_id, None, None)
+            new_records = _detect_new_records(prev_rows, req)
+        except Exception:  # noqa: BLE001 - celebration is a bonus, not a gate
+            logger.warning("PB 경신 감지 실패 — new_records 없이 저장 진행", exc_info=True)
+
     record = {
         "user_id": user_id,
         "route_id": req.route_id,
@@ -64,7 +77,7 @@ async def create_run(req: RunRequest, user_id: str | None = None) -> RunResponse
 
     saved = result.data[0]
     logger.info("Saved run to Supabase (id=%s).", saved.get("id"))
-    run = RunResponse(**saved)
+    run = RunResponse(**saved, new_records=new_records)
 
     if user_id:
         try:
@@ -99,16 +112,105 @@ def _month_boundaries_utc() -> tuple[str, str]:
     )
 
 
+# ── personal bests (PB) ──────────────────────────────────────────────────────
+# PB 테이블 없음 — 조회 시 runs에서 집계 (개인당 수백 개 규모, 항상 정확).
+
+_MIN_PACE_DISTANCE_KM = 1.0  # 최고 페이스 자격: 100m 스퍼트 방지
+_FIVE_K_KM = 5.0
+
+
+def _run_pace(row: dict) -> float | None:
+    """sec/km — 저장된 avg_pace_sec_per_km, 없으면 duration/distance 파생."""
+    pace = row.get("avg_pace_sec_per_km")
+    if pace:
+        return float(pace)
+    dist = row.get("distance_km") or 0
+    if dist <= 0:
+        return None
+    return float(round(row["duration_sec"] / dist))
+
+
+def _compute_records(rows: list[dict]) -> RecordsBlock:
+    """All-time PB 4종 (rows: id, ran_at, distance_km, duration_sec, avg_pace_sec_per_km).
+
+    ran_at 오름차순으로 순회하며 strict 비교로만 갱신 → 동률이면 먼저
+    달성한 run이 유지된다.
+    """
+    best = RecordsBlock()
+    for r in sorted(rows, key=lambda r: r["ran_at"]):
+        dist, dur = r["distance_km"], r["duration_sec"]
+
+        def _entry(value: float) -> RecordEntry:
+            return RecordEntry(value=value, run_id=r["id"], ran_at=r["ran_at"],
+                               distance_km=round(dist, 2))
+
+        pace = _run_pace(r)
+        if pace is not None and dist >= _MIN_PACE_DISTANCE_KM:
+            if best.best_pace is None or pace < best.best_pace.value:
+                best.best_pace = _entry(pace)
+        if dist >= _FIVE_K_KM:
+            t5k = round(dur * _FIVE_K_KM / dist)
+            if best.best_5k is None or t5k < best.best_5k.value:
+                best.best_5k = _entry(t5k)
+        if best.longest_distance is None or dist > best.longest_distance.value:
+            best.longest_distance = _entry(round(dist, 2))
+        if best.longest_duration is None or dur > best.longest_duration.value:
+            best.longest_duration = _entry(dur)
+    return best
+
+
+def _improvement_pct(previous: float, current: float, lower_is_better: bool) -> float:
+    delta = (previous - current) if lower_is_better else (current - previous)
+    return round(delta / previous * 100, 1)
+
+
+def _detect_new_records(prev_rows: list[dict], req: RunRequest) -> list[NewRecord]:
+    """저장 전 스냅샷(prev_rows) 대비 새 run(req)이 경신한 PB 목록.
+
+    "경신"은 종전 기록의 존재를 전제 — 첫 run(또는 그 종류의 첫 자격 run)은
+    빈 목록/미포함이라 축하 모달이 도배되지 않는다.
+    """
+    if not prev_rows:
+        return []
+    prev = _compute_records(prev_rows)
+    dist, dur = req.distance_km, req.duration_sec
+    pace = float(req.avg_pace_sec_per_km) if req.avg_pace_sec_per_km else float(round(dur / dist))
+
+    out: list[NewRecord] = []
+    if (prev.best_pace is not None and dist >= _MIN_PACE_DISTANCE_KM
+            and pace < prev.best_pace.value):
+        out.append(NewRecord(type="best_pace", previous=prev.best_pace.value, current=pace,
+                             improvement_pct=_improvement_pct(prev.best_pace.value, pace, True)))
+    if prev.best_5k is not None and dist >= _FIVE_K_KM:
+        t5k = round(dur * _FIVE_K_KM / dist)
+        if t5k < prev.best_5k.value:
+            out.append(NewRecord(type="best_5k", previous=prev.best_5k.value, current=t5k,
+                                 improvement_pct=_improvement_pct(prev.best_5k.value, t5k, True)))
+    if prev.longest_distance is not None and dist > prev.longest_distance.value:
+        out.append(NewRecord(
+            type="longest_distance", previous=prev.longest_distance.value, current=round(dist, 2),
+            improvement_pct=_improvement_pct(prev.longest_distance.value, dist, False)))
+    if prev.longest_duration is not None and dur > prev.longest_duration.value:
+        out.append(NewRecord(
+            type="longest_duration", previous=prev.longest_duration.value, current=dur,
+            improvement_pct=_improvement_pct(prev.longest_duration.value, dur, False)))
+    return out
+
+
 async def _fetch_runs_range(
     user_id: str, start: str | None, end: str | None
 ) -> list[dict]:
-    """Return distance_km + duration_sec rows for user_id within [start, end)."""
+    """Return run rows for user_id within [start, end).
+
+    id/ran_at/avg_pace는 PB 집계(_compute_records)용 — 통계 집계(_aggregate)는
+    distance_km/duration_sec만 쓴다.
+    """
     supabase = get_supabase_admin()
 
     def _q():
         q = (
             supabase.table("runs")
-            .select("distance_km, duration_sec")
+            .select("id, ran_at, distance_km, duration_sec, avg_pace_sec_per_km")
             .eq("user_id", user_id)
         )
         if start:
@@ -168,6 +270,8 @@ async def get_my_stats(user_id: str) -> StatsResponse:
         week=_aggregate(this_week, round(week_dist - last_week_dist, 2)),
         month=_aggregate(this_month, round(month_dist - last_month_dist, 2)),
         all_time=_aggregate(all_time, delta_distance_km=None),
+        # PB는 이미 읽은 all_time rows에서 계산 — 추가 쿼리 없음.
+        records=_compute_records(all_time),
     )
 
 
