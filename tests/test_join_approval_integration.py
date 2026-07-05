@@ -76,6 +76,9 @@ def run():
             for i, tok in enumerate(toks, start=1):
                 assert api(c, "PATCH", "/me/profile", tok,
                            json={"nickname": f"승인u{i}-{ts%100000}"}).status_code == 200
+            # u1이 크루 3개+ 생성 — 무료 1개 한도 게이트를 넘기 위해 premium 승격
+            c.patch(f"{_SB}/rest/v1/profiles", headers=_ADM,
+                    params={"user_id": f"eq.{uid1}"}, json={"tier": "premium"})
             def make_crew(body):
                 r = api(c, "POST", "/crews", tok1, json=body)
                 assert r.status_code in (200, 201), r.text[:200]

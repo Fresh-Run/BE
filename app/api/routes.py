@@ -856,7 +856,29 @@ async def create_crew(
     req: CrewCreate,
     user: CurrentUser = Depends(get_current_user),
 ) -> CrewResponse:
-    """Create a crew; the caller becomes its owner and first member."""
+    """Create a crew; the caller becomes its owner and first member.
+
+    Free tier may own FREE_CREW_LIMIT(=1) crews; premium is unlimited.
+    Deleting a crew or transferring ownership frees the slot again.
+    """
+    try:
+        await quota_service.ensure_crew_creation(user.user_id)
+    except quota_service.CrewLimitExceeded as exc:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "premium_required",
+                "message": (
+                    f"무료 플랜은 크루를 {exc.limit}개까지 만들 수 있어요. "
+                    "프리미엄으로 업그레이드하면 무제한이에요."
+                ),
+                "feature": "crew_create",
+                "limit": exc.limit,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Failed to check crew limit: {exc}")
+
     try:
         return await crew_service.create_crew(req, owner_id=user.user_id)
     except Exception as exc:  # noqa: BLE001

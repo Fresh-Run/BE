@@ -140,6 +140,9 @@ def run_tests() -> None:
             r = api(client, "PATCH", "/me/profile", tok2, json={"nickname": "테스트러너2"})
             if r.status_code != 200:
                 fail("set nickname test2", f"{r.status_code} {r.text}")
+            # u1이 크루 2개 생성 — 무료 1개 한도 게이트를 넘기 위해 premium 승격
+            client.patch(f"{SUPABASE_URL}/rest/v1/profiles", headers=ADMIN_HEADERS,
+                         params={"user_id": f"eq.{uid1}"}, json={"tier": "premium"})
             ok("테스트러너1 / 테스트러너2")
 
             # ── 4. Create all crews up front ──────────────────────────────

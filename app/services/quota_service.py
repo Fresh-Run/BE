@@ -22,6 +22,10 @@ logger = logging.getLogger(__name__)
 
 AI_WEEKLY_LIMIT = 3  # free-tier AI course generations per KST week
 
+# BM 결정(2026-07-06): 기획 원안 '크루 생성 프리미엄 전용'에서 '무료 1개
+# 맛보기'로 확정 — 출시 초기 콘텐츠 부트스트랩용. 추후 조정 가능.
+FREE_CREW_LIMIT = 1  # free 유저가 owner일 수 있는 크루 수
+
 
 class QuotaExceeded(Exception):
     """Free-tier weekly AI generation quota is used up."""
@@ -45,6 +49,34 @@ async def ensure_premium(user_id: str, feature: str) -> None:
     """Raise PremiumRequired unless the caller's tier is 'premium'."""
     if await get_tier(user_id) != "premium":
         raise PremiumRequired(feature)
+
+
+class CrewLimitExceeded(Exception):
+    """Free tier already owns FREE_CREW_LIMIT crews."""
+
+    def __init__(self, limit: int):
+        self.limit = limit
+        super().__init__("Free-tier crew creation limit reached")
+
+
+async def ensure_crew_creation(user_id: str) -> None:
+    """크루 생성 한도 게이트 — 전용(ensure_premium)이 아닌 카운트 한도.
+
+    free는 자기가 owner인 크루 FREE_CREW_LIMIT개까지, 프리미엄은 무제한.
+    count 기반이라 크루 삭제·소유권 위임으로 슬롯이 자연히 다시 빈다.
+    """
+    if await get_tier(user_id) == "premium":
+        return
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("crews")
+        .select("id", count="exact")
+        .eq("owner_id", user_id)
+        .limit(1)
+        .execute()
+    )
+    if (res.count or 0) >= FREE_CREW_LIMIT:
+        raise CrewLimitExceeded(FREE_CREW_LIMIT)
 
 
 def _reset_at_kst() -> str:

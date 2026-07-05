@@ -112,6 +112,9 @@ def run() -> None:
                 r = api(c, "PATCH", "/me/profile", tok, json={"nickname": nick})
                 if r.status_code != 200:
                     fail("set nickname", r.text[:200])
+            # u1이 크루 2개 생성 — 무료 1개 한도 게이트를 넘기 위해 premium 승격
+            c.patch(f"{_SUPABASE_URL}/rest/v1/profiles", headers=_ADMIN_H,
+                    params={"user_id": f"eq.{uid1}"}, json={"tier": "premium"})
             ok(f"uid1={uid1[:8]}… uid2={uid2[:8]}… 닉네임 설정 완료")
 
             # ── 2. 크루 생성 + test2 가입 ─────────────────────────────────
