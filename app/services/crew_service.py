@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
@@ -502,6 +503,82 @@ async def list_join_requests(
         JoinRequestItem(**row, nickname=nicknames.get(row["user_id"]))
         for row in rows
     ]
+
+
+# 혼동 문자(I/O/0/1) 제외 32문자셋 — 8자 = 32^8 ≈ 1.1조 공간 (무차별 대입 비현실적)
+_INVITE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+
+def _gen_invite_code() -> str:
+    return "".join(secrets.choice(_INVITE_ALPHABET) for _ in range(8))
+
+
+async def get_invite_code(crew_id: str, caller_id: str) -> str | None:
+    """Return the crew's current invite code (owner only); None if not issued."""
+    crew = await ensure_owner(crew_id, caller_id, "owner_id, invite_code")
+    return crew.get("invite_code")
+
+
+async def regenerate_invite_code(crew_id: str, caller_id: str) -> str:
+    """Issue a new invite code (owner only). The previous code dies with the
+    UPDATE — regeneration is the leak response. Retries on the ~impossible
+    UNIQUE collision. Code values are never logged."""
+    await ensure_owner(crew_id, caller_id)
+    supabase = get_supabase_admin()
+    for _ in range(5):
+        code = _gen_invite_code()
+        try:
+            await asyncio.to_thread(
+                lambda code=code: supabase.table("crews")
+                .update({"invite_code": code})
+                .eq("id", crew_id)
+                .execute()
+            )
+            return code
+        except APIError as exc:
+            if exc.code != _UNIQUE_VIOLATION:
+                raise
+    raise RuntimeError("invite code collision retries exhausted")
+
+
+async def _crew_by_code(code: str) -> dict:
+    """Find a crew by invite code (normalized). Invalid → CrewNotFound (단일 404)."""
+    normalized = code.strip().upper()
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("crews")
+        .select("*")
+        .eq("invite_code", normalized)
+        .limit(1)
+        .execute()
+    )
+    if not res.data:
+        raise CrewNotFound()
+    return res.data[0]
+
+
+async def preview_by_code(code: str) -> CrewResponse:
+    """Crew preview for an invite code — 가입 확정 전에 어느 크루인지 확인."""
+    crew = await _crew_by_code(code)
+    counts = await _member_counts([crew["id"]])
+    return await _one_response(crew, counts.get(crew["id"], 0))
+
+
+async def join_by_code(code: str, user_id: str) -> CrewResponse:
+    """Join via invite code — 초대 = 사전 승인.
+
+    Skips both is_public and join_policy gates on purpose: the code is the
+    only door into private crews, and invited users bypass approval. Reuses
+    _admit_member (capacity 409, idempotent insert, crew_joined notification)
+    and clears any leftover pending join request.
+    """
+    crew = await _crew_by_code(code)
+    if await _is_member(crew["id"], user_id):
+        raise AlreadyMember()
+
+    current = await _admit_member(crew, user_id)
+    await _clear_my_pending(crew["id"], user_id)
+    return await _one_response(crew, current)
 
 
 async def list_crew_runs(

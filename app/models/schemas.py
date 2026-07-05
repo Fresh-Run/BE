@@ -568,6 +568,18 @@ class KudosUserItem(BaseModel):
     created_at: str
 
 
+class InviteCodeResponse(BaseModel):
+    """A crew's invite code (owner only)."""
+
+    code: str = Field(..., description="8자 초대 코드 (I/O/0/1 제외 대문자+숫자).")
+
+
+class JoinByCodeRequest(BaseModel):
+    """Join a crew by invite code. Normalized server-side (strip + upper)."""
+
+    code: str = Field(..., min_length=6, max_length=12)
+
+
 class JoinRequestResponse(BaseModel):
     """One join request (returned to the requester; 202 body on approval crews)."""
 

@@ -49,7 +49,7 @@ _ADM = {"apikey": _SVC, "Authorization": f"Bearer {_SVC}", "Content-Type": "appl
 
 made = {"users": 0, "profiles": 0, "crews": 0, "announcements": 0, "rsvps": 0,
         "join_requests": 0, "runs": 0, "routes": 0, "likes": 0, "comments": 0,
-        "bookmarks": 0, "follows": 0, "kudos": 0}
+        "bookmarks": 0, "follows": 0, "kudos": 0, "invite_codes": 0}
 
 
 def log(m): print(f"  {m}")
@@ -216,7 +216,12 @@ def main():
         # demo5는 pending으로 남김 (크루장 신청 목록 화면용)
         r = api(c, "POST", f"/crews/{CREW}/join", users["demo5"][1])
         if r.status_code == 202: made["join_requests"] += 1
-        log(f"크루 준비 (멤버 6명 + demo5 pending)")
+        # 초대 코드: 없을 때만 발급 (재실행 시 기존 코드 유지 — 값은 출력 안 함)
+        if api(c, "GET", f"/crews/{CREW}/invite", t1).status_code == 404:
+            r = api(c, "POST", f"/crews/{CREW}/invite", t1)
+            if r.status_code != 201: die("초대 코드 발급 실패", r.text)
+            made["invite_codes"] += 1
+        log(f"크루 준비 (멤버 6명 + demo5 pending + 초대 코드 발급됨)")
 
         # ── 3. 공지 2개 + RSVP ───────────────────────────────────────────
         section("3. 공지 + 참석 투표")

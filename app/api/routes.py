@@ -27,6 +27,8 @@ from app.models.schemas import (
     CurrentUser,
     FeedbackRequest,
     FollowUserItem,
+    InviteCodeResponse,
+    JoinByCodeRequest,
     JoinRequestItem,
     JoinRequestResponse,
     KudosUserItem,
@@ -809,6 +811,96 @@ async def my_crews(
         return await crew_service.list_my_crews(user.user_id)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"Failed to list my crews: {exc}")
+
+
+# NOTE: /crews/preview-by-code and /crews/join-by-code are FIXED paths and
+# must stay declared BEFORE /crews/{crew_id} (else {crew_id} swallows them).
+
+
+@router.get(
+    "/crews/preview-by-code",
+    response_model=CrewResponse,
+    summary="초대 코드로 크루 미리보기 (가입 확정 전 확인)",
+)
+async def preview_crew_by_code(
+    code: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> CrewResponse:
+    """Which crew does this code open? Works for private crews too."""
+    try:
+        return await crew_service.preview_by_code(code)
+    except crew_service.CrewNotFound:
+        raise HTTPException(status_code=404, detail="Invalid invite code")
+    except Exception:  # noqa: BLE001 — 코드 값이 에러에 실리지 않게 고정 메시지
+        raise HTTPException(status_code=502, detail="Failed to preview invite code")
+
+
+@router.post(
+    "/crews/join-by-code",
+    response_model=CrewResponse,
+    summary="초대 코드로 가입 (join_policy·비공개 무관 즉시 가입)",
+)
+async def join_crew_by_code(
+    req: JoinByCodeRequest,
+    user: CurrentUser = Depends(get_current_user),
+) -> CrewResponse:
+    """Invite = pre-approval: joins immediately, even for private/approval
+    crews. Clears any leftover pending join request."""
+    try:
+        return await crew_service.join_by_code(req.code, user.user_id)
+    except crew_service.CrewNotFound:
+        raise HTTPException(status_code=404, detail="Invalid invite code")
+    except crew_service.AlreadyMember:
+        raise HTTPException(status_code=409, detail="Already a member")
+    except crew_service.CrewFull:
+        raise HTTPException(status_code=409, detail="Crew is full")
+    except Exception:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail="Failed to join by invite code")
+
+
+@router.get(
+    "/crews/{crew_id}/invite",
+    response_model=InviteCodeResponse,
+    summary="초대 코드 조회 (크루장; 미발급이면 404)",
+)
+async def get_invite_code(
+    crew_id: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> InviteCodeResponse:
+    """Current invite code. 404 until first issued (frontend then POSTs)."""
+    try:
+        code = await crew_service.get_invite_code(crew_id, caller_id=user.user_id)
+    except crew_service.CrewNotFound:
+        raise HTTPException(status_code=404, detail="Crew not found")
+    except crew_service.NotOwner:
+        raise HTTPException(status_code=403, detail="Only the owner can view the invite code")
+    except Exception:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail="Failed to fetch invite code")
+    if code is None:
+        raise HTTPException(status_code=404, detail="No invite code issued yet")
+    return InviteCodeResponse(code=code)
+
+
+@router.post(
+    "/crews/{crew_id}/invite",
+    response_model=InviteCodeResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="초대 코드 생성/재생성 (크루장; 이전 코드 즉시 무효)",
+)
+async def regenerate_invite_code(
+    crew_id: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> InviteCodeResponse:
+    """Issue a fresh code (leak response: old code stops working)."""
+    try:
+        code = await crew_service.regenerate_invite_code(crew_id, caller_id=user.user_id)
+        return InviteCodeResponse(code=code)
+    except crew_service.CrewNotFound:
+        raise HTTPException(status_code=404, detail="Crew not found")
+    except crew_service.NotOwner:
+        raise HTTPException(status_code=403, detail="Only the owner can issue invite codes")
+    except Exception:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail="Failed to issue invite code")
 
 
 @router.get(

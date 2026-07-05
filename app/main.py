@@ -21,6 +21,9 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
+# httpx logs every request URL at INFO — that would write secrets embedded in
+# query strings (crew invite codes, the OpenWeather appid) into server logs.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 app = FastAPI(
     title=settings.app_name,
