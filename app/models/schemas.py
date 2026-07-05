@@ -555,6 +555,71 @@ class MonthlyStatsResponse(BaseModel):
     )
 
 
+class WeekStat(BaseModel):
+    """월 내 한 주(KST 월요일 시작 캘린더 주)의 러닝 합계."""
+
+    index: int = Field(..., description="월 내 주차 (1부터, 캘린더 그리드 기준).")
+    distance_km: float
+    run_count: int
+    avg_pace_sec_per_km: Optional[int] = None
+
+
+class MonthRecordEntry(BaseModel):
+    """해당 월의 종목별 최고 기록 (시안 '이번 달 개인 기록' 카드)."""
+
+    type: Literal["best_pace", "best_5k", "longest_distance", "longest_duration"]
+    value: float = Field(..., description="단위는 type별 (RecordEntry와 동일).")
+    ran_at: str
+    distance_km: float
+    all_time_best: bool = Field(
+        ..., description="True면 이 달에 올타임 기록을 경신 (시안 up 화살표)."
+    )
+
+
+class InsightPattern(BaseModel):
+    """러닝 패턴 (시안 '러닝 패턴' 카드) — 전부 KST 기준."""
+
+    weekday_counts: list[int] = Field(..., description="월~일 7개, run 수.")
+    time_of_day: Optional[Literal["dawn", "morning", "day", "evening", "night"]] = Field(
+        None, description="최빈 시간대 (새벽 4-6 / 아침 6-9 / 낮 9-17 / 저녁 17-21 / 밤 21-4)."
+    )
+    time_of_day_pct: Optional[int] = Field(None, description="최빈 시간대 비율 %.")
+    longest_streak_days: int = Field(0, description="월 내 최장 연속 러닝 일수.")
+
+
+class InsightPlanItem(BaseModel):
+    """다음 달 추천 플랜 한 슬롯 — slot 고정 3종 (프론트 아이콘 매핑용)."""
+
+    slot: Literal["goal", "focus", "challenge"]
+    title: str
+    body: str
+
+
+class InsightAi(BaseModel):
+    """Gemini 생성 블록 — monthly_insights에 캐시됨."""
+
+    coaching: str = Field(..., description="AI 코칭 요약 (3~5문장).")
+    plan: list[InsightPlanItem]
+    generated_at: str
+    from_cache: bool = False
+
+
+class MonthlyInsightResponse(BaseModel):
+    """GET /me/insights/monthly — 프리미엄 월간 리포트.
+
+    수치 블록은 매 요청 계산(항상 최신), ai 블록만 캐시.
+    해당 월 run이 0회면 ai는 null (Gemini 미호출).
+    """
+
+    year: int
+    month: int
+    stats: PeriodStats
+    weeks: list[WeekStat]
+    records: list[MonthRecordEntry]
+    pattern: InsightPattern
+    ai: Optional[InsightAi] = None
+
+
 class NotificationResponse(BaseModel):
     """One notification row returned to the caller."""
 

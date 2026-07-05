@@ -35,6 +35,7 @@ from app.models.schemas import (
     JoinRequestItem,
     JoinRequestResponse,
     KudosUserItem,
+    MonthlyInsightResponse,
     MonthlyStatsResponse,
     MyJoinRequestItem,
     NotificationResponse,
@@ -61,6 +62,7 @@ from app.services import (
     announcement_service,
     coach_service,
     crew_service,
+    insight_service,
     follow_service,
     map_service,
     notification_service,
@@ -1158,6 +1160,48 @@ async def join_crew(
     if isinstance(result, JoinRequestResponse):
         response.status_code = status.HTTP_202_ACCEPTED
     return result
+
+
+@router.get(
+    "/me/insights/monthly",
+    response_model=MonthlyInsightResponse,
+    summary="AI 월간 인사이트 (프리미엄 월간 리포트)",
+)
+async def get_monthly_insight(
+    year: int = Query(..., ge=2000, le=2100),
+    month: int = Query(..., ge=1, le=12),
+    user: CurrentUser = Depends(get_current_user),
+) -> MonthlyInsightResponse:
+    """Premium monthly report: fresh stats blocks + cached AI coaching text.
+
+    수치 블록은 매 요청 계산, ai 블록만 캐시(이번 달은 러닝할 때만 재생성).
+    run 0회 달은 ai=null (Gemini 미호출). free는 403 premium_required.
+    """
+    try:
+        await quota_service.ensure_premium(user.user_id, "monthly_insight")
+    except quota_service.PremiumRequired:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "premium_required",
+                "message": "AI 월간 인사이트는 프리미엄 전용 기능이에요.",
+                "feature": "monthly_insight",
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Failed to check tier: {exc}")
+
+    try:
+        return await insight_service.get_monthly_insight(user.user_id, year, month)
+    except Exception:  # noqa: BLE001
+        logger.warning("월간 인사이트 생성 실패", exc_info=True)
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error": "insight_failed",
+                "message": "월간 인사이트 생성에 실패했어요. 잠시 후 다시 시도해 주세요.",
+            },
+        )
 
 
 @router.get(

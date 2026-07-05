@@ -87,11 +87,33 @@ fetch(`${API_BASE}/api/me/profile`, {
 
 | 데이터 | 메서드/경로 | 주요 응답 필드 |
 |---|---|---|
-| 월 선택 통계 + 캘린더 | `GET /me/stats/monthly?year&month` | `stats`(합계·평균페이스·전월 대비 delta), `days[{date,distance_km,run_count}]` — 뛴 날만 옴, 캘린더 점 찍기용 (KST 기준) |
+| 월 선택 통계 + 캘린더 | `GET /me/stats/monthly?year&month` | `stats`(합계·평균페이스·전월 대비 delta), `days[{date,distance_km,run_count}]` — 뛴 날만 옴, 캘린더 점 찍기용 (KST 기준). **무료** |
+| **AI 월간 인사이트 (프리미엄)** | `GET /me/insights/monthly?year&month` | 프리미엄 월간 리포트 화면 전체 데이터. free는 **403 `premium_required`**(§5), month 1~12 외 422. 스키마는 표 아래 참고 |
 | 러닝 기록 저장 | `POST /runs` | body: `distance_km`, `duration_sec`, `route_id?`, `avg_pace_sec_per_km?`, `notes?`. 응답에 `new_records[]` — **비어있지 않으면 "새로운 기록 경신!" 축하 모달을 띄우면 됩니다** (`{type, previous, current, improvement_pct}` — 이전/현재 비교 카드 + "N% 향상" 칩 그대로). 첫 run은 항상 `[]` |
 | 기록 목록 | `GET /runs?limit&route_id?` | `RunResponse[]` 최신순 |
 | 기록 단건 | `GET /runs/{run_id}` | 본인 것만, 아니면 404 |
 | 2탭 피드백 | `PATCH /runs/{run_id}/feedback` | body: `liked`(bool), `tags[]` (허용 태그는 Swagger의 FeedbackTag) |
+
+> **AI 월간 인사이트 응답** (`GET /me/insights/monthly`):
+>
+> ```jsonc
+> {
+>   "year": 2026, "month": 6,
+>   "stats": { /* PeriodStats — 합계·평균페이스·전월 delta */ },
+>   "weeks": [ { "index": 1, "distance_km": 8.2, "run_count": 2, "avg_pace_sec_per_km": 326 } ],  // KST 월요일 주차, 빈 주 포함 (차트용)
+>   "records": [ { "type": "best_pace", "value": 286, "ran_at": "…", "distance_km": 5.2,
+>                  "all_time_best": true } ],   // 이번 달 개인 기록 — all_time_best=true가 시안의 up 화살표
+>   "pattern": { "weekday_counts": [1,3,1,2,1,3,1],          // 월~일
+>                "time_of_day": "morning", "time_of_day_pct": 58,  // dawn|morning|day|evening|night
+>                "longest_streak_days": 5 },
+>   "ai": { "coaching": "…(3~5문장)", "generated_at": "…", "from_cache": true,
+>           "plan": [ { "slot": "goal", "title": "7월 목표", "body": "…" },
+>                     { "slot": "focus", "title": "…", "body": "…" },
+>                     { "slot": "challenge", "title": "…", "body": "…" } ] }  // slot → 아이콘: goal=target, focus=flame, challenge=trending
+> }
+> ```
+>
+> 수치 블록은 매 요청 최신 계산, `ai`만 캐시(지난달 영구, 이번 달은 러닝할 때만 갱신). **해당 월 run 0회면 `ai: null`** — 빈 상태 UI로 처리. **시안 중 심박 존·평균/최대 심박·누적 고도·칼로리·지형 분석·월 목표 링은 백엔드 데이터가 없어 미제공** — 헬스킷 등 로컬 데이터로 채우거나 숨기고, 월 목표는 목표 설정 기능 후속 시 추가 예정.
 
 > **개인 최고 기록 (PB)** — `GET /me/stats`의 `records` 블록 (프로필 헤더 "최고 페이스", 기록 화면용):
 >

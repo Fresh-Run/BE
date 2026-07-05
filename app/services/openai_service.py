@@ -364,3 +364,130 @@ async def generate_coach_script(
 
     arguments = json.loads(tool_calls[0].function.arguments)
     return [CoachCue.model_validate(c) for c in arguments.get("cues", [])]
+
+
+# ── AI 월간 인사이트 ───────────────────────────────────────────────────────────
+
+INSIGHT_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "build_monthly_insight",
+        "description": (
+            "Return a Korean monthly running insight: a coaching summary "
+            "paragraph plus a 3-slot plan for next month."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "coaching": {
+                    "type": "string",
+                    "description": "코칭 요약 문단 (한국어 3~5문장).",
+                },
+                "plan": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "slot": {
+                                "type": "string",
+                                "enum": ["goal", "focus", "challenge"],
+                            },
+                            "title": {"type": "string"},
+                            "body": {"type": "string"},
+                        },
+                        "required": ["slot", "title", "body"],
+                    },
+                },
+            },
+            "required": ["coaching", "plan"],
+        },
+    },
+}
+
+_INSIGHT_SYSTEM = (
+    "당신은 러닝 데이터를 분석해 월간 리포트를 쓰는 한국어 코치입니다. "
+    "규칙: ① 의학적 조언 금지 — 심박수, 건강 상태 진단, 부상·질병 관련 지시를 "
+    "절대 하지 않습니다. ② 제공된 수치만 인용합니다 — 입력에 없는 데이터"
+    "(심박, 고도, 칼로리 등)를 지어내지 않습니다. ③ coaching은 3~5문장, 담백하게 "
+    "격려하되 과장하지 않습니다. ④ plan은 goal(다음 달 목표)·focus(집중 포인트)·"
+    "challenge(다음 도전) 세 슬롯을 각 1개씩, 이번 달 데이터에 근거해 제안합니다. "
+    "⑤ 반드시 build_monthly_insight 함수를 호출해 응답합니다."
+)
+
+
+def _pace_str(sec: int | None) -> str:
+    if not sec:
+        return "기록 없음"
+    return f"{sec // 60}분 {sec % 60}초/km"
+
+
+def _build_insight_prompt(
+    year: int,
+    month: int,
+    total_distance_km: float,
+    run_count: int,
+    avg_pace_sec_per_km: int | None,
+    delta_distance_km: float | None,
+    weeks: list[dict],
+    records: list[dict],
+    pattern: dict,
+) -> str:
+    week_lines = "\n".join(
+        f"  {w['index']}주차: {w['distance_km']}km ({w['run_count']}회, "
+        f"평균 {_pace_str(w.get('avg_pace_sec_per_km'))})"
+        for w in weeks if w["run_count"] > 0
+    ) or "  (주차별 데이터 없음)"
+
+    rec_names = {"best_pace": "최고 페이스", "best_5k": "최고 5K 환산",
+                 "longest_distance": "최장 거리", "longest_duration": "최장 시간"}
+    rec_lines = "\n".join(
+        f"  {rec_names[r['type']]}: {r['value']}"
+        + (" (이번 달 자기 기록 경신!)" if r["all_time_best"] else "")
+        for r in records
+    ) or "  (기록 없음)"
+
+    tod_names = {"dawn": "새벽", "morning": "아침", "day": "낮",
+                 "evening": "저녁", "night": "밤"}
+    tod = pattern.get("time_of_day")
+    delta_text = (
+        f"전월 대비 {'+' if delta_distance_km >= 0 else ''}{delta_distance_km}km"
+        if delta_distance_km is not None else "전월 데이터 없음"
+    )
+    next_month = 1 if month == 12 else month + 1
+
+    return (
+        f"{year}년 {month}월 러닝 데이터입니다. 이 수치만 근거로 월간 리포트를 만들어 주세요.\n"
+        f"- 총 {total_distance_km}km, {run_count}회 러닝, "
+        f"평균 페이스 {_pace_str(avg_pace_sec_per_km)}, {delta_text}\n"
+        f"- 주차별 추이:\n{week_lines}\n"
+        f"- 이번 달 최고 기록:\n{rec_lines}\n"
+        f"- 패턴: 주로 {tod_names.get(tod, '다양한')} 시간대"
+        f"({pattern.get('time_of_day_pct') or 0}%), "
+        f"최장 연속 {pattern.get('longest_streak_days', 0)}일 러닝\n"
+        f"plan의 goal 제목은 \"{next_month}월 목표\"로 해 주세요."
+    )
+
+
+async def generate_monthly_insight(**kwargs) -> dict:
+    """Generate the monthly insight via function calling.
+
+    Returns {"coaching": str, "plan": [{slot,title,body}, ...]} — slot 검증과
+    정렬은 insight_service의 몫.
+    """
+    messages = [
+        {"role": "system", "content": _INSIGHT_SYSTEM},
+        {"role": "user", "content": _build_insight_prompt(**kwargs)},
+    ]
+
+    response = await _client.chat.completions.create(
+        model=settings.openai_model,
+        messages=messages,
+        tools=[INSIGHT_TOOL],
+        tool_choice={"type": "function", "function": {"name": "build_monthly_insight"}},
+    )
+
+    tool_calls = response.choices[0].message.tool_calls
+    if not tool_calls:
+        raise ValueError("Model did not return a tool call for build_monthly_insight.")
+
+    return json.loads(tool_calls[0].function.arguments)
