@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
 from app.core.auth import get_current_user
 from app.models.schemas import (
+    ActivityFeedItem,
     AnnouncementCreate,
     AnnouncementDetailResponse,
     AnnouncementResponse,
@@ -28,6 +29,7 @@ from app.models.schemas import (
     FollowUserItem,
     JoinRequestItem,
     JoinRequestResponse,
+    KudosUserItem,
     MonthlyStatsResponse,
     NotificationResponse,
     Place,
@@ -298,6 +300,28 @@ async def following_feed(
         )
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"Failed to fetch feed: {exc}")
+
+
+@router.get(
+    "/feed/activities",
+    response_model=list[ActivityFeedItem],
+    summary="활동 피드 (팔로우한 유저 + 내 run, 최신 활동순)",
+)
+async def activity_feed(
+    limit: int = 20,
+    offset: int = 0,
+    user: CurrentUser = Depends(get_current_user),
+) -> list[ActivityFeedItem]:
+    """Runs by followed users plus my own, newest ran_at first, with kudos.
+
+    v1 home uses GET /feed (course feed); this is the v2 activity feed.
+    """
+    try:
+        return await run_service.list_activity_feed(
+            user.user_id, limit=limit, offset=offset
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Failed to fetch activity feed: {exc}")
 
 
 # NOTE: /routes/search and /routes/public must be declared BEFORE /routes/{route_id}.
@@ -667,6 +691,62 @@ async def get_run(
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
     return run
+
+
+@router.post(
+    "/runs/{run_id}/kudos",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="run에 kudos (멱등, 본인 run 불가)",
+)
+async def give_kudos(
+    run_id: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> None:
+    """Kudos a run. Double-tap safe; the owner is notified once."""
+    try:
+        await run_service.give_kudos(run_id, user_id=user.user_id)
+    except run_service.RunNotFound:
+        raise HTTPException(status_code=404, detail="Run not found")
+    except run_service.SelfKudos:
+        raise HTTPException(status_code=400, detail="Cannot kudos your own run")
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Failed to give kudos: {exc}")
+
+
+@router.delete(
+    "/runs/{run_id}/kudos",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="kudos 취소 (멱등)",
+)
+async def remove_kudos(
+    run_id: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> None:
+    """Remove a kudos. Safe to call when not kudoed (no-op)."""
+    try:
+        await run_service.remove_kudos(run_id, user_id=user.user_id)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Failed to remove kudos: {exc}")
+
+
+@router.get(
+    "/runs/{run_id}/kudos",
+    response_model=list[KudosUserItem],
+    summary="kudos 누른 사람 목록 (최신순)",
+)
+async def list_kudos_users(
+    run_id: str,
+    limit: int = 20,
+    offset: int = 0,
+    user: CurrentUser = Depends(get_current_user),
+) -> list[KudosUserItem]:
+    """Users who kudoed this run, newest first."""
+    try:
+        return await run_service.list_kudos_users(run_id, limit=limit, offset=offset)
+    except run_service.RunNotFound:
+        raise HTTPException(status_code=404, detail="Run not found")
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Failed to list kudos: {exc}")
 
 
 # --- Community: crews --------------------------------------------------------

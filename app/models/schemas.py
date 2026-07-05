@@ -546,6 +546,28 @@ class CrewRunItem(BaseModel):
     )
 
 
+class ActivityFeedItem(CrewRunItem):
+    """One run in the following activity feed (GET /feed/activities).
+
+    Inherits CrewRunItem's privacy guarantees (no notes/feedback fields,
+    route_summary only for public courses). comment_count is deliberately
+    absent — added later (non-breaking) when run comments ship.
+    """
+
+    is_mine: bool = Field(False, description="내 run이면 true (kudos 버튼 비활성용).")
+    kudos_count: int = 0
+    my_kudos: bool = Field(False, description="내가 이 run에 kudos를 눌렀는지.")
+
+
+class KudosUserItem(BaseModel):
+    """One user in a run's kudos list."""
+
+    user_id: str
+    nickname: Optional[str] = None
+    avatar_url: Optional[str] = None
+    created_at: str
+
+
 class JoinRequestResponse(BaseModel):
     """One join request (returned to the requester; 202 body on approval crews)."""
 

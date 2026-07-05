@@ -6,16 +6,31 @@ import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 
+from postgrest.exceptions import APIError
+
 from app.core.supabase_client import get_supabase_admin
 from app.models.schemas import (
+    ActivityFeedItem,
     DailyRunStat,
     FeedbackTag,
+    KudosUserItem,
     MonthlyStatsResponse,
     PeriodStats,
     RunRequest,
     RunResponse,
     StatsResponse,
 )
+from app.services import profile_service
+
+_UNIQUE_VIOLATION = "23505"
+
+
+class RunNotFound(Exception):
+    """No run with that id."""
+
+
+class SelfKudos(Exception):
+    """A user tried to kudos their own run (not allowed, Strava-style)."""
 
 logger = logging.getLogger(__name__)
 
@@ -230,6 +245,211 @@ async def get_monthly_stats(
         stats=_aggregate(rows, round(dist - prev_dist, 2)),
         days=sorted(daily.values(), key=lambda d: d.date),
     )
+
+
+async def _kudos_counts(run_ids: list[str]) -> dict[str, int]:
+    """Return {run_id: kudos_count} for the given ids (one IN query)."""
+    if not run_ids:
+        return {}
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("run_kudos")
+        .select("run_id")
+        .in_("run_id", run_ids)
+        .execute()
+    )
+    counts: dict[str, int] = {}
+    for row in res.data:
+        counts[row["run_id"]] = counts.get(row["run_id"], 0) + 1
+    return counts
+
+
+async def _my_kudos_set(run_ids: list[str], user_id: str) -> set[str]:
+    """Return the set of run_ids that user_id has kudoed (one IN + eq query)."""
+    if not run_ids:
+        return set()
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("run_kudos")
+        .select("run_id")
+        .in_("run_id", run_ids)
+        .eq("user_id", user_id)
+        .execute()
+    )
+    return {row["run_id"] for row in res.data}
+
+
+async def _run_owner(run_id: str) -> str:
+    """Return the run owner's user_id, or raise RunNotFound."""
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("runs")
+        .select("user_id")
+        .eq("id", run_id)
+        .limit(1)
+        .execute()
+    )
+    if not res.data:
+        raise RunNotFound()
+    return res.data[0]["user_id"]
+
+
+async def give_kudos(run_id: str, user_id: str) -> None:
+    """Kudos a run. Idempotent (double-tap safe); own runs are rejected.
+
+    Fires a best-effort run_kudoed notification only on a genuinely new kudos.
+    """
+    owner_id = await _run_owner(run_id)
+    if owner_id == user_id:
+        raise SelfKudos()
+
+    supabase = get_supabase_admin()
+    kudos_new = True
+    try:
+        await asyncio.to_thread(
+            lambda: supabase.table("run_kudos")
+            .insert({"run_id": run_id, "user_id": user_id})
+            .execute()
+        )
+    except APIError as exc:
+        if exc.code != _UNIQUE_VIOLATION:  # 23505 = already kudoed, fine
+            raise
+        kudos_new = False
+
+    if kudos_new:
+        from app.services import notification_service  # local to avoid circular risk
+
+        try:
+            await notification_service.create_notification(
+                recipient_id=owner_id,
+                actor_id=user_id,
+                type="run_kudoed",
+                target_id=run_id,
+                target_type="run",
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("run_kudoed 알림 생성 실패", exc_info=True)
+
+
+async def remove_kudos(run_id: str, user_id: str) -> None:
+    """Remove a kudos. Idempotent: removing a non-kudos is a no-op."""
+    supabase = get_supabase_admin()
+    await asyncio.to_thread(
+        lambda: supabase.table("run_kudos")
+        .delete()
+        .eq("run_id", run_id)
+        .eq("user_id", user_id)
+        .execute()
+    )
+
+
+async def list_kudos_users(
+    run_id: str, limit: int = 20, offset: int = 0
+) -> list[KudosUserItem]:
+    """Users who kudoed a run, newest first, with nickname/avatar (batched)."""
+    await _run_owner(run_id)  # 404 if the run doesn't exist
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("run_kudos")
+        .select("user_id, created_at")
+        .eq("run_id", run_id)
+        .order("created_at", desc=True)
+        .range(offset, offset + limit - 1)
+        .execute()
+    )
+    rows = res.data
+    if not rows:
+        return []
+    briefs = await profile_service.get_profile_briefs([r["user_id"] for r in rows])
+    return [
+        KudosUserItem(
+            user_id=row["user_id"],
+            nickname=briefs.get(row["user_id"], {}).get("nickname"),
+            avatar_url=briefs.get(row["user_id"], {}).get("avatar_url"),
+            created_at=row["created_at"],
+        )
+        for row in rows
+    ]
+
+
+async def list_activity_feed(
+    user_id: str, limit: int = 20, offset: int = 0
+) -> list[ActivityFeedItem]:
+    """Following activity feed: runs by followed users + my own, newest ran_at.
+
+    Same shape/privacy rules as the crew feed (CrewRunItem base), plus kudos.
+    Kept separate from crew_service.list_crew_runs on purpose — different
+    audience rule (follows vs membership) and item schema; the batch helpers
+    (_kudos_counts/_my_kudos_set) are the shared parts.
+    """
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("follows")
+        .select("following_id")
+        .eq("follower_id", user_id)
+        .execute()
+    )
+    audience = [row["following_id"] for row in res.data] + [user_id]
+
+    runs_res = await asyncio.to_thread(
+        lambda: supabase.table("runs")
+        .select("id, user_id, ran_at, distance_km, duration_sec, "
+                "avg_pace_sec_per_km, route_id")
+        .in_("user_id", audience)
+        .order("ran_at", desc=True)
+        .range(offset, offset + limit - 1)
+        .execute()
+    )
+    rows = runs_res.data
+    if not rows:
+        return []
+
+    run_ids = [r["id"] for r in rows]
+    route_ids = list({r["route_id"] for r in rows if r.get("route_id")})
+
+    async def _public_route_summaries() -> dict[str, str]:
+        """Public courses only — private ones must not leak into the feed."""
+        if not route_ids:
+            return {}
+        r = await asyncio.to_thread(
+            lambda: supabase.table("routes")
+            .select("id, summary")
+            .in_("id", route_ids)
+            .eq("is_public", True)
+            .execute()
+        )
+        return {row["id"]: row["summary"] for row in r.data}
+
+    briefs, summaries, kudos_counts, my_kudos = await asyncio.gather(
+        profile_service.get_profile_briefs([r["user_id"] for r in rows]),
+        _public_route_summaries(),
+        _kudos_counts(run_ids),
+        _my_kudos_set(run_ids, user_id),
+    )
+    return [
+        ActivityFeedItem(
+            run_id=row["id"],
+            user_id=row["user_id"],
+            nickname=briefs.get(row["user_id"], {}).get("nickname"),
+            avatar_url=briefs.get(row["user_id"], {}).get("avatar_url"),
+            ran_at=row["ran_at"],
+            distance_km=row["distance_km"],
+            duration_sec=row["duration_sec"],
+            avg_pace_sec_per_km=row.get("avg_pace_sec_per_km"),
+            route_id=row.get("route_id"),
+            route_summary=summaries.get(row.get("route_id")),
+            is_mine=(row["user_id"] == user_id),
+            kudos_count=kudos_counts.get(row["id"], 0),
+            my_kudos=row["id"] in my_kudos,
+        )
+        for row in rows
+    ]
 
 
 async def _check_challenge_completion(user_id: str) -> None:
