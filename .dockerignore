@@ -1,0 +1,16 @@
+# 배포 이미지에 절대 들어가면 안 되는 것들
+.env
+.env.*
+.venv/
+venv/
+
+# 이미지 크기·빌드 시간 절약
+.git/
+__pycache__/
+*.pyc
+tests/
+design/
+frontend/
+docs/
+db/
+scripts/

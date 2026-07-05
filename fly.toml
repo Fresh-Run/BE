@@ -1,0 +1,33 @@
+# Fly.io 배포 설정 — 배포 설계(2026-07-06) 확정값.
+# 첫 배포: fly launch --no-deploy 후 이 파일 유지 → secrets 등록 → fly deploy
+# (secrets 목록·주의사항은 docs/DEPLOY_CHECKLIST.md C절)
+
+app = "freshrun-api"
+primary_region = "nrt"  # 도쿄 — Supabase 동북아 리전과 근접 (서버↔DB 왕복이 지배 변수)
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  # 비밀 아닌 설정만 여기에 — 키는 전부 fly secrets로.
+  ENVIRONMENT = "production"   # IAP mock 부팅 거부 가드의 스위치
+  PORT = "8080"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # 콜드 스타트 방지 — 러닝 앱은 첫 요청 지연이 치명적이라 상시 실행.
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

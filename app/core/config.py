@@ -19,8 +19,16 @@ class Settings(BaseSettings):
 
     # Application
     app_name: str = "Running Route AI"
+    # dev/prod 분리 규칙 (배포 설계 2026-07-06):
+    #   prod는 fly secrets로 ENVIRONMENT=production만 바꾸고,
+    #   IAP_MODE·OPENWEATHER_BASE_URL 등 테스트 오버라이드는 "미설정"이 정답 —
+    #   아래 기본값들이 전부 안전한 방향(닫힘/실서버)을 향한다.
     environment: str = "development"
     debug: bool = True
+
+    # Sentry — DSN이 비어 있으면 연동 자체를 건너뛴다 (no-op).
+    # 계정 생성 후 fly secrets set SENTRY_DSN=... 만 하면 켜진다.
+    sentry_dsn: str = ""
 
     # OpenAI (or any OpenAI-compatible endpoint, e.g. Google Gemini)
     openai_api_key: str = ""
