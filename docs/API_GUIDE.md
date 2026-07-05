@@ -185,8 +185,9 @@ fetch(`${API_BASE}/api/me/profile`, {
 
 | 데이터 | 메서드/경로 | 주요 응답 필드 |
 |---|---|---|
-| 내 정보 | `GET /me` (auth 확인), `GET /me/profile` | `nickname`, `avatar_url`, `bio`, `tier` |
-| 프로필 생성/수정 | `PATCH /me/profile` | `nickname`(2~20자, 중복 시 409). **tier는 보내도 무시됨** (관리자/IAP 전용) |
+| 내 정보 | `GET /me` (auth 확인), `GET /me/profile` | `nickname`, `avatar_url`, `bio`, `tier` + **신체 정보 4종** `birth_year`/`weight_kg`/`height_cm`/`gender` — **본인 조회에만 존재** (다른 유저가 보는 모든 응답에 절대 미포함). 체중은 칼로리 로컬 계산용 |
+| 프로필 생성/수정 | `PATCH /me/profile` | `nickname`(2~20자, 중복 시 409) + 신체 정보 4종 optional — 보낸 것만 갱신. 범위: birth_year 1920~2026, weight 20~300, height 100~250, gender `female`\|`male`\|`undisclosed`(시안: 여성/남성/선택 안 함). 범위 밖 422. **tier는 보내도 무시됨** (관리자/IAP 전용) |
+| **아바타 업로드** | `POST /me/avatar/upload-url` | **3단계 흐름**: ① 이 엔드포인트 호출 → `{upload_url, public_url, max_bytes, allowed_types}` ② 이미지 바이트를 `upload_url`에 **PUT** (Content-Type 필수 — jpeg/png/webp만, 5MB 상한은 Storage가 거부) ③ `public_url`을 `PATCH /me/profile`의 `avatar_url`로 저장 — **CDN 캐시 무효화를 위해 `?v=타임스탬프`를 붙여서**. 경로는 유저당 고정이라 재업로드가 자동 덮어쓰기 (옛 파일 잔여 없음) |
 | 누적 통계 | `GET /me/stats` | `all_time.{total_distance_km,run_count,avg_pace_sec_per_km}` — 프로필 헤더 "최고 페이스"는 같은 응답의 `records.best_pace.value`(sec/km) 사용 |
 | 티어/쿼터 | `GET /me/quota` | premium이면 `ai_generation.unlimited=true`. IAP 구독이 만료된 유저는 **이 호출(또는 아무 프리미엄 게이트) 시점에 자동 강등**되어 free로 옴 |
 | **구독 구매 검증** | `POST /iap/verify` | **프론트: StoreKit 2 구매 완료 직후 받은 `signedTransaction`(JWS)을 `{"jws": "..."}`로 전송** → 서버 검증 후 `{tier: "premium", product_id, expires_at, environment}`. 같은 거래 재전송은 멱등(복원/갱신에 안전), 다른 계정의 거래 재사용은 **409 `transaction_already_used`**. 유효하지 않으면 400(`invalid_transaction`/`transaction_expired`), 서버 미준비 상태는 **503 `iap_not_configured`**(출시 전 현재 상태 — UI에서 결제 버튼 숨김) |

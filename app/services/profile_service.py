@@ -12,8 +12,10 @@ from datetime import datetime, timezone
 
 from postgrest.exceptions import APIError
 
+from app.core.config import settings
 from app.core.supabase_client import get_supabase_admin
 from app.models.schemas import (
+    AvatarUploadUrlResponse,
     ProfileResponse,
     ProfileUpdate,
     SettingsPatch,
@@ -64,6 +66,11 @@ async def upsert_profile(user_id: str, req: ProfileUpdate) -> ProfileResponse:
         record["avatar_url"] = req.avatar_url
     if req.bio is not None:
         record["bio"] = req.bio
+    # 신체 정보 4종 — 본인 전용(ProfileResponse에만 노출), 보낸 것만 갱신
+    for body_field in ("birth_year", "weight_kg", "height_cm", "gender"):
+        value = getattr(req, body_field)
+        if value is not None:
+            record[body_field] = value
 
     supabase = get_supabase_admin()
     try:
@@ -77,6 +84,45 @@ async def upsert_profile(user_id: str, req: ProfileUpdate) -> ProfileResponse:
 
     logger.info("Upserted profile for user %s.", user_id)
     return ProfileResponse(**res.data[0])
+
+
+_AVATAR_BUCKET = "avatars"
+_AVATAR_MAX_BYTES = 5 * 1024 * 1024
+_AVATAR_TYPES = ["image/jpeg", "image/png", "image/webp"]
+
+
+async def create_avatar_upload_url(user_id: str) -> AvatarUploadUrlResponse:
+    """아바타 업로드용 signed URL 발급 — 3단계 흐름의 1단계.
+
+    경로는 유저당 고정({user_id}) — 재업로드가 항상 덮어써서 옛 파일이 남지
+    않는다. signed upload는 기존 객체에 409를 내므로 발급 전에 지운다.
+    크기(5MB)·타입(jpeg/png/webp) 제한은 avatars 버킷 설정이 업로드 시점에
+    강제한다 (public 버킷 — 읽기는 공개, 쓰기는 이 signed URL로만).
+    """
+    supabase = get_supabase_admin()
+
+    def _issue() -> dict:
+        storage = supabase.storage.from_(_AVATAR_BUCKET)
+        try:
+            storage.remove([user_id])  # 고정 경로 덮어쓰기 — 없어도 무해
+        except Exception:  # noqa: BLE001
+            pass
+        return storage.create_signed_upload_url(user_id)
+
+    res = await asyncio.to_thread(_issue)
+    upload_url = res.get("signed_url") or res.get("signedUrl") or res.get("signedURL")
+    if not upload_url:
+        raise RuntimeError("Storage did not return a signed upload URL.")
+    public_url = (
+        f"{settings.supabase_url}/storage/v1/object/public/{_AVATAR_BUCKET}/{user_id}"
+    )
+    logger.info("아바타 업로드 URL 발급 (user=%s)", user_id)
+    return AvatarUploadUrlResponse(
+        upload_url=upload_url,
+        public_url=public_url,
+        max_bytes=_AVATAR_MAX_BYTES,
+        allowed_types=_AVATAR_TYPES,
+    )
 
 
 def _sanitize_settings(stored: dict) -> dict:

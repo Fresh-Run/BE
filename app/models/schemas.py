@@ -68,13 +68,25 @@ class CurrentUser(BaseModel):
 
 
 class ProfileResponse(BaseModel):
-    """A user's public profile (mirrors the `profiles` table)."""
+    """The caller's own profile (GET/PATCH /me/profile 전용).
+
+    프라이버시: 신체 정보 4종(birth_year/weight_kg/height_cm/gender)은 이
+    모델에만 존재한다 — 다른 유저가 보는 모든 응답(PublicProfileResponse,
+    팔로우 목록, 크루 로스터, 피드, kudos, RSVP 명단 등)은 각자 명시 필드
+    모델이라 스키마 차원에서 노출이 차단된다. 이 필드들을 다른 모델에
+    복사하지 말 것.
+    """
 
     user_id: str
     nickname: str
     avatar_url: Optional[str] = None
     bio: Optional[str] = None
     tier: str = Field("free", description="'free' or 'premium'. Admin/IAP-managed.")
+    # 신체 정보 (선택 입력, 본인 전용 — 체중은 프론트 칼로리 로컬 계산용)
+    birth_year: Optional[int] = None
+    weight_kg: Optional[float] = None
+    height_cm: Optional[float] = None
+    gender: Optional[Literal["female", "male", "undisclosed"]] = None
     created_at: str
     updated_at: str
 
@@ -85,6 +97,24 @@ class ProfileUpdate(BaseModel):
     nickname: str = Field(..., min_length=2, max_length=20, description="Display name.")
     avatar_url: Optional[str] = Field(None, description="Avatar image URL.")
     bio: Optional[str] = Field(None, description="Short bio.")
+    # 신체 정보 (전부 선택 — 보낸 것만 갱신, null 해제는 v1 미지원)
+    birth_year: Optional[int] = Field(None, ge=1920, le=2026)
+    weight_kg: Optional[float] = Field(None, ge=20, le=300)
+    height_cm: Optional[float] = Field(None, ge=100, le=250)
+    gender: Optional[Literal["female", "male", "undisclosed"]] = Field(
+        None, description="시안 선택지: 여성(female)/남성(male)/선택 안 함(undisclosed)."
+    )
+
+
+class AvatarUploadUrlResponse(BaseModel):
+    """POST /me/avatar/upload-url — 앱이 Storage에 직접 업로드할 서명 URL."""
+
+    upload_url: str = Field(..., description="이 URL로 이미지 바이트를 PUT (Content-Type 필수).")
+    public_url: str = Field(
+        ..., description="업로드 후 이 URL을 PATCH /me/profile의 avatar_url로 (캐시 무효화용 ?v= 권장)."
+    )
+    max_bytes: int = Field(..., description="버킷 상한 (초과 시 Storage가 거부).")
+    allowed_types: list[str] = Field(..., description="허용 Content-Type.")
 
 
 # --- User settings -------------------------------------------------------------

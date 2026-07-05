@@ -12,6 +12,7 @@ from app.core.auth import get_current_user
 from app.models.schemas import (
     ActivityFeedItem,
     AnnouncementCreate,
+    AvatarUploadUrlResponse,
     AnnouncementDetailResponse,
     AnnouncementResponse,
     AnnouncementUpdate,
@@ -1269,6 +1270,23 @@ async def join_crew(
     if isinstance(result, JoinRequestResponse):
         response.status_code = status.HTTP_202_ACCEPTED
     return result
+
+
+@router.post(
+    "/me/avatar/upload-url",
+    response_model=AvatarUploadUrlResponse,
+    summary="아바타 업로드 URL 발급 (Storage 직접 업로드용)",
+)
+async def create_avatar_upload_url(
+    user: CurrentUser = Depends(get_current_user),
+) -> AvatarUploadUrlResponse:
+    """3단계 업로드 흐름의 1단계 — ① 이 URL 발급 ② 앱이 이미지를 PUT
+    ③ PATCH /me/profile로 public_url을 avatar_url에 저장.
+    """
+    try:
+        return await profile_service.create_avatar_upload_url(user.user_id)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Failed to create upload url: {exc}")
 
 
 @router.get(
