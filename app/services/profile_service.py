@@ -13,7 +13,12 @@ from datetime import datetime, timezone
 from postgrest.exceptions import APIError
 
 from app.core.supabase_client import get_supabase_admin
-from app.models.schemas import ProfileResponse, ProfileUpdate
+from app.models.schemas import (
+    ProfileResponse,
+    ProfileUpdate,
+    SettingsPatch,
+    UserSettings,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +28,10 @@ _UNIQUE_VIOLATION = "23505"
 
 class NicknameTaken(Exception):
     """The requested nickname is already used by another profile."""
+
+
+class ProfileNotFound(Exception):
+    """Settings write requires an existing profile row."""
 
 
 async def get_profile(user_id: str) -> ProfileResponse | None:
@@ -68,6 +77,75 @@ async def upsert_profile(user_id: str, req: ProfileUpdate) -> ProfileResponse:
 
     logger.info("Upserted profile for user %s.", user_id)
     return ProfileResponse(**res.data[0])
+
+
+def _sanitize_settings(stored: dict) -> dict:
+    """Drop keys no longer in the whitelist (two levels) so a shrunken
+    whitelist can't break GET for users with stale stored keys."""
+    clean: dict = {}
+    for key, value in stored.items():
+        if key not in UserSettings.model_fields:
+            continue
+        field = UserSettings.model_fields[key]
+        if isinstance(value, dict) and hasattr(field.annotation, "model_fields"):
+            clean[key] = {k: v for k, v in value.items()
+                          if k in field.annotation.model_fields}
+        else:
+            clean[key] = value
+    return clean
+
+
+async def _stored_settings(user_id: str) -> dict | None:
+    """Raw settings dict, or None when the user has no profile row."""
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("profiles")
+        .select("settings")
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+    if not res.data:
+        return None
+    return res.data[0].get("settings") or {}
+
+
+async def get_settings(user_id: str) -> UserSettings:
+    """The caller's settings, defaults merged in (완전한 객체).
+
+    Users without a profile row simply get the defaults — reads are safe.
+    """
+    stored = await _stored_settings(user_id)
+    return UserSettings.model_validate(_sanitize_settings(stored or {}))
+
+
+async def patch_settings(user_id: str, patch: SettingsPatch) -> UserSettings:
+    """Deep-merge the provided keys into stored settings (idempotent).
+
+    Storage stays sparse (only what the user changed), so server-side
+    default changes apply to everyone who hasn't overridden them.
+    Raises ProfileNotFound when the user has no profile row yet.
+    """
+    stored = await _stored_settings(user_id)
+    if stored is None:
+        raise ProfileNotFound()
+
+    changes = patch.model_dump(exclude_unset=True, exclude_none=True)
+    merged = dict(stored)
+    for key, value in changes.items():
+        if isinstance(value, dict):
+            merged[key] = {**merged.get(key, {}), **value}
+        else:
+            merged[key] = value
+
+    supabase = get_supabase_admin()
+    await asyncio.to_thread(
+        lambda: supabase.table("profiles")
+        .update({"settings": merged})
+        .eq("user_id", user_id)
+        .execute()
+    )
+    return UserSettings.model_validate(_sanitize_settings(merged))
 
 
 async def get_profile_briefs(user_ids: list[str | None]) -> dict[str, dict]:

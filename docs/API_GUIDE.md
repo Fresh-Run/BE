@@ -118,6 +118,28 @@ fetch(`${API_BASE}/api/me/profile`, {
 | 프로필 생성/수정 | `PATCH /me/profile` | `nickname`(2~20자, 중복 시 409). **tier는 보내도 무시됨** (관리자/IAP 전용) |
 | 누적 통계 | `GET /me/stats` | `all_time.{total_distance_km,run_count,avg_pace_sec_per_km}` |
 | 티어/쿼터 | `GET /me/quota` | premium이면 `ai_generation.unlimited=true` |
+| **설정 조회** | `GET /me/settings` | 항상 **기본값이 머지된 완전한 객체** — null 체크 없이 바로 바인딩 가능. 프로필 미생성 유저도 기본값 반환 |
+| **설정 저장** | `PATCH /me/settings` | **보낸 키만 deep merge** (예: `{"run":{"haptics":false}}`는 haptics만 변경), 멱등, 응답은 머지 후 전체 객체. 화이트리스트 밖 키/범위 밖 값 → **422** (저장 안 됨). 프로필 미생성 404 |
+
+**설정 기본값 표** (허용 키/값 전체):
+
+```jsonc
+{
+  "run":       { "auto_pause": true, "voice_cue": true, "haptics": true, "keep_screen_on": false },
+  "units":     "km",          // "km" | "mi"
+  "theme":     "light",       // "light" | "dark"
+  "lang":      "ko",          // "ko" | "en"
+  "ai_course": { "terrain": "mixed",        // "flat" | "mixed" | "hill"
+                 "default_distance_km": 5.0, // 1.0 ~ 20.0
+                 "scenic": true, "avoid_hills": false, "prefer_loop": true,
+                 "surface": "any" },         // "any" | "paved" | "trail"
+  "weather":   { "avoid_dust": true, "dust_level_pm10": 80,   // 30 ~ 150
+                 "avoid_heat": true, "heat_temp_c": 28,       // 20 ~ 38
+                 "avoid_rain": false }
+}
+```
+
+> **theme/lang 구현 힌트**: 로컬 캐시 + 서버 동기화 권장 — 첫 프레임(로그인 전·오프라인)은 AsyncStorage 캐시로 그리고, 로그인 후 `GET /me/settings` 값으로 갱신하세요. `ai_course`/`weather`는 향후 코스 생성 파이프라인이 서버에서 참조할 예정입니다.
 
 ## 5. 에러 규약
 

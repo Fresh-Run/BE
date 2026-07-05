@@ -46,9 +46,11 @@ from app.models.schemas import (
     RouteResponse,
     RunRequest,
     RunResponse,
+    SettingsPatch,
     StatsResponse,
     StoredRoute,
     TransferRequest,
+    UserSettings,
     WeatherResponse,
 )
 from app.services import (
@@ -104,6 +106,42 @@ async def update_my_profile(
         raise HTTPException(status_code=409, detail="Nickname already taken")
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"Failed to update profile: {exc}")
+
+
+@router.get(
+    "/me/settings",
+    response_model=UserSettings,
+    summary="내 설정 (기본값 머지된 완전한 객체)",
+)
+async def get_my_settings(
+    user: CurrentUser = Depends(get_current_user),
+) -> UserSettings:
+    """Account settings; users who never saved anything get the defaults."""
+    try:
+        return await profile_service.get_settings(user.user_id)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Failed to fetch settings: {exc}")
+
+
+@router.patch(
+    "/me/settings",
+    response_model=UserSettings,
+    summary="설정 부분 업데이트 (보낸 키만 deep merge, 멱등)",
+)
+async def patch_my_settings(
+    req: SettingsPatch,
+    user: CurrentUser = Depends(get_current_user),
+) -> UserSettings:
+    """Merge the provided keys and return the full merged object.
+
+    Unknown keys / out-of-range values are rejected with 422 (whitelist).
+    """
+    try:
+        return await profile_service.patch_settings(user.user_id, req)
+    except profile_service.ProfileNotFound:
+        raise HTTPException(status_code=404, detail="Create a profile first")
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Failed to update settings: {exc}")
 
 
 @router.get(

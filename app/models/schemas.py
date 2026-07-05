@@ -9,7 +9,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class FeedbackTag(str, Enum):
@@ -85,6 +85,103 @@ class ProfileUpdate(BaseModel):
     nickname: str = Field(..., min_length=2, max_length=20, description="Display name.")
     avatar_url: Optional[str] = Field(None, description="Avatar image URL.")
     bio: Optional[str] = Field(None, description="Short bio.")
+
+
+# --- User settings -------------------------------------------------------------
+# 기본값의 단일 소스 = 이 모델들의 필드 기본값. GET은 저장분을 여기에 머지해
+# 완전한 객체로 반환. extra='forbid'라 화이트리스트 밖 키는 422로 거부됨.
+
+
+class RunSettings(BaseModel):
+    """러닝 동작 토글 4종."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    auto_pause: bool = True
+    voice_cue: bool = True
+    haptics: bool = True
+    keep_screen_on: bool = False
+
+
+class AiCourseSettings(BaseModel):
+    """AI 코스 생성 기본값 (후속: 생성 파이프라인이 참조 예정)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    terrain: Literal["flat", "mixed", "hill"] = "mixed"
+    default_distance_km: float = Field(5.0, ge=1.0, le=20.0)
+    scenic: bool = True
+    avoid_hills: bool = False
+    prefer_loop: bool = True
+    surface: Literal["any", "paved", "trail"] = "any"
+
+
+class WeatherSettings(BaseModel):
+    """날씨 회피 조건 (시안 슬라이더 범위 그대로)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    avoid_dust: bool = True
+    dust_level_pm10: int = Field(80, ge=30, le=150)
+    avoid_heat: bool = True
+    heat_temp_c: int = Field(28, ge=20, le=38)
+    avoid_rain: bool = False
+
+
+class UserSettings(BaseModel):
+    """GET /me/settings 응답 — 항상 완전한 객체 (기본값 머지됨)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run: RunSettings = Field(default_factory=RunSettings)
+    units: Literal["km", "mi"] = "km"
+    theme: Literal["light", "dark"] = "light"
+    lang: Literal["ko", "en"] = "ko"
+    ai_course: AiCourseSettings = Field(default_factory=AiCourseSettings)
+    weather: WeatherSettings = Field(default_factory=WeatherSettings)
+
+
+class RunSettingsPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    auto_pause: Optional[bool] = None
+    voice_cue: Optional[bool] = None
+    haptics: Optional[bool] = None
+    keep_screen_on: Optional[bool] = None
+
+
+class AiCourseSettingsPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    terrain: Optional[Literal["flat", "mixed", "hill"]] = None
+    default_distance_km: Optional[float] = Field(None, ge=1.0, le=20.0)
+    scenic: Optional[bool] = None
+    avoid_hills: Optional[bool] = None
+    prefer_loop: Optional[bool] = None
+    surface: Optional[Literal["any", "paved", "trail"]] = None
+
+
+class WeatherSettingsPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    avoid_dust: Optional[bool] = None
+    dust_level_pm10: Optional[int] = Field(None, ge=30, le=150)
+    avoid_heat: Optional[bool] = None
+    heat_temp_c: Optional[int] = Field(None, ge=20, le=38)
+    avoid_rain: Optional[bool] = None
+
+
+class SettingsPatch(BaseModel):
+    """PATCH /me/settings 입력 — 보낸 키만 deep merge. 허용 외 키/값은 422."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run: Optional[RunSettingsPatch] = None
+    units: Optional[Literal["km", "mi"]] = None
+    theme: Optional[Literal["light", "dark"]] = None
+    lang: Optional[Literal["ko", "en"]] = None
+    ai_course: Optional[AiCourseSettingsPatch] = None
+    weather: Optional[WeatherSettingsPatch] = None
 
 
 # --- Weather ------------------------------------------------------------------
