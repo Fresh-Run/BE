@@ -12,7 +12,9 @@ import logging
 import math
 from collections import defaultdict
 
+from openai import APIError as OpenAIAPIError
 from postgrest.exceptions import APIError
+from pydantic import ValidationError
 
 from app.core.supabase_client import get_supabase_admin
 from app.models.schemas import (
@@ -38,6 +40,10 @@ class CommentNotFound(Exception):
 
 class CommentAccessDenied(Exception):
     """Caller is neither the comment author nor the route owner."""
+
+
+class RouteGenerationFailed(Exception):
+    """Gemini never produced a usable route across all radius attempts."""
 
 
 async def _ai_course_settings(user_id: str | None) -> AiCourseSettings:
@@ -81,6 +87,27 @@ def _resolve_course_prefs(
     if prefs.avoid_hills and prefs.terrain == "hill":
         prefs.terrain = "mixed"
     return target_km, prefs
+
+
+# ── 동적 탐색 반경 ─────────────────────────────────────────────────────────────
+
+_SHORT_RATIO = 0.6      # 실측이 목표×0.6 미만이면 SHORT (미달 방향만 판정)
+_MAX_RADIUS_KM = 8.0
+
+
+def _radius_schedule(target_km: float) -> list[float]:
+    """목표 거리 비례 탐색 반경 시퀀스 (최대 4시도, 상한 8km, 중복 제거).
+
+    루프 코스 L km는 기하학상 반경 ~L/4가 필요하므로 r0=clamp(target/4, 1, 8),
+    이후 +1.0 → +2.5 → 8.0으로 점증 (기획의 +500m×16회 대신 비용·지연 통제형).
+    """
+    r0 = min(_MAX_RADIUS_KM, max(1.0, round(target_km / 4, 1)))
+    out: list[float] = []
+    for r in (r0, r0 + 1.0, r0 + 2.5, _MAX_RADIUS_KM):
+        r = min(round(r, 1), _MAX_RADIUS_KM)
+        if r not in out:
+            out.append(r)
+    return out
 
 
 def _filter_conflicting_avoid_tags(
@@ -134,60 +161,120 @@ async def create_running_route(
     target_km, prefs = _resolve_course_prefs(req, saved_prefs)
     avoid_tags = _filter_conflicting_avoid_tags(avoid_tags, prefs)
 
-    route = await openai_service.generate_route(
-        target_distance_km=target_km,
-        start=req.start,
-        end=req.end,
-        pitstop_keyword=req.pitstop_keyword,
-        notes=req.notes,
-        avoid_tags=avoid_tags,
-        prefs=prefs,
-    )
+    # Step 1~3을 동적 탐색 반경 루프로: 좁은 반경에서 시작해 실패(경로 연결
+    # 불가 / 실측 미달)하면 반경을 넓혀 재시도. 출발지는 고정.
+    best: RouteResponse | None = None
+    short_candidates: list[tuple[float, RouteResponse]] = []  # (실측 km, route)
+    nopath_candidate: RouteResponse | None = None
+    pitstop_places: list | None = None  # Kakao 검색은 결정적 — 첫 성공 결과 재사용
 
-    # Step 2: snap the pitstop to a real place if a keyword was given.
-    if req.pitstop_keyword:
+    for i, radius_km in enumerate(_radius_schedule(target_km)):
         try:
-            places = await map_service.search_places(req.pitstop_keyword, near=req.start)
-            if places:
-                nearest = places[0]
-                for wp in route.waypoints:
-                    if wp.is_pitstop:
-                        wp.name = nearest.name
-                        wp.coordinate = nearest.coordinate
-                        wp.description = nearest.address
-                        break
-        except Exception:  # noqa: BLE001 - map enrichment is best-effort
-            # If the Map API fails, keep the AI-suggested pitstop as-is.
-            logger.warning(
-                "Pitstop place lookup failed for %r; keeping AI suggestion.",
-                req.pitstop_keyword,
-                exc_info=True,
+            route = await openai_service.generate_route(
+                target_distance_km=target_km,
+                start=req.start,
+                end=req.end,
+                pitstop_keyword=req.pitstop_keyword,
+                notes=req.notes,
+                avoid_tags=avoid_tags,
+                prefs=prefs,
+                radius_km=radius_km,
             )
+        except OpenAIAPIError:
+            # ①-a API 장애: 반경과 무관 — 확장 재시도는 낭비. 이미 확보한
+            # 후보가 있으면 그걸로 마무리, 없으면 그대로 실패.
+            if short_candidates or nopath_candidate is not None:
+                logger.warning("Gemini API 장애 (radius=%skm) — 기존 후보로 마무리", radius_km)
+                break
+            raise
+        except (ValueError, ValidationError):
+            # ①-b/c/d tool call 없음·파싱·검증 실패: 비결정적 — 이 시도만
+            # 무효 처리하고 다음 반경으로 (반경이 커져도 손해 없음).
+            logger.warning(
+                "Gemini 응답 파싱/검증 실패 (radius=%skm) — 다음 반경으로 재시도",
+                radius_km, exc_info=True,
+            )
+            continue
 
-    # Step 3: enrich with a real pedestrian path when we have >= 2 points.
-    if len(route.waypoints) >= 2:
-        try:
-            via = [wp.coordinate for wp in route.waypoints[1:-1]] or None
-            pedestrian = await map_service.get_pedestrian_route(
-                origin=route.waypoints[0].coordinate,
-                destination=route.waypoints[-1].coordinate,
-                waypoints=via,
-            )
-            route.polyline = pedestrian.path
-            route.total_distance_km = round(pedestrian.distance_m / 1000.0, 2)
-            route.estimated_duration_min = round(pedestrian.duration_s / 60.0, 1)
-        except Exception:  # noqa: BLE001 - keep AI estimates if routing fails
-            logger.warning(
-                "Pedestrian routing (%s) failed; falling back to AI distance "
-                "estimate. Polyline will be unavailable.",
-                map_service.settings.map_provider,
-                exc_info=True,
-            )
+        # Step 2: snap the pitstop to a real place if a keyword was given.
+        if req.pitstop_keyword:
+            try:
+                if pitstop_places is None:
+                    pitstop_places = await map_service.search_places(
+                        req.pitstop_keyword, near=req.start
+                    )
+                if pitstop_places:
+                    nearest = pitstop_places[0]
+                    for wp in route.waypoints:
+                        if wp.is_pitstop:
+                            wp.name = nearest.name
+                            wp.coordinate = nearest.coordinate
+                            wp.description = nearest.address
+                            break
+            except Exception:  # noqa: BLE001 - map enrichment is best-effort
+                # If the Map API fails, keep the AI-suggested pitstop as-is.
+                logger.warning(
+                    "Pitstop place lookup failed for %r; keeping AI suggestion.",
+                    req.pitstop_keyword,
+                    exc_info=True,
+                )
+
+        route.search_radius_km = radius_km
+        route.radius_expanded = i > 0
+
+        # Step 3: 보행 경로 연결 + 실측 거리로 성공 판정.
+        #   OK      — 연결됐고 실측 >= 목표×0.6 → 즉시 채택
+        #   SHORT   — 연결됐지만 실측 미달       → 후보 보관, 반경 확장
+        #   NO_PATH — 연결 실패(또는 waypoint<2) → AI 추정 폴백 보관, 반경 확장
+        status = "NO_PATH"
+        actual_km = route.total_distance_km
+        if len(route.waypoints) >= 2:
+            try:
+                via = [wp.coordinate for wp in route.waypoints[1:-1]] or None
+                pedestrian = await map_service.get_pedestrian_route(
+                    origin=route.waypoints[0].coordinate,
+                    destination=route.waypoints[-1].coordinate,
+                    waypoints=via,
+                )
+                route.polyline = pedestrian.path
+                route.total_distance_km = round(pedestrian.distance_m / 1000.0, 2)
+                route.estimated_duration_min = round(pedestrian.duration_s / 60.0, 1)
+                actual_km = route.total_distance_km
+                status = "OK" if actual_km >= _SHORT_RATIO * target_km else "SHORT"
+            except Exception:  # noqa: BLE001 - keep AI estimates if routing fails
+                logger.warning(
+                    "Pedestrian routing (%s) failed; falling back to AI distance "
+                    "estimate. Polyline will be unavailable.",
+                    map_service.settings.map_provider,
+                    exc_info=True,
+                )
+
+        if status == "OK":
+            best = route
+            break
+        if status == "SHORT":
+            short_candidates.append((actual_km, route))
+        else:
+            nopath_candidate = route
+        logger.info(
+            "코스 생성 %s (radius=%skm, 실측 %.2f / 목표 %skm) — 반경 확장 재시도",
+            status, radius_km, actual_km, target_km,
+        )
+
+    if best is None:
+        # 루프 소진: "짧지만 이거라도" — 연결된 후보 중 목표에 가장 가까운 것,
+        # 없으면 마지막 AI 추정 폴백. 유효 응답이 한 번도 없었으면 실패.
+        if short_candidates:
+            best = min(short_candidates, key=lambda t: abs(t[0] - target_km))[1]
+        elif nopath_candidate is not None:
+            best = nopath_candidate
+        else:
+            raise RouteGenerationFailed()
 
     # Step 4: persist the generated route to Supabase (best-effort).
-    await _save_route(req, route, user_id, target_distance_km=target_km)
+    await _save_route(req, best, user_id, target_distance_km=target_km)
 
-    return route
+    return best
 
 
 async def _save_route(

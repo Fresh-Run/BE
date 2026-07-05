@@ -300,8 +300,15 @@ async def generate_route(
 
     try:
         route = await route_service.create_running_route(req, user_id=user.user_id)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to generate route: {exc}")
+    except Exception:  # noqa: BLE001
+        logger.warning("코스 생성 실패", exc_info=True)
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error": "route_generation_failed",
+                "message": "코스 생성에 실패했어요. 잠시 후 다시 시도해 주세요.",
+            },
+        )
 
     # Only successful generations consume quota (a 502 above costs nothing).
     await quota_service.record_ai_generation(user.user_id)

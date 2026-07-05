@@ -129,6 +129,7 @@ def _build_prompt(
     notes: str | None,
     avoid_tags: list[str] | None = None,
     prefs: AiCourseSettings | None = None,
+    radius_km: float | None = None,
 ) -> str:
     if end:
         end_text = f"end at ({end.lat}, {end.lng})"
@@ -162,11 +163,24 @@ def _build_prompt(
                 + "."
             )
 
+    # 탐색 반경: 수치가 오면 "near the start"를 명시적 반경 제약으로 교체.
+    if radius_km is not None:
+        area_text = (
+            f"Keep every waypoint within {radius_km} km (straight-line) of the "
+            "start point, and design the route so its total length closely "
+            "matches the target distance (avoid overshooting). Provide ordered "
+            "waypoints with realistic WGS84 coordinates, "
+        )
+    else:
+        area_text = (
+            "Provide ordered waypoints with realistic WGS84 coordinates near the start, "
+        )
+
     return (
         f"Design a running route in South Korea of about {target_distance_km} km. "
         f"Start at ({start.lat}, {start.lng}) and {end_text}. "
         f"{pitstop_text} "
-        "Provide ordered waypoints with realistic WGS84 coordinates near the start, "
+        f"{area_text}"
         "mark any pitstop with is_pitstop=true, and call build_running_route with the result."
         f"{_prefs_text(prefs)}"
         f"{notes_text}"
@@ -182,6 +196,7 @@ async def generate_route(
     notes: str | None = None,
     avoid_tags: list[str] | None = None,
     prefs: AiCourseSettings | None = None,
+    radius_km: float | None = None,
 ) -> RouteResponse:
     """Generate a structured running route via OpenAI Function Calling.
 
@@ -194,6 +209,8 @@ async def generate_route(
         avoid_tags: Negative feedback tags to steer away from.
         prefs: Effective AI-course preferences (body > user settings > defaults),
             resolved by route_service. None keeps the legacy prompt shape.
+        radius_km: Search radius around the start (straight-line). None keeps
+            the legacy "near the start" wording.
 
     Returns:
         A validated RouteResponse parsed from the model's tool call.
@@ -208,7 +225,8 @@ async def generate_route(
             ),
         },
         {"role": "user", "content": _build_prompt(
-            target_distance_km, start, end, pitstop_keyword, notes, avoid_tags, prefs
+            target_distance_km, start, end, pitstop_keyword, notes, avoid_tags,
+            prefs, radius_km,
         )},
     ]
 

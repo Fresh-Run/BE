@@ -347,6 +347,15 @@ class RouteResponse(BaseModel):
         None,
         description="Decoded path geometry (from the Map API) for drawing on a map.",
     )
+    # 동적 탐색 반경 (생성 파이프라인이 채움 — 기본값 있어 하위 호환)
+    search_radius_km: Optional[float] = Field(
+        None, description="이 코스를 찾은 탐색 반경(km, 출발지 기준 직선거리)."
+    )
+    radius_expanded: bool = Field(
+        False,
+        description="True면 초기 반경으로 실패해 반경을 넓혀 찾은 결과 — "
+        "프론트가 '반경을 넓혀 찾았어요' 안내 가능.",
+    )
 
 
 class PedestrianRoute(BaseModel):
