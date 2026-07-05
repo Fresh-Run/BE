@@ -100,6 +100,10 @@ def run():
                 uids.append(sb_user(c, e, pw))
                 toks.append(sb_login(c, e, pw))
             uid1, uid2 = uids; tok1, tok2 = toks
+            # u1이 크루 4개 생성 — 무료 1개 한도 게이트를 넘기 위해 프로필 생성 후 premium 승격
+            api(c, "PATCH", "/me/profile", tok1, json={"nickname": f"검색u1-{sfx}"})
+            c.patch(f"{_SB}/rest/v1/profiles", headers=_ADM,
+                    params={"user_id": f"eq.{uid1}"}, json={"tier": "premium"})
             ok(f"u1={uid1[:8]}  u2={uid2[:8]}")
 
             # ── 2. 크루 4개 생성 (공개3 + 비공개1) ────────────────────────

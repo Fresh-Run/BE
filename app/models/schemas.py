@@ -96,8 +96,8 @@ class ProfileUpdate(BaseModel):
     """Input to create/update the caller's profile. user_id comes from the token."""
 
     nickname: str = Field(..., min_length=2, max_length=20, description="Display name.")
-    avatar_url: Optional[str] = Field(None, description="Avatar image URL.")
-    bio: Optional[str] = Field(None, description="Short bio.")
+    avatar_url: Optional[str] = Field(None, max_length=500, description="Avatar image URL.")
+    bio: Optional[str] = Field(None, max_length=500, description="Short bio.")
     # 신체 정보 (전부 선택 — 보낸 것만 갱신, null 해제는 v1 미지원)
     birth_year: Optional[int] = Field(None, ge=1920, le=2026)
     weight_kg: Optional[float] = Field(None, ge=20, le=300)
@@ -406,10 +406,13 @@ class RouteRequest(BaseModel):
     surface: Optional[Literal["any", "paved", "trail"]] = None
     pitstop_keyword: Optional[str] = Field(
         None,
+        max_length=50,  # LLM 프롬프트 유입 — 보수적
         description="Optional waypoint keyword, e.g. '편의점' (convenience store), '공원', 'cafe'.",
     )
     notes: Optional[str] = Field(
-        None, description="Free-form preferences, e.g. 'avoid hills', 'riverside'."
+        None,
+        max_length=500,  # LLM 프롬프트 유입 — 보수적
+        description="Free-form preferences, e.g. 'avoid hills', 'riverside'.",
     )
     avoid_from_route_id: Optional[str] = Field(
         None,
@@ -851,23 +854,37 @@ class CrewLevel(str, Enum):
     ADVANCED = "고급"
 
 
+def _short_day_items(value: Optional[list[str]]) -> Optional[list[str]]:
+    """active_days 각 항목 길이 제한 (요일 라벨은 짧음 — 거대 문자열 방어)."""
+    if value is None:
+        return value
+    for item in value:
+        if len(item) > 10:
+            raise ValueError("active_days 항목은 10자 이하여야 합니다.")
+    return value
+
+
 class CrewCreate(BaseModel):
     """Input to create a crew. owner_id comes from the token, not the body."""
 
-    name: str = Field(..., min_length=1, description="크루 이름")
-    description: Optional[str] = Field(None, description="한 줄 소개")
-    area: Optional[str] = Field(None, description="활동 지역")
-    radius_km: Optional[float] = Field(None, gt=0, description="활동 반경(km)")
-    sport: Optional[str] = Field(None, description="종목")
+    name: str = Field(..., min_length=1, max_length=50, description="크루 이름")
+    description: Optional[str] = Field(None, max_length=500, description="한 줄 소개")
+    area: Optional[str] = Field(None, max_length=50, description="활동 지역")
+    radius_km: Optional[float] = Field(None, gt=0, le=500, description="활동 반경(km)")
+    sport: Optional[str] = Field(None, max_length=30, description="종목")
     level: CrewLevel = Field(CrewLevel.ANY, description="레벨")
-    max_members: Optional[int] = Field(None, gt=0, description="최대 인원(없으면 무제한)")
+    max_members: Optional[int] = Field(None, gt=0, le=100000, description="최대 인원(없으면 무제한)")
     is_public: bool = Field(True, description="공개여부")
     join_policy: Literal["open", "approval"] = Field(
         "open", description="가입 방식: open=즉시 가입, approval=승인제"
     )
-    active_days: list[str] = Field(default_factory=list, description="활동 요일 (예: ['월','수'])")
-    active_time: Optional[str] = Field(None, description="활동 시간")
-    color: Optional[str] = Field(None, description="색상 (예: #FF8800)")
+    active_days: list[str] = Field(
+        default_factory=list, max_length=7, description="활동 요일 (예: ['월','수'])"
+    )
+    active_time: Optional[str] = Field(None, max_length=50, description="활동 시간")
+    color: Optional[str] = Field(None, max_length=20, description="색상 (예: #FF8800)")
+
+    _days = field_validator("active_days")(staticmethod(_short_day_items))
 
 
 class TransferRequest(BaseModel):
@@ -929,20 +946,22 @@ class CrewRankingEntry(BaseModel):
 class CrewUpdate(BaseModel):
     """Partial-update input for a crew. Only provided (non-None) fields are written."""
 
-    name: Optional[str] = Field(None, min_length=1, description="크루 이름")
-    description: Optional[str] = Field(None, description="한 줄 소개")
-    area: Optional[str] = Field(None, description="활동 지역")
-    radius_km: Optional[float] = Field(None, gt=0, description="활동 반경(km)")
-    sport: Optional[str] = Field(None, description="종목")
+    name: Optional[str] = Field(None, min_length=1, max_length=50, description="크루 이름")
+    description: Optional[str] = Field(None, max_length=500, description="한 줄 소개")
+    area: Optional[str] = Field(None, max_length=50, description="활동 지역")
+    radius_km: Optional[float] = Field(None, gt=0, le=500, description="활동 반경(km)")
+    sport: Optional[str] = Field(None, max_length=30, description="종목")
     level: Optional[CrewLevel] = Field(None, description="레벨")
-    max_members: Optional[int] = Field(None, gt=0, description="최대 인원")
+    max_members: Optional[int] = Field(None, gt=0, le=100000, description="최대 인원")
     is_public: Optional[bool] = Field(None, description="공개 여부")
     join_policy: Optional[Literal["open", "approval"]] = Field(
         None, description="가입 방식 변경 (크루장만)"
     )
-    active_days: Optional[list[str]] = Field(None, description="활동 요일")
-    active_time: Optional[str] = Field(None, description="활동 시간")
-    color: Optional[str] = Field(None, description="색상 (예: #FF8800)")
+    active_days: Optional[list[str]] = Field(None, max_length=7, description="활동 요일")
+    active_time: Optional[str] = Field(None, max_length=50, description="활동 시간")
+    color: Optional[str] = Field(None, max_length=20, description="색상 (예: #FF8800)")
+
+    _days = field_validator("active_days")(staticmethod(_short_day_items))
 
 
 class CrewRunItem(BaseModel):

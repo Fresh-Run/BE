@@ -343,6 +343,7 @@ async def list_routes(user_id: str, limit: int = 20) -> list[StoredRoute]:
     Scoped to `user_id` in app code (the service_role client bypasses RLS,
     so this filter is what enforces "my data only" until RLS is enabled).
     """
+    limit = max(1, min(limit, 100))
     supabase = get_supabase_admin()
     result = await asyncio.to_thread(
         lambda: supabase.table("routes")
@@ -654,6 +655,7 @@ async def list_public_routes(
                      while the public route count is small; switch to an RPC
                      aggregate when scale demands it.
     """
+    limit = max(1, min(limit, 100))
     supabase = get_supabase_admin()
 
     if sort == "newest":
@@ -729,6 +731,8 @@ async def search_nearby_routes(
     Step 2 — Python Haversine to drop box-corner false positives.
     Step 3 — sort and limit in Python (copy_count for 'popular', created_at for 'newest').
     """
+    limit = max(1, min(limit, 100))
+    radius_km = max(0.1, min(radius_km, 50.0))  # 상한 없으면 전 공개코스 풀스캔
     lat_delta = radius_km / 111.0
     lng_delta = radius_km / (111.0 * math.cos(math.radians(lat)))
 
@@ -802,6 +806,7 @@ async def search_public_routes(
     if not safe:
         return []
 
+    limit = max(1, min(limit, 100))
     supabase = get_supabase_admin()
     res = await asyncio.to_thread(
         lambda: supabase.table("routes")
@@ -947,6 +952,7 @@ async def list_comments(route_id: str, limit: int = 50) -> list[CommentResponse]
 
     Raises RouteNotFound if the route doesn't exist or is not public.
     """
+    limit = max(1, min(limit, 100))
     supabase = get_supabase_admin()
     res = await asyncio.to_thread(
         lambda: supabase.table("routes")

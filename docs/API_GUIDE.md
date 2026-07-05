@@ -60,7 +60,7 @@ fetch(`${API_BASE}/api/me/profile`, {
 |---|---|---|
 | 주간 통계 (이번 주 Nkm) | `GET /me/stats` | `week.total_distance_km`, `week.run_count`, `week.delta_distance_km` (지난주 대비), `month`, `all_time`, `records`(PB 4종, 아래 참고) |
 | 날씨 + 러닝지수 | `GET /weather?lat&lng` | `temp_c`, `feels_like_c`, `condition`(한글), `pm25/pm10.{value,grade}`, `running_index.{score,label,comment,personalized}` — pm은 부분 장애 시 null 가능. **`personalized: true`면 comment가 내 weather 설정 기준**(예: "설정하신 미세먼지 기준(PM10 50)을 넘었어요"). score/label은 항상 공용 기준 |
-| AI 코스 생성 | `POST /routes/generate` | body: `start{lat,lng}`, `target_distance_km?`, `terrain?`, `scenic?`, `avoid_hills?`, `prefer_loop?`, `surface?`, `pitstop_keyword?`, `notes?` → `summary`, `waypoints[]`, `polyline[]`, `search_radius_km`, `radius_expanded`. **free는 주 3회, 초과 시 429** (§5). 우선순위·동적 반경은 표 아래 참고 |
+| AI 코스 생성 | `POST /routes/generate` | body: `start{lat,lng}`, `target_distance_km?`, `terrain?`, `scenic?`, `avoid_hills?`, `prefer_loop?`, `surface?`, `pitstop_keyword?`(≤50자), `notes?`(≤500자) → `summary`, `waypoints[]`, `polyline[]`, `search_radius_km`, `radius_expanded`. **free는 주 3회, 초과 시 429** (§5). 우선순위·동적 반경은 표 아래 참고 |
 | 남은 생성 횟수 표시 | `GET /me/quota` | `tier`, `ai_generation.{used,limit,remaining,reset_at,unlimited}` |
 | **AI 오디오 코치 (프리미엄)** | `POST /routes/{id}/coach-script` | `{route_id, cues[], from_cache, created_at}` — 내 코스만(404), free는 **403 `premium_required`**(§5). route당 1회 생성 후 캐시(`from_cache: true`), AI 생성 쿼터 미차감. 스키마·재생 규칙은 표 아래 참고 |
 | 저장한 코스 | `GET /routes/bookmarked?limit&offset` | `PublicRouteResponse[]` (아래 피드와 동일 shape) |
@@ -155,8 +155,9 @@ fetch(`${API_BASE}/api/me/profile`, {
 | **활동 피드 (run, 홈 v2)** | `GET /feed/activities?limit&offset` | 팔로우한 유저 **+ 내** run, `ran_at` 최신순: 크루 러닝 피드와 같은 필드 + `is_mine`, `kudos_count`, `my_kudos`. **`is_mine=true`인 내 카드는 kudos 버튼 비활성** (본인 kudos는 400). 댓글 카운트는 run 댓글 출시 때 추가 예정(현재 필드 없음) |
 | run kudos | `POST/DELETE /runs/{run_id}/kudos`, `GET /runs/{run_id}/kudos` | 204 멱등(더블탭 안전), 본인 run 400, run 주인에게 `run_kudoed` 알림(9번째 타입). GET은 누른 사람 목록 `[{user_id, nickname, avatar_url, created_at}]`. **코스 좋아요(route like)와 별개** — 코스 평가 vs 활동 응원 |
 | 전체 공개 코스 | `GET /routes/public?sort=newest\|popular&limit` | 동일 shape |
-| 근처 코스 | `GET /routes/nearby?lat&lng&radius_km` | 동일 shape |
-| 코스 검색 | `GET /routes/search?q` | 동일 shape |
+| 근처 코스 | `GET /routes/nearby?lat&lng&radius_km` | 동일 shape. `radius_km`은 최대 50으로 클램프, `limit` 1~100 클램프 (음수·거대값도 안전) |
+| 코스 검색 | `GET /routes/search?q` | 동일 shape. `limit` 1~100 클램프 |
+| **장소 검색 (경유지 후보)** | `GET /places?keyword&lat&lng&radius_m&limit` | **⚠️ 인증 필수로 전환됨 (프론트 필독)** — 토큰 없이 호출하면 **401**. `keyword`(1~50자), 좌표(한국 bbox), `radius_m`(1~20000), `limit`(1~15) 범위 밖은 422. 경유지 선택 UI에서 쓰면 반드시 Authorization 헤더 포함 |
 | 좋아요 토글 | `POST/DELETE /routes/{id}/like` | 204, 멱등 |
 | 댓글 | `GET/POST /routes/{id}/comments`, `DELETE /routes/{id}/comments/{comment_id}` | `content` 1~500자 |
 | 이 코스 달리기(복사) | `POST /routes/{id}/copy` | 내 코스로 복사본 생성 |
@@ -164,7 +165,7 @@ fetch(`${API_BASE}/api/me/profile`, {
 | 공개 프로필 | `GET /users/{user_id}/profile` | `nickname`, `bio`, `tier`, `follower_count`, `following_count`, `is_following`, `is_followed_by`(맞팔 표시) |
 | 팔로워/팔로잉 목록 | `GET /users/{user_id}/followers` / `/following` | `[{user_id, nickname, avatar_url, followed_at, is_following}]` — 항목별 팔로우 버튼용 |
 | 크루 목록/검색/상세 | `GET /crews`, `/crews/search?q`, `/crews/mine`, `/crews/{id}` | `member_count`, `owner_nickname` 포함 |
-| 크루 생성/수정/삭제 | `POST /crews`, `PATCH/DELETE /crews/{id}` | 수정·삭제는 크루장만. **생성은 무료 플랜 1개 한도** (내가 owner인 크루 기준) — 초과 시 **403 `premium_required`** `{error, message, feature: "crew_create", limit: 1}` → 업셀 화면. 프리미엄 무제한. 크루를 삭제하거나 소유권을 위임하면 슬롯이 다시 빔 |
+| 크루 생성/수정/삭제 | `POST /crews`, `PATCH/DELETE /crews/{id}` | 수정·삭제는 크루장만. **생성은 무료 플랜 1개 한도** (내가 owner인 크루 기준) — 초과 시 **403 `premium_required`** `{error, message, feature: "crew_create", limit: 1}` → 업셀 화면. 프리미엄 무제한. 크루를 삭제하거나 소유권을 위임하면 슬롯이 다시 빔. 필드 길이: `name`≤50, `description`≤500, `area`≤50, `sport`≤30, `active_days`≤7개(각 항목 짧게), `max_members`≤100000 — 초과 422 |
 | **가입** | `POST /crews/{id}/join` | **상태 코드로 분기**: `200`=즉시 가입(`CrewResponse`, open 크루) / `202`=신청 접수(`JoinRequestResponse{status:"pending"}`, 승인제 크루). `409` = 이미 멤버 또는 `already_requested`(중복 신청). **이미 멤버면 `join_policy`와 무관하게 409가 최우선** — 승인 직후 등 어떤 타이밍에도 멤버에게 202가 가거나 pending이 생기지 않음(서버가 레이스까지 방어). 크루의 `join_policy` 필드(`open`/`approval`)로 버튼 라벨을 미리 정할 수 있음 ("가입하기" vs "가입 신청") |
 | **내 신청 전체 목록** | `GET /me/join-requests?limit&offset` | `[{crew_id, crew_name, status, created_at, decided_at}]` 최신순, 기본 limit 50. **모든 크루의 신청을 한 번에** — 둘러보기 화면 "신청됨" 뱃지용. `status`는 pending/approved/rejected 전부 포함이므로 뱃지는 `pending`만 필터해서 사용 |
 | 내 신청 상태 (크루별) | `GET /crews/{id}/join-requests/me` | `{status: pending\|approved\|rejected}` — 없으면 404. **거절은 알림이 안 오므로** 이 값으로 버튼 상태 결정: `pending`→"신청됨(취소)", `rejected`→"가입 신청"(재신청 가능), 404→"가입 신청" |
@@ -190,7 +191,7 @@ fetch(`${API_BASE}/api/me/profile`, {
 | 데이터 | 메서드/경로 | 주요 응답 필드 |
 |---|---|---|
 | 내 정보 | `GET /me` (auth 확인), `GET /me/profile` | `nickname`, `avatar_url`, `bio`, `tier` + **신체 정보 4종** `birth_year`/`weight_kg`/`height_cm`/`gender` — **본인 조회에만 존재** (다른 유저가 보는 모든 응답에 절대 미포함). 체중은 칼로리 로컬 계산용 |
-| 프로필 생성/수정 | `PATCH /me/profile` | `nickname`(2~20자, 중복 시 409) + 신체 정보 4종 optional — 보낸 것만 갱신. 범위: birth_year 1920~2026, weight 20~300, height 100~250, gender `female`\|`male`\|`undisclosed`(시안: 여성/남성/선택 안 함). 범위 밖 422. **tier는 보내도 무시됨** (관리자/IAP 전용) |
+| 프로필 생성/수정 | `PATCH /me/profile` | `nickname`(2~20자, 중복 시 409) + 신체 정보 4종 optional — 보낸 것만 갱신. 범위: birth_year 1920~2026, weight 20~300, height 100~250, gender `female`\|`male`\|`undisclosed`(시안: 여성/남성/선택 안 함). `bio`≤500자, `avatar_url`≤500자. 범위·길이 밖 422. **tier는 보내도 무시됨** (관리자/IAP 전용) |
 | **아바타 업로드** | `POST /me/avatar/upload-url` | **3단계 흐름**: ① 이 엔드포인트 호출 → `{upload_url, public_url, max_bytes, allowed_types}` ② 이미지 바이트를 `upload_url`에 **PUT** (Content-Type 필수 — jpeg/png/webp만, 5MB 상한은 Storage가 거부) ③ `public_url`을 `PATCH /me/profile`의 `avatar_url`로 저장 — **CDN 캐시 무효화를 위해 `?v=타임스탬프`를 붙여서**. 경로는 유저당 고정이라 재업로드가 자동 덮어쓰기 (옛 파일 잔여 없음) |
 | 누적 통계 | `GET /me/stats` | `all_time.{total_distance_km,run_count,avg_pace_sec_per_km}` — 프로필 헤더 "최고 페이스"는 같은 응답의 `records.best_pace.value`(sec/km) 사용 |
 | 티어/쿼터 | `GET /me/quota` | premium이면 `ai_generation.unlimited=true`. IAP 구독이 만료된 유저는 **이 호출(또는 아무 프리미엄 게이트) 시점에 자동 강등**되어 free로 옴 |

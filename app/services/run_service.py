@@ -797,6 +797,7 @@ async def list_runs(
 
     Scoped to `user_id` in app code (service_role bypasses RLS).
     """
+    limit = max(1, min(limit, 100))
     supabase = get_supabase_admin()
 
     def _query():

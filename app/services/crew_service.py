@@ -279,6 +279,7 @@ async def search_crews(q: str, limit: int = 20) -> list[CrewResponse]:
     if not safe:
         return []
 
+    limit = max(1, min(limit, 100))
     supabase = get_supabase_admin()
     pattern = f"*{safe}*"
     res = await asyncio.to_thread(

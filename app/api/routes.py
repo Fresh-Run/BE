@@ -1902,13 +1902,18 @@ async def get_weather(
 
 @router.get("/places", response_model=list[Place], summary="Search nearby places")
 async def search_places(
-    keyword: str,
-    lat: float,
-    lng: float,
-    radius_m: int = 2000,
-    limit: int = 5,
+    keyword: str = Query(..., min_length=1, max_length=50),
+    lat: float = Query(..., ge=33.0, le=39.0),
+    lng: float = Query(..., ge=124.0, le=132.0),
+    radius_m: int = Query(2000, ge=1, le=20000),
+    limit: int = Query(5, ge=1, le=15),
+    user: CurrentUser = Depends(get_current_user),
 ) -> list[Place]:
-    """Search for pitstop candidates (e.g. '편의점') near a coordinate."""
+    """Search for pitstop candidates (e.g. '편의점') near a coordinate.
+
+    인증 필수 (외부 지도 API 키 보호 — 익명 쿼터 남용 방지). 파라미터는
+    한국 bbox·반경·개수 상한으로 클램프.
+    """
     try:
         return await map_service.search_places(
             keyword=keyword,
@@ -1918,5 +1923,6 @@ async def search_places(
         )
     except NotImplementedError as exc:
         raise HTTPException(status_code=501, detail=str(exc))
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Place search failed: {exc}")
+    except Exception:  # noqa: BLE001 - 예외 텍스트에 요청 상세가 실리지 않도록 고정 문자열
+        logger.warning("장소 검색 실패", exc_info=True)
+        raise HTTPException(status_code=502, detail="장소 검색을 일시적으로 사용할 수 없습니다.")

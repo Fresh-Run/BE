@@ -46,6 +46,7 @@ async def create_notification(
 
 async def list_notifications(user_id: str, limit: int = 20) -> list[NotificationResponse]:
     """Return the caller's notifications, newest first."""
+    limit = max(1, min(limit, 100))
     supabase = get_supabase_admin()
     res = await asyncio.to_thread(
         lambda: supabase.table("notifications")
