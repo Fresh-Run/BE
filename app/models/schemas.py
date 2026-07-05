@@ -116,6 +116,24 @@ class AiCourseSettings(BaseModel):
     surface: Literal["any", "paved", "trail"] = "any"
 
 
+class AudioCoachSettings(BaseModel):
+    """AI 오디오 코치 (시안 5항목 그대로 — 프리미엄 기능이지만 저장은 무료).
+
+    서버 스크립트 생성은 cue_interval_km만 참조. voice/rate/announce_*는
+    프론트 TTS 파라미터의 기기 간 동기화용.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    voice: Literal["joy", "david"] = "joy"
+    rate: float = Field(1.0, ge=0.6, le=1.6)
+    cue_interval_km: float = Field(1.0, ge=0.5, le=3.0)
+    announce_distance: bool = True
+    announce_pace: bool = True
+    announce_calories: bool = False
+
+
 class WeatherSettings(BaseModel):
     """날씨 회피 조건 (시안 슬라이더 범위 그대로)."""
 
@@ -139,6 +157,7 @@ class UserSettings(BaseModel):
     lang: Literal["ko", "en"] = "ko"
     ai_course: AiCourseSettings = Field(default_factory=AiCourseSettings)
     weather: WeatherSettings = Field(default_factory=WeatherSettings)
+    audio_coach: AudioCoachSettings = Field(default_factory=AudioCoachSettings)
 
 
 class RunSettingsPatch(BaseModel):
@@ -171,6 +190,18 @@ class WeatherSettingsPatch(BaseModel):
     avoid_rain: Optional[bool] = None
 
 
+class AudioCoachSettingsPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: Optional[bool] = None
+    voice: Optional[Literal["joy", "david"]] = None
+    rate: Optional[float] = Field(None, ge=0.6, le=1.6)
+    cue_interval_km: Optional[float] = Field(None, ge=0.5, le=3.0)
+    announce_distance: Optional[bool] = None
+    announce_pace: Optional[bool] = None
+    announce_calories: Optional[bool] = None
+
+
 class SettingsPatch(BaseModel):
     """PATCH /me/settings 입력 — 보낸 키만 deep merge. 허용 외 키/값은 422."""
 
@@ -182,6 +213,7 @@ class SettingsPatch(BaseModel):
     lang: Optional[Literal["ko", "en"]] = None
     ai_course: Optional[AiCourseSettingsPatch] = None
     weather: Optional[WeatherSettingsPatch] = None
+    audio_coach: Optional[AudioCoachSettingsPatch] = None
 
 
 # --- Weather ------------------------------------------------------------------
@@ -356,6 +388,27 @@ class RouteResponse(BaseModel):
         description="True면 초기 반경으로 실패해 반경을 넓혀 찾은 결과 — "
         "프론트가 '반경을 넓혀 찾았어요' 안내 가능.",
     )
+
+
+class CoachCue(BaseModel):
+    """오디오 코치 멘트 하나 — 프론트 TTS가 트리거 시점에 낭독.
+
+    at 의미: distance_km → 누적 킬로미터(float), waypoint → waypoints 배열
+    인덱스(해당 좌표 ~50m 근접 시 재생), start/finish → null.
+    """
+
+    trigger: Literal["start", "distance_km", "waypoint", "finish"]
+    at: Optional[float] = None
+    text: str = Field(..., min_length=1, max_length=300)
+
+
+class CoachScriptResponse(BaseModel):
+    """POST /routes/{id}/coach-script 응답 — route당 1회 생성 후 캐시."""
+
+    route_id: str
+    cues: list[CoachCue]
+    from_cache: bool = Field(False, description="True면 저장된 스크립트 재반환 (Gemini 미호출).")
+    created_at: str
 
 
 class PedestrianRoute(BaseModel):

@@ -14,7 +14,7 @@ import json
 from openai import AsyncOpenAI
 
 from app.core.config import settings
-from app.models.schemas import AiCourseSettings, Coordinate, RouteResponse
+from app.models.schemas import AiCourseSettings, CoachCue, Coordinate, RouteResponse
 
 import os
 
@@ -244,3 +244,123 @@ async def generate_route(
     arguments = json.loads(tool_calls[0].function.arguments)
     # Validate/coerce the model output against our Pydantic schema.
     return RouteResponse.model_validate(arguments)
+
+
+# ── AI 오디오 코치 ─────────────────────────────────────────────────────────────
+
+# JSON Schema for the coach-script tool. Mirrors list[CoachCue].
+COACH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "build_coach_script",
+        "description": (
+            "Return a Korean audio-coach script for a running course as an "
+            "ordered list of TTS cues."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "cues": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "trigger": {
+                                "type": "string",
+                                "enum": ["start", "distance_km", "waypoint", "finish"],
+                            },
+                            "at": {
+                                "type": "number",
+                                "description": (
+                                    "distance_km: cumulative km. waypoint: index into "
+                                    "the course's waypoint list. Omit for start/finish."
+                                ),
+                            },
+                            "text": {"type": "string"},
+                        },
+                        "required": ["trigger", "text"],
+                    },
+                },
+            },
+            "required": ["cues"],
+        },
+    },
+}
+
+_COACH_SYSTEM = (
+    "당신은 친근한 한국어 러닝 코치입니다. 러닝 중 TTS로 낭독될 짧은 멘트를 작성합니다. "
+    "규칙: ① 의학적 조언 금지 — 심박수 목표, 건강 상태 진단, 부상·질병 관련 지시를 절대 "
+    "하지 않습니다. 안전 관련은 '몸이 힘들면 천천히 걸어도 좋아요' 수준까지만. "
+    "② 문장은 TTS 낭독용 — 한 멘트 1~2문장, 이모지·특수기호·영어 약어 금지, 숫자와 단위는 "
+    "한글 낭독형으로 씁니다 (예: 5킬로미터, 5분 30초). "
+    "③ 과장 없이 담백하게 격려합니다. "
+    "④ 반드시 build_coach_script 함수를 호출해 응답합니다."
+)
+
+
+def _build_coach_prompt(
+    distance_km: float,
+    summary: str,
+    waypoints: list[dict],
+    run_count: int | None,
+    avg_pace_sec_per_km: int | None,
+    cue_interval_km: float,
+) -> str:
+    wp_lines = []
+    for i, wp in enumerate(waypoints):
+        desc = f" — {wp['description']}" if wp.get("description") else ""
+        wp_lines.append(f"  {i}. {wp.get('name', '')}{desc}")
+    wp_text = "\n".join(wp_lines) if wp_lines else "  (경유지 정보 없음)"
+
+    if run_count and avg_pace_sec_per_km:
+        runner = (
+            f"지금까지 {run_count}회 러닝, 평소 페이스 "
+            f"{avg_pace_sec_per_km // 60}분 {avg_pace_sec_per_km % 60}초/km"
+        )
+    else:
+        runner = "첫 러닝 준비 중 (초보 러너 톤으로)"
+
+    return (
+        f"{distance_km}킬로미터 코스 \"{summary}\"의 오디오 코치 스크립트를 만들어 주세요.\n"
+        f"경유지 (waypoint 인덱스 기준):\n{wp_text}\n"
+        f"러너: {runner}.\n"
+        f"약 {cue_interval_km}km 간격으로 distance_km 멘트를, 특색 있는 경유지에는 "
+        "waypoint 멘트(그 장소의 명소·지형 이야기 1문장 포함)를, start와 finish 멘트를 "
+        "각 1개 만들어 주세요. 총 12개 이하."
+    )
+
+
+async def generate_coach_script(
+    distance_km: float,
+    summary: str,
+    waypoints: list[dict],
+    run_count: int | None = None,
+    avg_pace_sec_per_km: int | None = None,
+    cue_interval_km: float = 1.0,
+) -> list[CoachCue]:
+    """Generate the audio-coach cue list via function calling.
+
+    Returns raw validated cues; ordering/range cleanup is the caller's job
+    (coach_service._sanitize_cues).
+    """
+    messages = [
+        {"role": "system", "content": _COACH_SYSTEM},
+        {"role": "user", "content": _build_coach_prompt(
+            distance_km, summary, waypoints, run_count, avg_pace_sec_per_km,
+            cue_interval_km,
+        )},
+    ]
+
+    response = await _client.chat.completions.create(
+        model=settings.openai_model,
+        messages=messages,
+        tools=[COACH_TOOL],
+        tool_choice={"type": "function", "function": {"name": "build_coach_script"}},
+    )
+
+    tool_calls = response.choices[0].message.tool_calls
+    if not tool_calls:
+        raise ValueError("Model did not return a tool call for build_coach_script.")
+
+    arguments = json.loads(tool_calls[0].function.arguments)
+    return [CoachCue.model_validate(c) for c in arguments.get("cues", [])]

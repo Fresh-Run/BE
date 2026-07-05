@@ -33,6 +33,20 @@ class QuotaExceeded(Exception):
         super().__init__("AI generation quota exceeded")
 
 
+class PremiumRequired(Exception):
+    """Feature is premium-only and the caller is on the free tier."""
+
+    def __init__(self, feature: str):
+        self.feature = feature
+        super().__init__(f"Premium required for {feature}")
+
+
+async def ensure_premium(user_id: str, feature: str) -> None:
+    """Raise PremiumRequired unless the caller's tier is 'premium'."""
+    if await get_tier(user_id) != "premium":
+        raise PremiumRequired(feature)
+
+
 def _reset_at_kst() -> str:
     """Next Monday 00:00 KST (when the weekly quota refills), as KST ISO."""
     week_start = datetime.fromisoformat(_week_start_utc())

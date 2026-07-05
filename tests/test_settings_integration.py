@@ -59,6 +59,9 @@ DEFAULTS = {
                   "avoid_hills": False, "prefer_loop": True, "surface": "any"},
     "weather": {"avoid_dust": True, "dust_level_pm10": 80, "avoid_heat": True,
                 "heat_temp_c": 28, "avoid_rain": False},
+    "audio_coach": {"enabled": True, "voice": "joy", "rate": 1.0,
+                    "cue_interval_km": 1.0, "announce_distance": True,
+                    "announce_pace": True, "announce_calories": False},
 }
 
 

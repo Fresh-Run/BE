@@ -62,10 +62,24 @@ fetch(`${API_BASE}/api/me/profile`, {
 | 날씨 + 러닝지수 | `GET /weather?lat&lng` | `temp_c`, `feels_like_c`, `condition`(한글), `pm25/pm10.{value,grade}`, `running_index.{score,label,comment,personalized}` — pm은 부분 장애 시 null 가능. **`personalized: true`면 comment가 내 weather 설정 기준**(예: "설정하신 미세먼지 기준(PM10 50)을 넘었어요"). score/label은 항상 공용 기준 |
 | AI 코스 생성 | `POST /routes/generate` | body: `start{lat,lng}`, `target_distance_km?`, `terrain?`, `scenic?`, `avoid_hills?`, `prefer_loop?`, `surface?`, `pitstop_keyword?`, `notes?` → `summary`, `waypoints[]`, `polyline[]`, `search_radius_km`, `radius_expanded`. **free는 주 3회, 초과 시 429** (§5). 우선순위·동적 반경은 표 아래 참고 |
 | 남은 생성 횟수 표시 | `GET /me/quota` | `tier`, `ai_generation.{used,limit,remaining,reset_at,unlimited}` |
+| **AI 오디오 코치 (프리미엄)** | `POST /routes/{id}/coach-script` | `{route_id, cues[], from_cache, created_at}` — 내 코스만(404), free는 **403 `premium_required`**(§5). route당 1회 생성 후 캐시(`from_cache: true`), AI 생성 쿼터 미차감. 스키마·재생 규칙은 표 아래 참고 |
 | 저장한 코스 | `GET /routes/bookmarked?limit&offset` | `PublicRouteResponse[]` (아래 피드와 동일 shape) |
 | 코스 북마크 토글 | `POST/DELETE /routes/{id}/bookmark` | 204, 멱등 (더블탭 안전) |
 
 > **코스 생성 우선순위 — body > 내 설정 > 서버 기본값**: `target_distance_km`와 선호 5종(`terrain`/`scenic`/`avoid_hills`/`prefer_loop`/`surface`)은 body에서 생략하면 내 `settings.ai_course` 값이 자동 적용됩니다 (`target_distance_km`는 `default_distance_km`로 폴백 — **이제 생략 가능**). body에 보낸 필드는 그 요청에 한해 설정을 덮어쓰므로, 화면 슬라이더 값은 항상 body로 보내면 됩니다. `false`도 명시값으로 취급되어 설정을 덮어씁니다.
+>
+> **오디오 코치 cues 스키마 (프론트 TTS 재생 규칙)**:
+>
+> ```jsonc
+> "cues": [
+>   { "trigger": "start",       "at": null, "text": "오늘은 서울숲을 도는 5킬로미터 코스예요." },
+>   { "trigger": "distance_km", "at": 1.0,  "text": "1킬로미터 지났어요." },   // GPS 누적거리 도달 시
+>   { "trigger": "waypoint",    "at": 2,    "text": "곧 은행나무길이에요…" },   // waypoints[2] 좌표 ~50m 근접 시
+>   { "trigger": "finish",      "at": null, "text": "완주했어요!" }
+> ]
+> ```
+>
+> `distance_km`는 GPS 누적거리로, `waypoint`는 해당 인덱스 좌표 **~50m 근접 시** 재생하세요. 멘트는 TTS 낭독형 한국어(숫자 한글 표기)로 옵니다. **실시간 수치 낭독(거리/페이스/칼로리 — 설정의 안내 항목)과 날씨 멘트는 프론트 로컬 계산 몫**입니다 — 날씨는 러닝 시작 직전 `GET /weather`의 `running_index.comment`(개인화 반영됨)를 읽으면 됩니다. `voice`/`rate`는 `settings.audio_coach` 값을 TTS 엔진에 적용.
 >
 > **동적 탐색 반경**: 출발지 주변이 좁아 코스 생성이 어려우면 서버가 출발지는 고정한 채 탐색 반경을 자동으로 넓혀가며 재시도합니다(목표 거리 비례 시작, 최대 8km·4시도). 응답의 `search_radius_km`는 사용된 반경, **`radius_expanded: true`면 "주변에 코스가 마땅치 않아 반경을 N km까지 넓혀 찾았어요" 안내를 띄우기 좋습니다**. 반경을 다 넓혀도 목표에 못 미치면 가장 근접한 코스를 그대로 반환하니 `total_distance_km`와 요청 목표를 비교해 "목표보다 짧은 코스예요"를 표시하세요. 재시도 때문에 **생성은 최대 ~30초** 걸릴 수 있습니다(클라이언트 타임아웃 여유 있게). 쿼터는 재시도 횟수와 무관하게 요청당 1회만 차감됩니다.
 
@@ -155,7 +169,13 @@ fetch(`${API_BASE}/api/me/profile`, {
                  "surface": "any" },         // "any" | "paved" | "trail"
   "weather":   { "avoid_dust": true, "dust_level_pm10": 80,   // 30 ~ 150
                  "avoid_heat": true, "heat_temp_c": 28,       // 20 ~ 38
-                 "avoid_rain": false }
+                 "avoid_rain": false },
+  "audio_coach": { "enabled": true,
+                   "voice": "joy",              // "joy"(활기찬) | "david"(차분한)
+                   "rate": 1.0,                 // 0.6 ~ 1.6 (TTS 말하기 속도)
+                   "cue_interval_km": 1.0,      // 0.5 ~ 3.0 (안내 간격)
+                   "announce_distance": true, "announce_pace": true,
+                   "announce_calories": false } // 안내 항목 (프론트 로컬 낭독)
 }
 ```
 
@@ -172,7 +192,7 @@ fetch(`${API_BASE}/api/me/profile`, {
 | 코드 | 의미 | 프론트 처리 권장 |
 |---|---|---|
 | **401** | 토큰 없음/만료 | refresh 후 1회 재시도 → 실패 시 로그인 화면 |
-| **403** | 권한 없음 (비크루원 조회, 크루장 아님 등) | 해당 UI 숨김/비활성이 원칙, 받으면 토스트 |
+| **403** | 권한 없음 (비크루원 조회, 크루장 아님 등) | 해당 UI 숨김/비활성이 원칙, 받으면 토스트. **`premium_required`**(구조화: `{error, message, feature}`) → 프리미엄 업셀 화면으로 이동 |
 | **404** | 없거나 볼 수 없음 (비공개 코스, 남의 기록도 404) | "존재하지 않음" 처리 — 403과 구분해 존재 여부를 숨기는 의도 |
 | **409** | 상태 충돌 | `nickname taken`(닉네임 중복) → 인라인 에러 표시. **`rsvp_closed`** → 투표 버튼 비활성 + "마감되었습니다" (사전에 `rsvp_open` 플래그로 버튼 상태 결정 가능) |
 | **429** | **AI 생성 쿼터 초과** | `detail.{limit,used,remaining,reset_at}` 제공 → "이번 주 3회를 모두 사용했어요, 월요일 리셋" + 프리미엄 업셀 화면. `reset_at`은 KST ISO |

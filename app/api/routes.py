@@ -17,6 +17,7 @@ from app.models.schemas import (
     AnnouncementUpdate,
     ChallengeCreate,
     ChallengeResponse,
+    CoachScriptResponse,
     CommentCreate,
     CommentResponse,
     Coordinate,
@@ -58,6 +59,7 @@ from app.models.schemas import (
 )
 from app.services import (
     announcement_service,
+    coach_service,
     crew_service,
     follow_service,
     map_service,
@@ -330,6 +332,49 @@ async def list_routes(
         return await route_service.list_routes(user_id=user.user_id, limit=limit)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"Failed to list routes: {exc}")
+
+
+@router.post(
+    "/routes/{route_id}/coach-script",
+    response_model=CoachScriptResponse,
+    summary="AI 오디오 코치 스크립트 (프리미엄, route당 1회 생성 후 캐시)",
+)
+async def create_coach_script(
+    route_id: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> CoachScriptResponse:
+    """Generate (or return the cached) TTS coach script for one of my routes.
+
+    Premium only (403 premium_required). Weekly AI quota is NOT consumed —
+    the per-route cache is the natural cap. 404 for missing/others' routes.
+    """
+    try:
+        await quota_service.ensure_premium(user.user_id, "audio_coach")
+    except quota_service.PremiumRequired:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "premium_required",
+                "message": "AI 오디오 코치는 프리미엄 전용 기능이에요.",
+                "feature": "audio_coach",
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Failed to check tier: {exc}")
+
+    try:
+        return await coach_service.get_or_create_script(route_id, user.user_id)
+    except coach_service.RouteNotFound:
+        raise HTTPException(status_code=404, detail="Route not found")
+    except Exception:  # noqa: BLE001
+        logger.warning("코치 스크립트 생성 실패", exc_info=True)
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error": "coach_script_failed",
+                "message": "코치 스크립트 생성에 실패했어요. 잠시 후 다시 시도해 주세요.",
+            },
+        )
 
 
 @router.get(
