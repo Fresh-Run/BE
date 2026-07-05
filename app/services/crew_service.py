@@ -948,12 +948,14 @@ async def get_weekly_ranking(crew_id: str, caller_id: str) -> list[CrewRankingEn
         return []
 
     # 4. Fetch this week's runs for all members in one IN query.
+    #    (부정 의심 run은 랭킹 집계에서 제외 — GPS 검증 정책)
     week_start = _week_start_utc()
     runs_res = await asyncio.to_thread(
         lambda: supabase.table("runs")
         .select("user_id, distance_km")
         .in_("user_id", member_ids)
         .gte("ran_at", week_start)
+        .neq("verification", "suspect")
         .execute()
     )
 
@@ -1082,6 +1084,7 @@ async def get_current_challenge(
     ch = ch_res.data[0]
 
     # 4. Calculate progress: runs within challenge period for all members.
+    #    (부정 의심 run은 챌린지 집계에서 제외 — GPS 검증 정책)
     if member_ids:
         runs_res = await asyncio.to_thread(
             lambda: supabase.table("runs")
@@ -1089,6 +1092,7 @@ async def get_current_challenge(
             .in_("user_id", member_ids)
             .gte("ran_at", ch["starts_at"])
             .lte("ran_at", ch["ends_at"])
+            .neq("verification", "suspect")
             .execute()
         )
         achieved_km = round(sum(r["distance_km"] for r in runs_res.data), 2)

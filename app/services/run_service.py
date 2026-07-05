@@ -21,9 +21,11 @@ from app.models.schemas import (
     RecordsBlock,
     RunRequest,
     RunResponse,
+    RunSplit,
+    RunTrackResponse,
     StatsResponse,
 )
-from app.services import profile_service
+from app.services import profile_service, track_service
 
 _UNIQUE_VIOLATION = "23505"
 
@@ -48,23 +50,60 @@ async def create_run(req: RunRequest, user_id: str | None = None) -> RunResponse
     anonymous requests. supabase-py is synchronous, so the blocking call
     runs in a worker thread.
     """
+    # ── GPS 서버 검증 (설계 2026-07-06): gps_track이 있으면 필터→거리→스플릿.
+    # Best-effort: 처리 실패가 기록 저장을 막으면 안 됨 (unverified로 진행).
+    processed: track_service.ProcessedTrack | None = None
+    verification = "unverified"
+    final_distance = req.distance_km
+    reported: float | None = None
+    is_flagged = False
+    if req.gps_track:
+        try:
+            pts = [
+                track_service.TrackPoint(lat=g.lat, lng=g.lng, t_ms=g.t,
+                                         acc=g.acc, alt=g.alt)
+                for g in req.gps_track
+            ]
+            processed = track_service.process_track(pts)
+            verification = track_service.classify(processed, req.distance_km)
+            # DB 체계는 3종(unverified/verified/suspect) + is_flagged —
+            # 파이프라인의 'adjusted'는 "verified + is_flagged + 거리 대체"로 매핑.
+            if verification == "adjusted":
+                reported = req.distance_km          # 앱 신고값 보존
+                final_distance = processed.server_distance_km  # 서버 계산이 정본
+                verification = "verified"
+                is_flagged = True
+            elif verification == "suspect":
+                is_flagged = True
+        except Exception:  # noqa: BLE001 - 검증은 부가 기능, 기록 유실 금지
+            logger.warning("GPS 트랙 처리 실패 — unverified로 저장", exc_info=True)
+            processed = None
+            verification = "unverified"
+            is_flagged = False
+
     # PB 경신 감지 — 저장 "전" 스냅샷과 비교해야 자기 자신이 끼지 않는다.
-    # Best-effort: 감지 실패가 run 저장을 막으면 안 됨 (new_records=[]로 진행).
+    # suspect run은 PB 후보가 아니므로 감지 자체를 스킵 (부정 방지).
     new_records: list[NewRecord] = []
-    if user_id:
+    if user_id and verification != "suspect":
         try:
             prev_rows = await _fetch_runs_range(user_id, None, None)
-            new_records = _detect_new_records(prev_rows, req)
+            eff_req = req if final_distance == req.distance_km else req.model_copy(
+                update={"distance_km": final_distance, "avg_pace_sec_per_km": None}
+            )
+            new_records = _detect_new_records(prev_rows, eff_req)
         except Exception:  # noqa: BLE001 - celebration is a bonus, not a gate
             logger.warning("PB 경신 감지 실패 — new_records 없이 저장 진행", exc_info=True)
 
     record = {
         "user_id": user_id,
         "route_id": req.route_id,
-        "distance_km": req.distance_km,
+        "distance_km": final_distance,
         "duration_sec": req.duration_sec,
         "avg_pace_sec_per_km": req.avg_pace_sec_per_km,
         "notes": req.notes,
+        "verification": verification,
+        "distance_km_reported": reported,
+        "is_flagged": is_flagged,
     }
 
     supabase = get_supabase_admin()
@@ -76,8 +115,37 @@ async def create_run(req: RunRequest, user_id: str | None = None) -> RunResponse
         raise RuntimeError("Supabase insert returned no row for the run.")
 
     saved = result.data[0]
-    logger.info("Saved run to Supabase (id=%s).", saved.get("id"))
-    run = RunResponse(**saved, new_records=new_records)
+    logger.info("Saved run to Supabase (id=%s, verification=%s).",
+                saved.get("id"), verification)
+
+    # 트랙 저장 (best-effort — 실패해도 run은 유지, has_track만 False)
+    has_track = False
+    splits_out: list[RunSplit] | None = None
+    if processed is not None:
+        try:
+            splits_out = [
+                RunSplit(km=s.km, sec=s.sec, elev_gain_m=s.elev_gain_m,
+                         partial=s.partial)
+                for s in processed.splits
+            ]
+            await asyncio.to_thread(
+                lambda: supabase.table("run_tracks").insert({
+                    "run_id": saved["id"],
+                    "points": processed.polyline,
+                    "splits": [s.model_dump() for s in splits_out],
+                    "raw_point_count": processed.point_count_raw,
+                    "kept_point_count": processed.point_count_kept,
+                    "max_speed_kmh": processed.max_speed_kmh,
+                    "avg_accuracy_m": processed.avg_accuracy_m,
+                }).execute()
+            )
+            has_track = True
+        except Exception:  # noqa: BLE001
+            logger.warning("run_tracks 저장 실패 — run은 유지", exc_info=True)
+            splits_out = None
+
+    run = RunResponse(**saved, new_records=new_records,
+                      has_track=has_track, splits=splits_out)
 
     if user_id:
         try:
@@ -137,6 +205,7 @@ def _compute_records(rows: list[dict]) -> RecordsBlock:
     달성한 run이 유지된다.
     """
     best = RecordsBlock()
+    rows = [r for r in rows if r.get("verification") != "suspect"]  # 부정 의심 제외
     for r in sorted(rows, key=lambda r: r["ran_at"]):
         dist, dur = r["distance_km"], r["duration_sec"]
 
@@ -210,7 +279,8 @@ async def _fetch_runs_range(
     def _q():
         q = (
             supabase.table("runs")
-            .select("id, ran_at, distance_km, duration_sec, avg_pace_sec_per_km")
+            .select("id, ran_at, distance_km, duration_sec, avg_pace_sec_per_km, "
+                    "verification")
             .eq("user_id", user_id)
         )
         if start:
@@ -275,6 +345,30 @@ async def get_my_stats(user_id: str) -> StatsResponse:
     )
 
 
+async def _track_summaries(run_ids: list[str]) -> dict[str, list[RunSplit]]:
+    """{run_id: splits} — 트랙 있는 run만. 목록/단건 응답 enrich용 (배치 1쿼리).
+
+    Best-effort: 실패 시 빈 dict (has_track=False로 표시될 뿐, 조회는 성공).
+    """
+    if not run_ids:
+        return {}
+    try:
+        supabase = get_supabase_admin()
+        res = await asyncio.to_thread(
+            lambda: supabase.table("run_tracks")
+            .select("run_id, splits")
+            .in_("run_id", run_ids)
+            .execute()
+        )
+        return {
+            r["run_id"]: [RunSplit.model_validate(s) for s in (r["splits"] or [])]
+            for r in res.data
+        }
+    except Exception:  # noqa: BLE001
+        logger.warning("run_tracks 요약 조회 실패 — splits 없이 응답", exc_info=True)
+        return {}
+
+
 async def get_run(run_id: str, user_id: str) -> RunResponse | None:
     """Return one run, or None if it doesn't exist or isn't the caller's."""
     supabase = get_supabase_admin()
@@ -288,7 +382,50 @@ async def get_run(run_id: str, user_id: str) -> RunResponse | None:
     )
     if not res.data:
         return None
-    return RunResponse(**res.data[0])
+    row = res.data[0]
+    tracks = await _track_summaries([row["id"]])
+    return RunResponse(**row, has_track=row["id"] in tracks,
+                       splits=tracks.get(row["id"]))
+
+
+async def get_run_track(run_id: str, user_id: str) -> RunTrackResponse | None:
+    """run의 경로(폴리라인) — 본인 소유 + 트랙 존재 시에만 (아니면 None → 404)."""
+    supabase = get_supabase_admin()
+    own = await asyncio.to_thread(
+        lambda: supabase.table("runs")
+        .select("id")
+        .eq("id", run_id)
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+    if not own.data:
+        return None
+    res = await asyncio.to_thread(
+        lambda: supabase.table("run_tracks")
+        .select("points, splits, raw_point_count, kept_point_count")
+        .eq("run_id", run_id)
+        .limit(1)
+        .execute()
+    )
+    if not res.data:
+        return None
+    row = res.data[0]
+    # server_distance/elev는 컬럼이 없어 splits에서 파생:
+    # 총거리 = partial 랩의 km(=총거리) 또는 정수 랩 수, 상승 = 랩 상승 합.
+    splits = row.get("splits") or []
+    if splits and splits[-1].get("partial"):
+        dist = float(splits[-1]["km"])
+    else:
+        dist = float(len(splits))
+    gains = [s["elev_gain_m"] for s in splits if s.get("elev_gain_m") is not None]
+    return RunTrackResponse(
+        polyline=row["points"],
+        server_distance_km=dist,
+        elev_gain_m=sum(gains) if gains else None,
+        point_count_raw=row["raw_point_count"],
+        point_count_kept=row["kept_point_count"],
+    )
 
 
 def _month_range_utc(year: int, month: int) -> tuple[str, str]:
@@ -610,13 +747,14 @@ async def _check_challenge_completion(user_id: str) -> None:
         if not member_ids:
             continue
 
-        # ④ Sum runs within the challenge period
+        # ④ Sum runs within the challenge period (부정 의심 run 제외)
         runs_res = await asyncio.to_thread(
             lambda: supabase.table("runs")
             .select("distance_km")
             .in_("user_id", member_ids)
             .gte("ran_at", ch_starts_at)
             .lte("ran_at", ch_ends_at)
+            .neq("verification", "suspect")
             .execute()
         )
         achieved_km = sum(r["distance_km"] for r in runs_res.data)
@@ -674,7 +812,11 @@ async def list_runs(
         return q.execute()
 
     result = await asyncio.to_thread(_query)
-    return [RunResponse(**row) for row in result.data]
+    tracks = await _track_summaries([row["id"] for row in result.data])
+    return [
+        RunResponse(**row, has_track=row["id"] in tracks, splits=tracks.get(row["id"]))
+        for row in result.data
+    ]
 
 
 async def set_feedback(

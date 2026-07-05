@@ -53,6 +53,7 @@ from app.models.schemas import (
     RouteResponse,
     RunRequest,
     RunResponse,
+    RunTrackResponse,
     SettingsPatch,
     StatsResponse,
     StoredRoute,
@@ -857,6 +858,25 @@ async def get_run(
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
     return run
+
+
+@router.get(
+    "/runs/{run_id}/track",
+    response_model=RunTrackResponse,
+    summary="러닝 경로 (GPS 폴리라인, 상세 화면 전용)",
+)
+async def get_run_track(
+    run_id: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> RunTrackResponse:
+    """The run's simplified GPS polyline. 404 if not mine or no track."""
+    try:
+        track = await run_service.get_run_track(run_id, user_id=user.user_id)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Failed to fetch track: {exc}")
+    if track is None:
+        raise HTTPException(status_code=404, detail="Track not found")
+    return track
 
 
 @router.post(

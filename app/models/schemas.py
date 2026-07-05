@@ -687,6 +687,26 @@ class PublishRequest(BaseModel):
     is_public: bool
 
 
+class GpsPoint(BaseModel):
+    """gps_track 한 포인트 — 좌표는 느슨하게 받고(서비스 bbox 밖은 파이프라인이
+    조용히 제거) 검증은 서버 파이프라인의 몫."""
+
+    lat: float
+    lng: float
+    t: int = Field(..., description="epoch milliseconds")
+    acc: Optional[float] = Field(None, description="horizontalAccuracy(m) — 강력 권장.")
+    alt: Optional[float] = Field(None, description="altitude(m) — 고도 차트용.")
+
+
+class RunSplit(BaseModel):
+    """km별 랩 — 시안 '페이스 & 고도 분석' 차트용."""
+
+    km: float = Field(..., description="정수 랩(1,2,…) / 마지막 partial은 총거리.")
+    sec: int = Field(..., description="랩 소요 시간 (elapsed).")
+    elev_gain_m: Optional[int] = Field(None, description="랩 내 고도 상승 (alt 없으면 null).")
+    partial: bool = False
+
+
 class RunRequest(BaseModel):
     """Input from the client to log an actual run."""
 
@@ -700,6 +720,14 @@ class RunRequest(BaseModel):
         None, gt=0, description="Average pace in seconds per km (optional)."
     )
     notes: Optional[str] = Field(None, description="Free-form notes about the run.")
+    gps_track: Optional[list[GpsPoint]] = Field(
+        None,
+        max_length=5000,
+        description=(
+            "러닝 종료 시 일괄 전송하는 GPS 궤적 (3~5초 또는 10m 간격 권장, "
+            "최대 5000pt). 있으면 서버가 검증·스플릿·경로를 계산한다. optional."
+        ),
+    )
 
 
 class RunResponse(BaseModel):
@@ -723,6 +751,32 @@ class RunResponse(BaseModel):
         default_factory=list,
         description="이번 저장으로 경신된 PB 목록. 첫 run(이전 기록 없음)은 항상 [].",
     )
+    # GPS 서버 검증 (기본값 있는 추가 필드 — 하위 호환)
+    verification: str = Field(
+        "unverified",
+        description="unverified(GPS 없음/판정 보류) / verified / suspect(부정 의심 — PB·랭킹·챌린지 제외)",
+    )
+    is_flagged: bool = Field(
+        False,
+        description="True면 서버가 조정·의심 표시 — 거리 대체(verified+distance_km_reported) 또는 suspect.",
+    )
+    distance_km_reported: Optional[float] = Field(
+        None, description="거리 괴리로 서버 값이 대체됐을 때 앱이 신고했던 원본 거리."
+    )
+    has_track: bool = Field(False, description="True면 GET /runs/{id}/track 조회 가능.")
+    splits: Optional[list[RunSplit]] = Field(
+        None, description="km별 랩 (GPS 없는 run은 null)."
+    )
+
+
+class RunTrackResponse(BaseModel):
+    """GET /runs/{run_id}/track — 상세 화면 전용 (경로 지도)."""
+
+    polyline: list[Coordinate] = Field(..., description="간축된 경로 (≤1000pt).")
+    server_distance_km: float
+    elev_gain_m: Optional[int] = None
+    point_count_raw: int
+    point_count_kept: int
 
 
 class FeedbackRequest(BaseModel):

@@ -89,9 +89,10 @@ fetch(`${API_BASE}/api/me/profile`, {
 |---|---|---|
 | 월 선택 통계 + 캘린더 | `GET /me/stats/monthly?year&month` | `stats`(합계·평균페이스·전월 대비 delta), `days[{date,distance_km,run_count}]` — 뛴 날만 옴, 캘린더 점 찍기용 (KST 기준). **무료** |
 | **AI 월간 인사이트 (프리미엄)** | `GET /me/insights/monthly?year&month` | 프리미엄 월간 리포트 화면 전체 데이터. free는 **403 `premium_required`**(§5), month 1~12 외 422. 스키마는 표 아래 참고 |
-| 러닝 기록 저장 | `POST /runs` | body: `distance_km`, `duration_sec`, `route_id?`, `avg_pace_sec_per_km?`, `notes?`. 응답에 `new_records[]` — **비어있지 않으면 "새로운 기록 경신!" 축하 모달을 띄우면 됩니다** (`{type, previous, current, improvement_pct}` — 이전/현재 비교 카드 + "N% 향상" 칩 그대로). 첫 run은 항상 `[]` |
-| 기록 목록 | `GET /runs?limit&route_id?` | `RunResponse[]` 최신순 |
+| 러닝 기록 저장 | `POST /runs` | body: `distance_km`, `duration_sec`, `route_id?`, `avg_pace_sec_per_km?`, `notes?`, **`gps_track?`** (아래 규약). 응답에 `new_records[]` — **비어있지 않으면 "새로운 기록 경신!" 축하 모달을 띄우면 됩니다** (`{type, previous, current, improvement_pct}` — 이전/현재 비교 카드 + "N% 향상" 칩 그대로). 첫 run은 항상 `[]` |
+| 기록 목록 | `GET /runs?limit&route_id?` | `RunResponse[]` 최신순 — GPS run은 `splits[]`·`has_track`·`verification` 포함 |
 | 기록 단건 | `GET /runs/{run_id}` | 본인 것만, 아니면 404 |
+| **러닝 경로 (지도)** | `GET /runs/{run_id}/track` | `{polyline[{lat,lng}], server_distance_km, elev_gain_m, point_count_raw/kept}` — 활동 상세 지도용. 트랙 없는 run(기존/수동)은 404 (`has_track`으로 사전 판단) |
 | 2탭 피드백 | `PATCH /runs/{run_id}/feedback` | body: `liked`(bool), `tags[]` (허용 태그는 Swagger의 FeedbackTag) |
 
 > **AI 월간 인사이트 응답** (`GET /me/insights/monthly`):
@@ -114,6 +115,20 @@ fetch(`${API_BASE}/api/me/profile`, {
 > ```
 >
 > 수치 블록은 매 요청 최신 계산, `ai`만 캐시(지난달 영구, 이번 달은 러닝할 때만 갱신). **해당 월 run 0회면 `ai: null`** — 빈 상태 UI로 처리. **시안 중 심박 존·평균/최대 심박·누적 고도·칼로리·지형 분석·월 목표 링은 백엔드 데이터가 없어 미제공** — 헬스킷 등 로컬 데이터로 채우거나 숨기고, 월 목표는 목표 설정 기능 후속 시 추가 예정.
+
+> **GPS 트랙 규약 (`POST /runs`의 `gps_track`)** — **러닝 종료 시 일괄 전송** (실시간 스트리밍 아님):
+>
+> ```jsonc
+> "gps_track": [ { "lat": 37.544512, "lng": 127.037431,
+>                  "t": 1783300000000,   // epoch ms
+>                  "acc": 8.2,           // horizontalAccuracy(m) — 필터 정확도를 위해 강력 권장
+>                  "alt": 34.6 } ]       // altitude(m) — 고도 차트용, 없으면 elev null
+> ```
+>
+> - 샘플링: **3~5초 또는 10m 이동 간격** (iOS `distanceFilter=10`). **상한 5,000pt** (≈4초 간격 5.5시간) 초과 시 422.
+> - 서버가 노이즈 필터(accuracy>30m, 순간이동, 일시정지 gap) 후 거리·km 스플릿·고도를 계산합니다. `gps_track` 없는 저장(수동 입력)은 기존과 완전히 동일하게 동작.
+> - **`verification` 의미** (3종 + `is_flagged`): `unverified`(GPS 없음/판정 보류 — 기존 run 전부), `verified`(검증 통과), `suspect`(자전거/차량 의심 — 기록은 남지만 **PB·크루 랭킹·챌린지 집계에서 제외**, `is_flagged=true`). **신고 거리가 서버 계산과 ±10% 초과 괴리면** `verified` + `is_flagged=true`로 오고 **`distance_km`가 서버 값으로 대체**되며 원본은 `distance_km_reported`에 보존 — `is_flagged=true`면 "서버가 기록을 조정/표시했어요" UI 권장.
+> - `splits[]`: `{km, sec, elev_gain_m, partial}` — 시안 "페이스 & 고도 분석" 차트에 그대로 바인딩 (partial=마지막 부분 킬로).
 
 > **개인 최고 기록 (PB)** — `GET /me/stats`의 `records` 블록 (프로필 헤더 "최고 페이스", 기록 화면용):
 >
