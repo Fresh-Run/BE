@@ -49,7 +49,7 @@ _ADM = {"apikey": _SVC, "Authorization": f"Bearer {_SVC}", "Content-Type": "appl
 
 made = {"users": 0, "profiles": 0, "crews": 0, "announcements": 0, "rsvps": 0,
         "join_requests": 0, "runs": 0, "routes": 0, "likes": 0, "comments": 0,
-        "bookmarks": 0, "follows": 0}
+        "bookmarks": 0, "follows": 0, "kudos": 0}
 
 
 def log(m): print(f"  {m}")
@@ -308,6 +308,26 @@ def main():
             seed_runs_if_absent(c, tok, uid, specs)
         log(f"run 시딩 {made['runs']}개")
 
+        # ── 7. kudos (본인 run 제외, POST가 멱등이라 재실행 안전) ────────
+        section("7. run kudos")
+        member_keys = ["test1", "test2", "demo1", "demo2", "demo3", "demo4"]
+        cutoff = datetime.now(timezone.utc) - timedelta(days=14)
+        for oi, owner in enumerate(member_keys):
+            _, otok = users[owner]
+            runs = [r for r in api(c, "GET", "/runs", otok, params={"limit": 10}).json()
+                    if datetime.fromisoformat(r["ran_at"].replace("Z", "+00:00")) >= cutoff]
+            others = [k for k in member_keys if k != owner]
+            # 결정적 분배: n번째 run에 (2~3명)이 돌아가며 kudos
+            for ri, run in enumerate(runs[:3]):
+                for kj in range(2 + (ri % 2)):
+                    kudoser = others[(oi + ri + kj) % len(others)]
+                    r = api(c, "POST", f"/runs/{run['id']}/kudos", users[kudoser][1])
+                    if r.status_code == 204:
+                        made["kudos"] += 1
+                    elif r.status_code not in (400,):  # 400 = self (분배상 없음)
+                        die(f"kudos 실패 {kudoser}→{owner}", r.text)
+        log(f"kudos {made['kudos']}건 보장 (본인 run 제외 분배)")
+
         # ── 요약 ─────────────────────────────────────────────────────────
         section("시딩 요약 (이번 실행에서 새로 만든 것)")
         for k, v in made.items():
@@ -331,6 +351,14 @@ def main():
         reqs = api(c, "GET", f"/crews/{CREW}/join-requests", t1).json()
         log(f"가입 신청 대기: {len(reqs)}건" +
             (f" ({reqs[0]['nickname']})" if reqs else ""))
+        acts = api(c, "GET", "/feed/activities", t1, params={"limit": 8}).json()
+        log(f"활동 피드: {len(acts)}건")
+        for a in acts[:5]:
+            who = "나" if a["is_mine"] else a["nickname"]
+            log(f"  · {who} {a['distance_km']}km — kudos {a['kudos_count']}"
+                f"{' (내가 누름)' if a['my_kudos'] else ''}")
+        mine_with_kudos = [a for a in acts if a["is_mine"] and a["kudos_count"] > 0]
+        log(f"  → 내 run 중 kudos 받은 것: {len(mine_with_kudos)}건")
         print("\n완료. 프론트에서 test1@freshrun.com / (공유된 비번)으로 로그인해 확인하세요.")
 
 
