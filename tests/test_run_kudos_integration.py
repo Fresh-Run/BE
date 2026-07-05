@@ -131,7 +131,9 @@ def run():
             ok("알림 1건 ✓ target=run ✓")
 
             # ── 4. 누른 사람 목록 ─────────────────────────────────────────
-            step("4. kudos 목록 (u3도 kudos — 팔로우 무관)")
+            # L1 게이트: kudos는 보이는 run만(본인·팔로우·크루) — u3도 u2를 팔로우해야 가능
+            step("4. kudos 목록 (u3가 u2 팔로우 후 kudos)")
+            assert api(c, "POST", f"/users/{uid2}/follow", tok3).status_code == 204
             assert api(c, "POST", f"/runs/{run_a}/kudos", tok3).status_code == 204
             users_list = api(c, "GET", f"/runs/{run_a}/kudos", tok2).json()
             assert [u["user_id"] for u in users_list] == [uid3, uid1], "최신순 [u3, u1]"
@@ -186,6 +188,8 @@ def run():
             assert api(c, "DELETE", f"/users/{uid2}/follow", tok1).status_code == 204
             assert [i["run_id"] for i in feed(c, tok1)] == [run_mine], "내 run만 남음"
             assert feed(c, tok4) == [], "팔로우 0 + run 0 → 빈 배열"
+            # step 4에서 kudos 위해 걸어둔 u3→u2 팔로우 해제 (팔로우 0 전제 복원, kudos 행은 유지)
+            assert api(c, "DELETE", f"/users/{uid2}/follow", tok3).status_code == 204
             items3 = feed(c, tok3)
             assert [i["run_id"] for i in items3] == [run_c] and items3[0]["is_mine"] is True, \
                 "팔로우 0이어도 내 run은 포함"

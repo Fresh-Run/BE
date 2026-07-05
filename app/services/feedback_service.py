@@ -134,6 +134,7 @@ async def collect_avoidance_hints(
 
 async def collect_route_avoidance_hints(
     route_id: str,
+    owner_id: str | None = None,
     days: int = 90,
     min_count: int = 1,
     top_n: int = 3,
@@ -144,10 +145,25 @@ async def collect_route_avoidance_hints(
     was bad, give me a better one"). Because the route is chosen deliberately,
     `min_count` defaults to 1 (a single bad run is a real signal).
 
+    소유권(감사 M4): owner_id가 주어지면 그 유저 소유의 route일 때만 학습한다.
+    남의 비공개 route id를 넣어 그 route의 피드백을 프롬프트로 프로브하는 것을
+    차단 — 소유가 아니면 조용히 [] 반환 (존재 은닉).
+
     Best-effort: any failure logs a warning and returns an empty list.
     """
     try:
         supabase = get_supabase_admin()
+        if owner_id is not None:
+            own = await asyncio.to_thread(
+                lambda: supabase.table("routes")
+                .select("id")
+                .eq("id", route_id)
+                .eq("user_id", owner_id)
+                .limit(1)
+                .execute()
+            )
+            if not own.data:
+                return []  # 남의 route — 학습 거부
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
         runs_res = await asyncio.to_thread(
             lambda: supabase.table("runs")

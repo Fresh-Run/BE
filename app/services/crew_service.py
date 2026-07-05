@@ -1173,4 +1173,9 @@ async def delete_crew(crew_id: str, caller_id: str) -> None:
     await asyncio.to_thread(
         lambda: supabase.table("crews").delete().eq("id", crew_id).execute()
     )
+    # 이 크루를 가리키던 알림 정리 (M10 — 유령 알림·unread_count 방지)
+    try:
+        await notification_service.delete_for_target("crew", crew_id)
+    except Exception:  # noqa: BLE001
+        logger.warning("크루 삭제 후 알림 정리 실패 (crew=%s)", crew_id, exc_info=True)
     logger.info("Crew %s deleted by owner %s.", crew_id, caller_id)

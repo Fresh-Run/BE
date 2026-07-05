@@ -80,6 +80,23 @@ async def unread_count(user_id: str) -> int:
     return res.count or 0
 
 
+async def delete_for_target(target_type: str, target_id: str) -> None:
+    """대상이 삭제될 때 그 대상을 가리키는 알림을 정리 (감사 M10).
+
+    notifications.target_id에 FK가 없어, 크루/공지 삭제 후 404 대상 알림이
+    알림함·unread_count에 유령으로 남는다. best-effort — 실패해도 삭제 자체는
+    성공시킨다 (호출부에서 스왈로).
+    """
+    supabase = get_supabase_admin()
+    await asyncio.to_thread(
+        lambda: supabase.table("notifications")
+        .delete()
+        .eq("target_type", target_type)
+        .eq("target_id", target_id)
+        .execute()
+    )
+
+
 async def mark_read(notification_id: str, user_id: str) -> bool:
     """Mark one notification as read. Returns False if not found or not owned."""
     supabase = get_supabase_admin()

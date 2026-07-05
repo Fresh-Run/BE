@@ -307,6 +307,11 @@ async def delete_announcement(
         .eq("id", announcement_id)
         .execute()
     )
+    # 이 공지를 가리키던 알림 정리 (M10 — 유령 알림·unread_count 방지)
+    try:
+        await notification_service.delete_for_target("announcement", announcement_id)
+    except Exception:  # noqa: BLE001
+        logger.warning("공지 삭제 후 알림 정리 실패 (ann=%s)", announcement_id, exc_info=True)
 
 
 async def rsvp(

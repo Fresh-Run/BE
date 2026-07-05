@@ -535,14 +535,62 @@ async def _run_owner(run_id: str) -> str:
     return res.data[0]["user_id"]
 
 
+class RunNotVisible(Exception):
+    """Caller can't see this run (not owner/follower/crewmate) — kudos·목록 차단."""
+
+
+async def _can_see_run(owner_id: str, caller_id: str) -> bool:
+    """run이 caller에게 보이는가 — 피드 노출 규칙과 일치 (감사 L1).
+
+    ① 본인 소유 ② caller가 owner를 팔로우(활동 피드 규칙) ③ 같은 크루 소속
+    (크루 러닝 피드 규칙). run_id는 이 두 피드로만 노출되므로 kudos 가시성도
+    동일 기준으로 게이트한다.
+    """
+    if owner_id == caller_id:
+        return True
+    supabase = get_supabase_admin()
+    follow = await asyncio.to_thread(
+        lambda: supabase.table("follows")
+        .select("follower_id")
+        .eq("follower_id", caller_id)
+        .eq("following_id", owner_id)
+        .limit(1)
+        .execute()
+    )
+    if follow.data:
+        return True
+    # 같은 크루 소속 여부 — caller의 크루 목록과 owner의 교집합
+    my = await asyncio.to_thread(
+        lambda: supabase.table("crew_members")
+        .select("crew_id")
+        .eq("user_id", caller_id)
+        .execute()
+    )
+    crew_ids = [r["crew_id"] for r in my.data]
+    if not crew_ids:
+        return False
+    shared = await asyncio.to_thread(
+        lambda: supabase.table("crew_members")
+        .select("crew_id")
+        .eq("user_id", owner_id)
+        .in_("crew_id", crew_ids)
+        .limit(1)
+        .execute()
+    )
+    return bool(shared.data)
+
+
 async def give_kudos(run_id: str, user_id: str) -> None:
     """Kudos a run. Idempotent (double-tap safe); own runs are rejected.
 
     Fires a best-effort run_kudoed notification only on a genuinely new kudos.
+    보이지 않는 run(팔로우·크루 무관)에는 kudos 불가 — 알림 스팸 방지 (L1).
     """
     owner_id = await _run_owner(run_id)
     if owner_id == user_id:
         raise SelfKudos()
+    if not await _can_see_run(owner_id, user_id):
+        raise RunNotVisible()
 
     supabase = get_supabase_admin()
     kudos_new = True
@@ -585,10 +633,16 @@ async def remove_kudos(run_id: str, user_id: str) -> None:
 
 
 async def list_kudos_users(
-    run_id: str, limit: int = 20, offset: int = 0
+    run_id: str, caller_id: str, limit: int = 20, offset: int = 0
 ) -> list[KudosUserItem]:
-    """Users who kudoed a run, newest first, with nickname/avatar (batched)."""
-    await _run_owner(run_id)  # 404 if the run doesn't exist
+    """Users who kudoed a run, newest first, with nickname/avatar (batched).
+
+    가시성 게이트(L1): 보이는 run(본인·팔로우·크루)만 명단 조회 — 아니면
+    RunNotVisible (핸들러가 404로 매핑, 존재 은닉).
+    """
+    owner_id = await _run_owner(run_id)  # RunNotFound if the run doesn't exist
+    if not await _can_see_run(owner_id, caller_id):
+        raise RunNotVisible()
     limit = max(1, min(limit, 100))
     offset = max(0, offset)
 

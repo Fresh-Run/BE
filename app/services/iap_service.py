@@ -173,6 +173,9 @@ async def store_notification(signed_payload: str) -> None:
         # JWS 형태(3세그먼트)가 아니면 저장할 가치도 없음 — 로그만.
         logger.warning("IAP notification: JWS 형태가 아닌 페이로드 수신 (무시)")
         return
+    if len(signed_payload) > 50 * 1024:  # 방어 심화 (핸들러 Content-Length 가드 보완)
+        logger.warning("IAP notification: 페이로드 과대 (%d bytes) — 미저장", len(signed_payload))
+        return
     supabase = get_supabase_admin()
     # 실제 테이블 컬럼: payload(jsonb) + notification_type(출시기 디코드 후 채움)
     await asyncio.to_thread(

@@ -153,7 +153,7 @@ fetch(`${API_BASE}/api/me/profile`, {
 |---|---|---|
 | **팔로잉 피드 (코스, 홈 v1)** | `GET /feed?limit&offset` | `PublicRouteResponse[]`: `summary`, `owner_nickname`, `like_count`, `comment_count`, `copy_count`, `is_liked`, `polyline` — 팔로우 0명이면 `[]`. **홈 피드 v1은 이 코스 피드로 연결** |
 | **활동 피드 (run, 홈 v2)** | `GET /feed/activities?limit&offset` | 팔로우한 유저 **+ 내** run, `ran_at` 최신순: 크루 러닝 피드와 같은 필드 + `is_mine`, `kudos_count`, `my_kudos`. **`is_mine=true`인 내 카드는 kudos 버튼 비활성** (본인 kudos는 400). 댓글 카운트는 run 댓글 출시 때 추가 예정(현재 필드 없음) |
-| run kudos | `POST/DELETE /runs/{run_id}/kudos`, `GET /runs/{run_id}/kudos` | 204 멱등(더블탭 안전), 본인 run 400, run 주인에게 `run_kudoed` 알림(9번째 타입). GET은 누른 사람 목록 `[{user_id, nickname, avatar_url, created_at}]`. **코스 좋아요(route like)와 별개** — 코스 평가 vs 활동 응원 |
+| run kudos | `POST/DELETE /runs/{run_id}/kudos`, `GET /runs/{run_id}/kudos` | 204 멱등(더블탭 안전), 본인 run 400, run 주인에게 `run_kudoed` 알림(9번째 타입). GET은 누른 사람 목록 `[{user_id, nickname, avatar_url, created_at}]`. **가시성 게이트**: 내가 볼 수 있는 run(팔로우 중이거나 같은 크루)에만 kudos·목록 조회 가능 — 그 외 run_id는 **404**(피드에 뜬 run만 대상이므로 실사용엔 영향 없음). **코스 좋아요(route like)와 별개** — 코스 평가 vs 활동 응원 |
 | 전체 공개 코스 | `GET /routes/public?sort=newest\|popular&limit` | 동일 shape |
 | 근처 코스 | `GET /routes/nearby?lat&lng&radius_km` | 동일 shape. `radius_km`은 최대 50으로 클램프, `limit` 1~100 클램프 (음수·거대값도 안전) |
 | 코스 검색 | `GET /routes/search?q` | 동일 shape. `limit` 1~100 클램프 |

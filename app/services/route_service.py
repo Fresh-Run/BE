@@ -150,8 +150,9 @@ async def create_running_route(
     # If the client points at a specific past route, add its negative
     # feedback on top of the location-based hints (union, de-duplicated).
     if req.avoid_from_route_id:
+        # owner_id 전달 — 본인 소유 route만 학습 (남의 비공개 route 프로브 차단, M4)
         for tag in await feedback_service.collect_route_avoidance_hints(
-            req.avoid_from_route_id
+            req.avoid_from_route_id, owner_id=user_id
         ):
             if tag not in avoid_tags:
                 avoid_tags.append(tag)

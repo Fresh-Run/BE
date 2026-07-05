@@ -6,7 +6,7 @@ import asyncio
 import logging
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 
 from app.core.auth import get_current_user
 from app.models.schemas import (
@@ -83,6 +83,16 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["routes"])
 
 
+def _bad_gateway(context: str, exc: Exception) -> HTTPException:
+    """502 헬퍼 (감사 L3): 예외 전문은 서버 로그에만, 응답 detail은 고정 문자열.
+
+    이전엔 detail=f"...{exc}"로 postgrest APIError 원문(DB 제약·컬럼/테이블명,
+    본인 데이터 파편)이 클라이언트에 노출됐다. 디버깅용 전문은 로그에 유지.
+    """
+    logger.warning("%s: %s", context, exc, exc_info=True)
+    return HTTPException(status_code=502, detail="일시적인 서버 오류입니다. 잠시 후 다시 시도해 주세요.")
+
+
 @router.get("/me", response_model=CurrentUser, summary="Who am I (auth check)")
 async def me(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
     """Return the currently authenticated user. Requires a valid Bearer token."""
@@ -101,7 +111,7 @@ async def get_my_profile(
     try:
         return await profile_service.get_profile(user.user_id)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to fetch profile: {exc}")
+        raise _bad_gateway("Failed to fetch profile", exc)
 
 
 @router.patch(
@@ -119,7 +129,7 @@ async def update_my_profile(
     except profile_service.NicknameTaken:
         raise HTTPException(status_code=409, detail="Nickname already taken")
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to update profile: {exc}")
+        raise _bad_gateway("Failed to update profile", exc)
 
 
 @router.get(
@@ -134,7 +144,7 @@ async def get_my_settings(
     try:
         return await profile_service.get_settings(user.user_id)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to fetch settings: {exc}")
+        raise _bad_gateway("Failed to fetch settings", exc)
 
 
 @router.patch(
@@ -155,7 +165,7 @@ async def patch_my_settings(
     except profile_service.ProfileNotFound:
         raise HTTPException(status_code=404, detail="Create a profile first")
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to update settings: {exc}")
+        raise _bad_gateway("Failed to update settings", exc)
 
 
 @router.get(
@@ -170,7 +180,7 @@ async def get_my_quota(
     try:
         return await quota_service.get_quota(user.user_id)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to fetch quota: {exc}")
+        raise _bad_gateway("Failed to fetch quota", exc)
 
 
 @router.post(
@@ -223,13 +233,20 @@ async def iap_verify(
         )
 
 
+_IAP_NOTIF_MAX_BYTES = 50 * 1024  # Apple JWS 알림은 수 KB — 50KB면 넉넉
+
+
 @router.post("/iap/notifications", summary="App Store Server Notifications V2 수신")
-async def iap_notifications(body: dict) -> dict:
+async def iap_notifications(request: Request, body: dict) -> dict:
     """Apple 서버 알림 수신 — 현재는 raw 저장만 (처리는 출시기, iap_service TODO).
 
     Apple은 200이 아니면 재시도하므로 저장 실패도 200으로 응답하고 로그로 추적.
-    인증 없음 (Apple이 호출).
+    인증 없음 (Apple이 호출) — 무인증 raw 적재 DoS 방어로 크기 상한(L2).
     """
+    # Content-Length 가드 — 거대 페이로드는 파싱·저장 전에 413으로 차단
+    clen = request.headers.get("content-length")
+    if clen and clen.isdigit() and int(clen) > _IAP_NOTIF_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Payload too large")
     try:
         await iap_service.store_notification(body.get("signedPayload") or "")
     except Exception:  # noqa: BLE001
@@ -258,7 +275,7 @@ async def get_user_profile(
     except follow_service.UserNotFound:
         raise HTTPException(status_code=404, detail="User not found")
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to fetch profile: {exc}")
+        raise _bad_gateway("Failed to fetch profile", exc)
 
 
 @router.post(
@@ -278,7 +295,7 @@ async def follow_user(
     except follow_service.UserNotFound:
         raise HTTPException(status_code=404, detail="User not found")
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to follow: {exc}")
+        raise _bad_gateway("Failed to follow", exc)
 
 
 @router.delete(
@@ -294,7 +311,7 @@ async def unfollow_user(
     try:
         await follow_service.unfollow_user(user_id, follower_id=user.user_id)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to unfollow: {exc}")
+        raise _bad_gateway("Failed to unfollow", exc)
 
 
 @router.get(
@@ -316,7 +333,7 @@ async def list_user_followers(
     except follow_service.UserNotFound:
         raise HTTPException(status_code=404, detail="User not found")
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to list followers: {exc}")
+        raise _bad_gateway("Failed to list followers", exc)
 
 
 @router.get(
@@ -338,7 +355,7 @@ async def list_user_following(
     except follow_service.UserNotFound:
         raise HTTPException(status_code=404, detail="User not found")
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to list following: {exc}")
+        raise _bad_gateway("Failed to list following", exc)
 
 
 @router.post(
@@ -370,7 +387,7 @@ async def generate_route(
             },
         )
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to check quota: {exc}")
+        raise _bad_gateway("Failed to check quota", exc)
 
     try:
         route = await route_service.create_running_route(req, user_id=user.user_id)
@@ -402,7 +419,7 @@ async def list_routes(
     try:
         return await route_service.list_routes(user_id=user.user_id, limit=limit)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to list routes: {exc}")
+        raise _bad_gateway("Failed to list routes", exc)
 
 
 @router.post(
@@ -431,7 +448,7 @@ async def create_coach_script(
             },
         )
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to check tier: {exc}")
+        raise _bad_gateway("Failed to check tier", exc)
 
     try:
         return await coach_service.get_or_create_script(route_id, user.user_id)
@@ -467,7 +484,7 @@ async def following_feed(
             user.user_id, limit=limit, offset=offset
         )
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to fetch feed: {exc}")
+        raise _bad_gateway("Failed to fetch feed", exc)
 
 
 @router.get(
@@ -489,7 +506,7 @@ async def activity_feed(
             user.user_id, limit=limit, offset=offset
         )
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to fetch activity feed: {exc}")
+        raise _bad_gateway("Failed to fetch activity feed", exc)
 
 
 # NOTE: /routes/search and /routes/public must be declared BEFORE /routes/{route_id}.
@@ -507,7 +524,7 @@ async def search_public_routes(
     try:
         return await route_service.search_public_routes(q, user_id=user.user_id, limit=limit)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Route search failed: {exc}")
+        raise _bad_gateway("Route search failed", exc)
 
 
 @router.get(
@@ -524,7 +541,7 @@ async def list_public_routes(
     try:
         return await route_service.list_public_routes(user.user_id, limit=limit, sort=sort)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to list public routes: {exc}")
+        raise _bad_gateway("Failed to list public routes", exc)
 
 
 @router.get(
@@ -552,7 +569,7 @@ async def list_nearby_routes(
             sort_by=sort_by, user_id=user.user_id, limit=limit,
         )
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Nearby route search failed: {exc}")
+        raise _bad_gateway("Nearby route search failed", exc)
 
 
 @router.get(
@@ -571,7 +588,7 @@ async def list_bookmarked_routes(
             user.user_id, limit=limit, offset=offset
         )
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to list bookmarks: {exc}")
+        raise _bad_gateway("Failed to list bookmarks", exc)
 
 
 @router.get(
@@ -587,7 +604,7 @@ async def get_route(
     try:
         route = await route_service.get_route(route_id, user_id=user.user_id)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to fetch route: {exc}")
+        raise _bad_gateway("Failed to fetch route", exc)
     if route is None:
         raise HTTPException(status_code=404, detail="Route not found")
     return route
@@ -609,7 +626,7 @@ async def publish_route(
             route_id, user_id=user.user_id, is_public=req.is_public
         )
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to update route: {exc}")
+        raise _bad_gateway("Failed to update route", exc)
     if route is None:
         raise HTTPException(status_code=404, detail="Route not found")
     return route
@@ -630,7 +647,7 @@ async def copy_route(
     except route_service.RouteNotFound:
         raise HTTPException(status_code=404, detail="Route not found")
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to copy route: {exc}")
+        raise _bad_gateway("Failed to copy route", exc)
 
 
 @router.post(
@@ -648,7 +665,7 @@ async def like_route(
     except route_service.RouteNotFound:
         raise HTTPException(status_code=404, detail="Route not found or not public")
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to like route: {exc}")
+        raise _bad_gateway("Failed to like route", exc)
 
 
 @router.delete(
@@ -664,7 +681,7 @@ async def unlike_route(
     try:
         await route_service.unlike_route(route_id, user_id=user.user_id)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to unlike route: {exc}")
+        raise _bad_gateway("Failed to unlike route", exc)
 
 
 @router.post(
@@ -682,7 +699,7 @@ async def bookmark_route(
     except route_service.RouteNotFound:
         raise HTTPException(status_code=404, detail="Route not found or not public")
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to bookmark route: {exc}")
+        raise _bad_gateway("Failed to bookmark route", exc)
 
 
 @router.delete(
@@ -698,7 +715,7 @@ async def unbookmark_route(
     try:
         await route_service.unbookmark_route(route_id, user_id=user.user_id)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to unbookmark route: {exc}")
+        raise _bad_gateway("Failed to unbookmark route", exc)
 
 
 @router.post(
@@ -718,7 +735,7 @@ async def create_comment(
     except route_service.RouteNotFound:
         raise HTTPException(status_code=404, detail="Route not found or not public")
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to create comment: {exc}")
+        raise _bad_gateway("Failed to create comment", exc)
 
 
 @router.get(
@@ -737,7 +754,7 @@ async def list_comments(
     except route_service.RouteNotFound:
         raise HTTPException(status_code=404, detail="Route not found or not public")
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to fetch comments: {exc}")
+        raise _bad_gateway("Failed to fetch comments", exc)
 
 
 @router.delete(
@@ -758,7 +775,7 @@ async def delete_comment(
     except route_service.CommentAccessDenied:
         raise HTTPException(status_code=403, detail="Not authorized to delete this comment")
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to delete comment: {exc}")
+        raise _bad_gateway("Failed to delete comment", exc)
 
 
 @router.post("/runs", response_model=RunResponse, summary="Log an actual run")
@@ -770,7 +787,7 @@ async def create_run(
     try:
         return await run_service.create_run(req, user_id=user.user_id)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to save run: {exc}")
+        raise _bad_gateway("Failed to save run", exc)
 
 
 @router.patch(
@@ -789,7 +806,7 @@ async def submit_feedback(
             run_id, liked=req.liked, tags=req.tags, user_id=user.user_id
         )
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to save feedback: {exc}")
+        raise _bad_gateway("Failed to save feedback", exc)
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
     return run
@@ -807,7 +824,7 @@ async def my_stats(
     try:
         return await run_service.get_my_stats(user.user_id)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to compute stats: {exc}")
+        raise _bad_gateway("Failed to compute stats", exc)
 
 
 @router.get(
@@ -824,7 +841,7 @@ async def my_monthly_stats(
     try:
         return await run_service.get_monthly_stats(user.user_id, year=year, month=month)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to compute monthly stats: {exc}")
+        raise _bad_gateway("Failed to compute monthly stats", exc)
 
 
 @router.get("/runs", response_model=list[RunResponse], summary="List logged runs")
@@ -839,7 +856,7 @@ async def list_runs(
             user_id=user.user_id, limit=limit, route_id=route_id
         )
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to list runs: {exc}")
+        raise _bad_gateway("Failed to list runs", exc)
 
 
 @router.get(
@@ -855,7 +872,7 @@ async def get_run(
     try:
         run = await run_service.get_run(run_id, user_id=user.user_id)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to fetch run: {exc}")
+        raise _bad_gateway("Failed to fetch run", exc)
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
     return run
@@ -874,7 +891,7 @@ async def get_run_track(
     try:
         track = await run_service.get_run_track(run_id, user_id=user.user_id)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to fetch track: {exc}")
+        raise _bad_gateway("Failed to fetch track", exc)
     if track is None:
         raise HTTPException(status_code=404, detail="Track not found")
     return track
@@ -894,10 +911,12 @@ async def give_kudos(
         await run_service.give_kudos(run_id, user_id=user.user_id)
     except run_service.RunNotFound:
         raise HTTPException(status_code=404, detail="Run not found")
+    except run_service.RunNotVisible:
+        raise HTTPException(status_code=404, detail="Run not found")  # 존재 은닉
     except run_service.SelfKudos:
         raise HTTPException(status_code=400, detail="Cannot kudos your own run")
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to give kudos: {exc}")
+        raise _bad_gateway("Failed to give kudos", exc)
 
 
 @router.delete(
@@ -913,7 +932,7 @@ async def remove_kudos(
     try:
         await run_service.remove_kudos(run_id, user_id=user.user_id)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to remove kudos: {exc}")
+        raise _bad_gateway("Failed to remove kudos", exc)
 
 
 @router.get(
@@ -927,13 +946,15 @@ async def list_kudos_users(
     offset: int = 0,
     user: CurrentUser = Depends(get_current_user),
 ) -> list[KudosUserItem]:
-    """Users who kudoed this run, newest first."""
+    """Users who kudoed this run, newest first. 보이는 run만 (본인·팔로우·크루)."""
     try:
-        return await run_service.list_kudos_users(run_id, limit=limit, offset=offset)
-    except run_service.RunNotFound:
-        raise HTTPException(status_code=404, detail="Run not found")
+        return await run_service.list_kudos_users(
+            run_id, caller_id=user.user_id, limit=limit, offset=offset
+        )
+    except (run_service.RunNotFound, run_service.RunNotVisible):
+        raise HTTPException(status_code=404, detail="Run not found")  # 존재 은닉
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to list kudos: {exc}")
+        raise _bad_gateway("Failed to list kudos", exc)
 
 
 # --- Community: crews --------------------------------------------------------
@@ -965,12 +986,12 @@ async def create_crew(
             },
         )
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to check crew limit: {exc}")
+        raise _bad_gateway("Failed to check crew limit", exc)
 
     try:
         return await crew_service.create_crew(req, owner_id=user.user_id)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to create crew: {exc}")
+        raise _bad_gateway("Failed to create crew", exc)
 
 
 @router.get(
@@ -985,7 +1006,7 @@ async def browse_crews(
     try:
         return await crew_service.list_browse_crews(user.user_id)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to list crews: {exc}")
+        raise _bad_gateway("Failed to list crews", exc)
 
 
 @router.get(
@@ -1002,7 +1023,7 @@ async def search_crews(
     try:
         return await crew_service.search_crews(q, limit=limit)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Crew search failed: {exc}")
+        raise _bad_gateway("Crew search failed", exc)
 
 
 @router.get(
@@ -1017,7 +1038,7 @@ async def my_crews(
     try:
         return await crew_service.list_my_crews(user.user_id)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to list my crews: {exc}")
+        raise _bad_gateway("Failed to list my crews", exc)
 
 
 # NOTE: /crews/preview-by-code and /crews/join-by-code are FIXED paths and
@@ -1125,7 +1146,7 @@ async def get_current_challenge(
     except crew_service.CrewNotFound:
         raise HTTPException(status_code=404, detail="Crew not found")
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to fetch challenge: {exc}")
+        raise _bad_gateway("Failed to fetch challenge", exc)
 
 
 @router.post(
@@ -1148,7 +1169,7 @@ async def create_challenge(
     except crew_service.ChallengeAlreadyActive:
         raise HTTPException(status_code=409, detail="A challenge is already active or scheduled")
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to create challenge: {exc}")
+        raise _bad_gateway("Failed to create challenge", exc)
 
 
 @router.get(
@@ -1166,7 +1187,7 @@ async def crew_ranking(
     except crew_service.CrewNotFound:
         raise HTTPException(status_code=404, detail="Crew not found")
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to fetch ranking: {exc}")
+        raise _bad_gateway("Failed to fetch ranking", exc)
 
 
 @router.get(
@@ -1184,7 +1205,7 @@ async def list_crew_members(
     except crew_service.CrewNotFound:
         raise HTTPException(status_code=404, detail="Crew not found")
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to fetch members: {exc}")
+        raise _bad_gateway("Failed to fetch members", exc)
 
 
 @router.delete(
@@ -1212,7 +1233,7 @@ async def kick_member(
     except crew_service.NotAMember:
         raise HTTPException(status_code=404, detail="User is not a member of this crew")
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to kick member: {exc}")
+        raise _bad_gateway("Failed to kick member", exc)
 
 
 @router.get(
@@ -1228,7 +1249,7 @@ async def get_crew(
     try:
         crew = await crew_service.get_crew(crew_id, user.user_id)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to fetch crew: {exc}")
+        raise _bad_gateway("Failed to fetch crew", exc)
     if crew is None:
         raise HTTPException(status_code=404, detail="Crew not found")
     return crew
@@ -1266,7 +1287,7 @@ async def join_crew(
             detail={"error": "already_requested", "message": "이미 가입 신청이 대기 중입니다."},
         )
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to join crew: {exc}")
+        raise _bad_gateway("Failed to join crew", exc)
     if isinstance(result, JoinRequestResponse):
         response.status_code = status.HTTP_202_ACCEPTED
     return result
@@ -1286,7 +1307,7 @@ async def create_avatar_upload_url(
     try:
         return await profile_service.create_avatar_upload_url(user.user_id)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to create upload url: {exc}")
+        raise _bad_gateway("Failed to create upload url", exc)
 
 
 @router.get(
@@ -1316,7 +1337,7 @@ async def get_monthly_insight(
             },
         )
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to check tier: {exc}")
+        raise _bad_gateway("Failed to check tier", exc)
 
     try:
         return await insight_service.get_monthly_insight(user.user_id, year, month)
@@ -1351,7 +1372,7 @@ async def list_my_join_requests_all(
             user.user_id, limit=limit, offset=offset
         )
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to list join requests: {exc}")
+        raise _bad_gateway("Failed to list join requests", exc)
 
 
 # NOTE: /join-requests/me must be declared before /join-requests/{request_id}/...
@@ -1372,7 +1393,7 @@ async def get_my_join_request(
     except crew_service.CrewNotFound:
         raise HTTPException(status_code=404, detail="Crew not found")
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to fetch join request: {exc}")
+        raise _bad_gateway("Failed to fetch join request", exc)
     if result is None:
         raise HTTPException(status_code=404, detail="No join request")
     return result
@@ -1393,7 +1414,7 @@ async def cancel_my_join_request(
     except crew_service.CrewNotFound:
         raise HTTPException(status_code=404, detail="Crew not found")
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to cancel join request: {exc}")
+        raise _bad_gateway("Failed to cancel join request", exc)
 
 
 @router.get(
@@ -1417,7 +1438,7 @@ async def list_join_requests(
     except crew_service.NotOwner:
         raise HTTPException(status_code=403, detail="Only the owner can view join requests")
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to list join requests: {exc}")
+        raise _bad_gateway("Failed to list join requests", exc)
 
 
 @router.post(
@@ -1444,7 +1465,7 @@ async def approve_join_request(
     except crew_service.CrewFull:
         raise HTTPException(status_code=409, detail="Crew is full")  # 신청은 pending 유지
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to approve join request: {exc}")
+        raise _bad_gateway("Failed to approve join request", exc)
 
 
 @router.post(
@@ -1469,7 +1490,7 @@ async def reject_join_request(
     except crew_service.JoinRequestNotFound:
         raise HTTPException(status_code=404, detail="Join request not found or already decided")
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to reject join request: {exc}")
+        raise _bad_gateway("Failed to reject join request", exc)
 
 
 @router.delete(
@@ -1494,7 +1515,7 @@ async def leave_crew(
             detail="Owner cannot leave; delete the crew or transfer ownership.",
         )
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to leave crew: {exc}")
+        raise _bad_gateway("Failed to leave crew", exc)
 
 
 @router.patch(
@@ -1515,7 +1536,7 @@ async def update_crew(
     except crew_service.NotOwner:
         raise HTTPException(status_code=403, detail="Only the owner can update the crew")
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to update crew: {exc}")
+        raise _bad_gateway("Failed to update crew", exc)
 
 
 @router.patch(
@@ -1547,7 +1568,7 @@ async def transfer_crew(
             status_code=400, detail="Target must be a member of the crew"
         )
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to transfer crew: {exc}")
+        raise _bad_gateway("Failed to transfer crew", exc)
 
 
 @router.delete(
@@ -1567,7 +1588,7 @@ async def delete_crew(
     except crew_service.NotOwner:
         raise HTTPException(status_code=403, detail="Only the owner can delete")
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to delete crew: {exc}")
+        raise _bad_gateway("Failed to delete crew", exc)
 
 
 @router.get(
@@ -1592,7 +1613,7 @@ async def list_crew_runs(
     except crew_service.CrewAccessDenied:
         raise HTTPException(status_code=403, detail="Members only")
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to list crew runs: {exc}")
+        raise _bad_gateway("Failed to list crew runs", exc)
 
 
 # --- Crew announcements + RSVP ------------------------------------------------
@@ -1625,7 +1646,7 @@ async def create_announcement(
                     "message": "좌표는 쌍으로, 마감시각은 러닝 일시가 있을 때 그 이전으로 설정하세요."},
         )
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to create announcement: {exc}")
+        raise _bad_gateway("Failed to create announcement", exc)
 
 
 @router.get(
@@ -1649,7 +1670,7 @@ async def list_announcements(
     except crew_service.CrewAccessDenied:
         raise HTTPException(status_code=403, detail="Members only")
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to list announcements: {exc}")
+        raise _bad_gateway("Failed to list announcements", exc)
 
 
 @router.get(
@@ -1674,7 +1695,7 @@ async def get_announcement(
     except announcement_service.AnnouncementNotFound:
         raise HTTPException(status_code=404, detail="Announcement not found")
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to fetch announcement: {exc}")
+        raise _bad_gateway("Failed to fetch announcement", exc)
 
 
 @router.patch(
@@ -1706,7 +1727,7 @@ async def update_announcement(
                     "message": "좌표는 쌍으로, 마감시각은 러닝 일시가 있을 때 그 이전으로 설정하세요."},
         )
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to update announcement: {exc}")
+        raise _bad_gateway("Failed to update announcement", exc)
 
 
 @router.delete(
@@ -1731,7 +1752,7 @@ async def delete_announcement(
     except announcement_service.AnnouncementNotFound:
         raise HTTPException(status_code=404, detail="Announcement not found")
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to delete announcement: {exc}")
+        raise _bad_gateway("Failed to delete announcement", exc)
 
 
 @router.put(
@@ -1769,7 +1790,7 @@ async def rsvp_announcement(
             detail={"error": "rsvp_closed", "message": "참석 투표가 마감되었습니다."},
         )
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to submit RSVP: {exc}")
+        raise _bad_gateway("Failed to submit RSVP", exc)
 
 
 # --- Notifications -----------------------------------------------------------
@@ -1789,7 +1810,7 @@ async def list_notifications(
     try:
         return await notification_service.list_notifications(user.user_id, limit=limit)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to fetch notifications: {exc}")
+        raise _bad_gateway("Failed to fetch notifications", exc)
 
 
 @router.get(
@@ -1804,7 +1825,7 @@ async def notifications_unread_count(
         count = await notification_service.unread_count(user.user_id)
         return {"count": count}
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to count notifications: {exc}")
+        raise _bad_gateway("Failed to count notifications", exc)
 
 
 @router.patch(
@@ -1819,7 +1840,7 @@ async def mark_all_notifications_read(
     try:
         await notification_service.mark_all_read(user.user_id)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to mark notifications read: {exc}")
+        raise _bad_gateway("Failed to mark notifications read", exc)
 
 
 @router.patch(
@@ -1835,7 +1856,7 @@ async def mark_notification_read(
     try:
         found = await notification_service.mark_read(notification_id, user.user_id)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to mark notification read: {exc}")
+        raise _bad_gateway("Failed to mark notification read", exc)
     if not found:
         raise HTTPException(status_code=404, detail="Notification not found")
 
