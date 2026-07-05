@@ -139,7 +139,8 @@ class AiCourseSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     terrain: Literal["flat", "mixed", "hill"] = "mixed"
-    default_distance_km: float = Field(5.0, ge=1.0, le=20.0)
+    # 상한 32.2 = 마일 모드 UI 상한 20mi(32.19km) 수용 (km 모드 UI는 30km)
+    default_distance_km: float = Field(5.0, ge=1.0, le=32.2)
     scenic: bool = True
     avoid_hills: bool = False
     prefer_loop: bool = True
@@ -203,7 +204,7 @@ class AiCourseSettingsPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     terrain: Optional[Literal["flat", "mixed", "hill"]] = None
-    default_distance_km: Optional[float] = Field(None, ge=1.0, le=20.0)
+    default_distance_km: Optional[float] = Field(None, ge=1.0, le=32.2)
     scenic: Optional[bool] = None
     avoid_hills: Optional[bool] = None
     prefer_loop: Optional[bool] = None
@@ -387,10 +388,12 @@ class RouteRequest(BaseModel):
     target_distance_km: Optional[float] = Field(
         None,
         gt=0,
-        le=100,
+        # 32.2 = 마일 모드 UI 상한 20mi(32.19km) 수용 (km 모드 UI는 30km).
+        # 서버는 단위 무관 km만 받는 안전망 — UI 상한은 프론트 몫.
+        le=32.2,
         description=(
-            "Desired total running distance in kilometers. If omitted, the "
-            "caller's settings.ai_course.default_distance_km is used."
+            "Desired total running distance in kilometers (최대 32.2). If "
+            "omitted, the caller's settings.ai_course.default_distance_km is used."
         ),
     )
     # AI 코스 선호 — None(미지정)이면 유저의 settings.ai_course 값으로 폴백.

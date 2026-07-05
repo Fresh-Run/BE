@@ -66,6 +66,8 @@ fetch(`${API_BASE}/api/me/profile`, {
 | 저장한 코스 | `GET /routes/bookmarked?limit&offset` | `PublicRouteResponse[]` (아래 피드와 동일 shape) |
 | 코스 북마크 토글 | `POST/DELETE /routes/{id}/bookmark` | 204, 멱등 (더블탭 안전) |
 
+> **코스 생성 거리 상한**: `target_distance_km` 최대 **32.2** (초과 422). 서버는 단위 무관하게 **km만 받는** 안전망이고, UI 상한은 단위 모드별로 프론트가 관리 — **km 모드 30km / 마일 모드 20mi(=32.19km)**.
+>
 > **코스 생성 우선순위 — body > 내 설정 > 서버 기본값**: `target_distance_km`와 선호 5종(`terrain`/`scenic`/`avoid_hills`/`prefer_loop`/`surface`)은 body에서 생략하면 내 `settings.ai_course` 값이 자동 적용됩니다 (`target_distance_km`는 `default_distance_km`로 폴백 — **이제 생략 가능**). body에 보낸 필드는 그 요청에 한해 설정을 덮어쓰므로, 화면 슬라이더 값은 항상 body로 보내면 됩니다. `false`도 명시값으로 취급되어 설정을 덮어씁니다.
 >
 > **오디오 코치 cues 스키마 (프론트 TTS 재생 규칙)**:
@@ -204,7 +206,7 @@ fetch(`${API_BASE}/api/me/profile`, {
   "theme":     "light",       // "light" | "dark"
   "lang":      "ko",          // "ko" | "en"
   "ai_course": { "terrain": "mixed",        // "flat" | "mixed" | "hill"
-                 "default_distance_km": 5.0, // 1.0 ~ 20.0
+                 "default_distance_km": 5.0, // 1.0 ~ 32.2 (서버 안전망 — UI 상한은 단위 모드별)
                  "scenic": true, "avoid_hills": false, "prefer_loop": true,
                  "surface": "any" },         // "any" | "paved" | "trail"
   "weather":   { "avoid_dust": true, "dust_level_pm10": 80,   // 30 ~ 150
