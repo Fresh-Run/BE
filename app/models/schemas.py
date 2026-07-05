@@ -755,6 +755,19 @@ class JoinRequestResponse(BaseModel):
     decided_at: Optional[str] = None
 
 
+class MyJoinRequestItem(BaseModel):
+    """GET /me/join-requests 한 건 — 둘러보기 '신청됨' 뱃지용.
+
+    전체 상태 포함 (pending/approved/rejected) — 프론트가 필터해서 사용.
+    """
+
+    crew_id: str
+    crew_name: Optional[str] = Field(None, description="크루 이름 (표시용).")
+    status: str = Field(..., description="pending / approved / rejected")
+    created_at: str
+    decided_at: Optional[str] = None
+
+
 class JoinRequestItem(BaseModel):
     """One entry in the owner's pending-request list."""
 

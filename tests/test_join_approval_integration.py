@@ -197,6 +197,43 @@ def run():
             assert r.status_code == 403, f"비공개 → 403, got {r.status_code}"
             ok("CrewAccessDenied 유지 ✓")
 
+            # ── 10. 회귀 보강: 멤버 join → 409 + DB에 행이 안 생겼는지 ────
+            step("10. approval 크루 멤버 join → 409 + 신청 테이블 행 미생성 (DB 확인)")
+            # 8번에서 open으로 바꿨으니 리포트 시나리오(승인제) 그대로 복원
+            assert api(c, "PATCH", f"/crews/{APPR}", tok1,
+                       json={"join_policy": "approval"}).status_code == 200
+            r = api(c, "POST", f"/crews/{APPR}/join", tok2)   # u2는 5번에서 승인된 멤버
+            assert r.status_code == 409 and "Already a member" in r.text
+            rows = c.get(f"{_SB}/rest/v1/crew_join_requests", headers=_ADM,
+                         params={"crew_id": f"eq.{APPR}", "user_id": f"eq.{uid2}",
+                                 "select": "status"}).json()
+            assert [x["status"] for x in rows] == ["approved"], \
+                f"409일 때 새 pending이 생기면 안 됨, got {rows}"
+            ok("멤버 join 409 ✓ approved 1행만 존재 (pending 미생성) ✓")
+
+            # ── 11. 레이스 방어: 멤버십 체크와 insert 사이에 승인이 끼는 경우 ──
+            # 순차 HTTP로는 재현 불가한 TOCTOU — _is_member를 [False, True]로
+            # 패치해 "pre-check 시점엔 비멤버, insert 직후엔 멤버"를 시뮬레이션.
+            step("11. 레이스 시뮬레이션: pre-check 통과 후 승인 끼어듦 → 409 + 보상 삭제")
+            import asyncio as _aio
+            from unittest.mock import AsyncMock as _AM, patch as _patch
+            ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+            if ROOT not in sys.path:
+                sys.path.insert(0, ROOT)
+            from app.services import crew_service as _cs
+            with _patch.object(_cs, "_is_member", _AM(side_effect=[False, True])):
+                try:
+                    _aio.run(_cs.join_crew(APPR, uid2))
+                    fail("레이스에서 AlreadyMember가 나와야 함")
+                except _cs.AlreadyMember:
+                    pass
+            rows = c.get(f"{_SB}/rest/v1/crew_join_requests", headers=_ADM,
+                         params={"crew_id": f"eq.{APPR}", "user_id": f"eq.{uid2}",
+                                 "select": "status"}).json()
+            assert [x["status"] for x in rows] == ["approved"], \
+                f"레이스로 삽입된 pending은 보상 삭제돼야 함, got {rows}"
+            ok("레이스 → AlreadyMember ✓ 삽입된 pending 보상 삭제 ✓")
+
             print("\n" + "="*50)
             print("  ALL TESTS PASSED")
             print("="*50)

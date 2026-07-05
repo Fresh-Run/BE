@@ -35,6 +35,7 @@ from app.models.schemas import (
     JoinRequestResponse,
     KudosUserItem,
     MonthlyStatsResponse,
+    MyJoinRequestItem,
     NotificationResponse,
     Place,
     ProfileResponse,
@@ -1112,6 +1113,29 @@ async def join_crew(
     if isinstance(result, JoinRequestResponse):
         response.status_code = status.HTTP_202_ACCEPTED
     return result
+
+
+@router.get(
+    "/me/join-requests",
+    response_model=list[MyJoinRequestItem],
+    summary="내 가입 신청 전체 목록 (모든 크루, 최신순)",
+)
+async def list_my_join_requests_all(
+    limit: int = 50,
+    offset: int = 0,
+    user: CurrentUser = Depends(get_current_user),
+) -> list[MyJoinRequestItem]:
+    """The caller's join requests across all crews (all statuses), newest first.
+
+    둘러보기 화면의 '신청됨' 뱃지를 한 번에 채우는 용도. 크루별 단건 조회
+    (GET /crews/{id}/join-requests/me)는 그대로 유지된다.
+    """
+    try:
+        return await crew_service.list_my_join_requests(
+            user.user_id, limit=limit, offset=offset
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Failed to list join requests: {exc}")
 
 
 # NOTE: /join-requests/me must be declared before /join-requests/{request_id}/...

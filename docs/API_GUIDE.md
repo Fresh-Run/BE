@@ -112,8 +112,9 @@ fetch(`${API_BASE}/api/me/profile`, {
 | 팔로워/팔로잉 목록 | `GET /users/{user_id}/followers` / `/following` | `[{user_id, nickname, avatar_url, followed_at, is_following}]` — 항목별 팔로우 버튼용 |
 | 크루 목록/검색/상세 | `GET /crews`, `/crews/search?q`, `/crews/mine`, `/crews/{id}` | `member_count`, `owner_nickname` 포함 |
 | 크루 생성/수정/삭제 | `POST /crews`, `PATCH/DELETE /crews/{id}` | 수정·삭제는 크루장만 |
-| **가입** | `POST /crews/{id}/join` | **상태 코드로 분기**: `200`=즉시 가입(`CrewResponse`, open 크루) / `202`=신청 접수(`JoinRequestResponse{status:"pending"}`, 승인제 크루). `409` = 이미 멤버 또는 `already_requested`(중복 신청). 크루의 `join_policy` 필드(`open`/`approval`)로 버튼 라벨을 미리 정할 수 있음 ("가입하기" vs "가입 신청") |
-| 내 신청 상태 | `GET /crews/{id}/join-requests/me` | `{status: pending\|approved\|rejected}` — 없으면 404. **거절은 알림이 안 오므로** 이 값으로 버튼 상태 결정: `pending`→"신청됨(취소)", `rejected`→"가입 신청"(재신청 가능), 404→"가입 신청" |
+| **가입** | `POST /crews/{id}/join` | **상태 코드로 분기**: `200`=즉시 가입(`CrewResponse`, open 크루) / `202`=신청 접수(`JoinRequestResponse{status:"pending"}`, 승인제 크루). `409` = 이미 멤버 또는 `already_requested`(중복 신청). **이미 멤버면 `join_policy`와 무관하게 409가 최우선** — 승인 직후 등 어떤 타이밍에도 멤버에게 202가 가거나 pending이 생기지 않음(서버가 레이스까지 방어). 크루의 `join_policy` 필드(`open`/`approval`)로 버튼 라벨을 미리 정할 수 있음 ("가입하기" vs "가입 신청") |
+| **내 신청 전체 목록** | `GET /me/join-requests?limit&offset` | `[{crew_id, crew_name, status, created_at, decided_at}]` 최신순, 기본 limit 50. **모든 크루의 신청을 한 번에** — 둘러보기 화면 "신청됨" 뱃지용. `status`는 pending/approved/rejected 전부 포함이므로 뱃지는 `pending`만 필터해서 사용 |
+| 내 신청 상태 (크루별) | `GET /crews/{id}/join-requests/me` | `{status: pending\|approved\|rejected}` — 없으면 404. **거절은 알림이 안 오므로** 이 값으로 버튼 상태 결정: `pending`→"신청됨(취소)", `rejected`→"가입 신청"(재신청 가능), 404→"가입 신청" |
 | 신청 취소 | `DELETE /crews/{id}/join-requests/me` | 204 멱등 (없어도 204) |
 | 신청 목록 (크루장) | `GET /crews/{id}/join-requests?limit&offset` | `[{id, user_id, nickname, created_at}]` pending만 최신순. 비크루장 403 |
 | 신청 승인/거절 (크루장) | `POST /crews/{id}/join-requests/{rid}/approve` / `/reject` | 204. 승인 → 신청자에게 `join_approved` 알림 + 멤버 추가. 승인 시 정원 초과면 409(신청은 pending 유지). 이미 결정된 신청은 404 |

@@ -27,6 +27,7 @@ from app.models.schemas import (
     CrewUpdate,
     JoinRequestItem,
     JoinRequestResponse,
+    MyJoinRequestItem,
 )
 from app.services import notification_service, profile_service
 
@@ -414,6 +415,20 @@ async def _create_join_request(crew: dict, user_id: str) -> JoinRequestResponse:
         raise
     row = res.data[0]
 
+    # TOCTOU 방어: join_crew의 멤버십 체크와 이 insert 사이에 크루장의 승인이
+    # 끼어들면 "멤버 + 새 pending"이 생긴다 (기존 pending이 approved로 바뀌면
+    # partial unique를 통과하므로). 사후 재확인으로 창을 닫는다 — 승인의
+    # 멤버십 insert는 항상 status 갱신보다 먼저라, 여기서 멤버가 아니면
+    # 이 신청을 삼킬 수 있는 승인은 존재하지 않는다.
+    if await _is_member(crew["id"], user_id):
+        await asyncio.to_thread(
+            lambda: supabase.table("crew_join_requests")
+            .delete()
+            .eq("id", row["id"])
+            .execute()
+        )
+        raise AlreadyMember()
+
     try:
         await notification_service.create_notification(
             recipient_id=crew["owner_id"],
@@ -461,6 +476,42 @@ async def get_my_join_request(crew_id: str, user_id: str) -> JoinRequestResponse
     if not res.data:
         return None
     return JoinRequestResponse(**res.data[0])
+
+
+async def list_my_join_requests(
+    user_id: str, limit: int = 50, offset: int = 0
+) -> list[MyJoinRequestItem]:
+    """The caller's join requests across ALL crews, newest first.
+
+    전체 상태 포함 (pending/approved/rejected) — 둘러보기 화면 뱃지를 한 번에
+    채우는 용도라 프론트가 필터한다. 삭제된 크루의 신청은 FK cascade로 행
+    자체가 사라지므로 걸러낼 필요 없음.
+    """
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("crew_join_requests")
+        .select("crew_id, status, created_at, decided_at")
+        .eq("user_id", user_id)
+        .order("created_at", desc=True)
+        .range(offset, offset + limit - 1)
+        .execute()
+    )
+    rows = res.data
+    if not rows:
+        return []
+
+    crew_ids = list({r["crew_id"] for r in rows})
+    crews_res = await asyncio.to_thread(
+        lambda: supabase.table("crews").select("id, name").in_("id", crew_ids).execute()
+    )
+    names = {c["id"]: c["name"] for c in crews_res.data}
+    return [
+        MyJoinRequestItem(**row, crew_name=names.get(row["crew_id"]))
+        for row in rows
+    ]
 
 
 async def cancel_my_join_request(crew_id: str, user_id: str) -> None:
