@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
@@ -65,6 +67,8 @@ from app.services import (
     run_service,
     weather_service,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["routes"])
 
@@ -1601,11 +1605,28 @@ async def get_weather(
 ) -> WeatherResponse:
     """Current weather, PM grades, and the rule-based running index.
 
-    Cached ~10min per ~1.1km grid cell. Error messages are fixed strings so
-    the OpenWeather key can never leak through exception text.
+    Cached ~10min per ~1.1km grid cell; the cache holds the shared raw data
+    only. The comment is personalized per user (weather settings) outside the
+    cache — score/label stay shared. Error messages are fixed strings so the
+    OpenWeather key can never leak through exception text.
     """
+
+    async def _weather_settings_or_none():
+        # Best-effort: 설정 조회 실패가 날씨 응답을 막으면 안 됨.
+        try:
+            return (await profile_service.get_settings(user.user_id)).weather
+        except Exception:  # noqa: BLE001
+            logger.warning("weather 설정 조회 실패 — 개인화 없이 응답", exc_info=True)
+            return None
+
     try:
-        return await weather_service.get_weather(lat, lng)
+        weather, weather_settings = await asyncio.gather(
+            weather_service.get_weather(lat, lng),
+            _weather_settings_or_none(),
+        )
+        if weather_settings is not None:
+            weather = weather_service.personalize_index(weather, weather_settings)
+        return weather
     except weather_service.WeatherNotConfigured:
         raise HTTPException(
             status_code=503,

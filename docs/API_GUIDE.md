@@ -59,11 +59,13 @@ fetch(`${API_BASE}/api/me/profile`, {
 | 데이터 | 메서드/경로 | 주요 응답 필드 |
 |---|---|---|
 | 주간 통계 (이번 주 Nkm) | `GET /me/stats` | `week.total_distance_km`, `week.run_count`, `week.delta_distance_km` (지난주 대비), `month`, `all_time` |
-| 날씨 + 러닝지수 | `GET /weather?lat&lng` | `temp_c`, `feels_like_c`, `condition`(한글), `pm25/pm10.{value,grade}`, `running_index.{score,label,comment}` — pm은 부분 장애 시 null 가능 |
-| AI 코스 생성 | `POST /routes/generate` | body: `start{lat,lng}`, `target_distance_km`, `pitstop_keyword?`, `notes?` → `summary`, `waypoints[]`, `polyline[]`. **free는 주 3회, 초과 시 429** (§5) |
+| 날씨 + 러닝지수 | `GET /weather?lat&lng` | `temp_c`, `feels_like_c`, `condition`(한글), `pm25/pm10.{value,grade}`, `running_index.{score,label,comment,personalized}` — pm은 부분 장애 시 null 가능. **`personalized: true`면 comment가 내 weather 설정 기준**(예: "설정하신 미세먼지 기준(PM10 50)을 넘었어요"). score/label은 항상 공용 기준 |
+| AI 코스 생성 | `POST /routes/generate` | body: `start{lat,lng}`, `target_distance_km?`, `terrain?`, `scenic?`, `avoid_hills?`, `prefer_loop?`, `surface?`, `pitstop_keyword?`, `notes?` → `summary`, `waypoints[]`, `polyline[]`. **free는 주 3회, 초과 시 429** (§5). 우선순위는 표 아래 참고 |
 | 남은 생성 횟수 표시 | `GET /me/quota` | `tier`, `ai_generation.{used,limit,remaining,reset_at,unlimited}` |
 | 저장한 코스 | `GET /routes/bookmarked?limit&offset` | `PublicRouteResponse[]` (아래 피드와 동일 shape) |
 | 코스 북마크 토글 | `POST/DELETE /routes/{id}/bookmark` | 204, 멱등 (더블탭 안전) |
+
+> **코스 생성 우선순위 — body > 내 설정 > 서버 기본값**: `target_distance_km`와 선호 5종(`terrain`/`scenic`/`avoid_hills`/`prefer_loop`/`surface`)은 body에서 생략하면 내 `settings.ai_course` 값이 자동 적용됩니다 (`target_distance_km`는 `default_distance_km`로 폴백 — **이제 생략 가능**). body에 보낸 필드는 그 요청에 한해 설정을 덮어쓰므로, 화면 슬라이더 값은 항상 body로 보내면 됩니다. `false`도 명시값으로 취급되어 설정을 덮어씁니다.
 
 ### 기록 탭
 
@@ -139,7 +141,11 @@ fetch(`${API_BASE}/api/me/profile`, {
 }
 ```
 
-> **theme/lang 구현 힌트**: 로컬 캐시 + 서버 동기화 권장 — 첫 프레임(로그인 전·오프라인)은 AsyncStorage 캐시로 그리고, 로그인 후 `GET /me/settings` 값으로 갱신하세요. `ai_course`/`weather`는 향후 코스 생성 파이프라인이 서버에서 참조할 예정입니다.
+> **theme/lang 구현 힌트**: 로컬 캐시 + 서버 동기화 권장 — 첫 프레임(로그인 전·오프라인)은 AsyncStorage 캐시로 그리고, 로그인 후 `GET /me/settings` 값으로 갱신하세요.
+>
+> **ai_course/weather는 실제 파이프라인에 반영됩니다** (전 티어 공통, 무료 포함):
+> - `ai_course` → `POST /routes/generate`가 body에 없는 필드의 기본값으로 사용 (우선순위: body > 설정 > 서버 기본값, §홈 표 참고).
+> - `weather` → `GET /weather`의 `running_index.comment`가 내 기준(`avoid_dust`/`dust_level_pm10`, `avoid_heat`/`heat_temp_c`, `avoid_rain`)을 넘으면 개인화되고 `personalized: true`가 됩니다. 복수 기준 초과 시 미세먼지 > 더위 > 비 순으로 하나만 표시. `score`/`label`은 공용 기준 그대로.
 
 ## 5. 에러 규약
 

@@ -16,6 +16,7 @@ from postgrest.exceptions import APIError
 
 from app.core.supabase_client import get_supabase_admin
 from app.models.schemas import (
+    AiCourseSettings,
     CommentResponse,
     PublicRouteResponse,
     RouteRequest,
@@ -39,6 +40,65 @@ class CommentAccessDenied(Exception):
     """Caller is neither the comment author nor the route owner."""
 
 
+async def _ai_course_settings(user_id: str | None) -> AiCourseSettings:
+    """The user's saved ai_course settings; server defaults on any failure.
+
+    Best-effort like the feedback loop: a settings hiccup must never block
+    route generation.
+    """
+    if not user_id:
+        return AiCourseSettings()
+    try:
+        return (await profile_service.get_settings(user_id)).ai_course
+    except Exception:  # noqa: BLE001 - settings are a preference, not a gate
+        logger.warning("Failed to load ai_course settings; using defaults.", exc_info=True)
+        return AiCourseSettings()
+
+
+def _resolve_course_prefs(
+    req: RouteRequest, saved: AiCourseSettings
+) -> tuple[float, AiCourseSettings]:
+    """Merge body values over saved settings (body > 설정 > 기본값), per field.
+
+    Returns (effective target distance, effective prefs). The saved object
+    already has server defaults merged in (get_settings), so only the body
+    override step happens here. terrain='hill' + avoid_hills=true resolves
+    to avoid_hills winning (terrain drops to 'mixed').
+    """
+    target_km = (
+        req.target_distance_km
+        if req.target_distance_km is not None
+        else saved.default_distance_km
+    )
+    prefs = AiCourseSettings(
+        terrain=req.terrain if req.terrain is not None else saved.terrain,
+        default_distance_km=saved.default_distance_km,
+        scenic=req.scenic if req.scenic is not None else saved.scenic,
+        avoid_hills=req.avoid_hills if req.avoid_hills is not None else saved.avoid_hills,
+        prefer_loop=req.prefer_loop if req.prefer_loop is not None else saved.prefer_loop,
+        surface=req.surface if req.surface is not None else saved.surface,
+    )
+    if prefs.avoid_hills and prefs.terrain == "hill":
+        prefs.terrain = "mixed"
+    return target_km, prefs
+
+
+def _filter_conflicting_avoid_tags(
+    avoid_tags: list[str], prefs: AiCourseSettings
+) -> list[str]:
+    """Drop community hints that contradict the user's explicit preference.
+
+    명시적 유저 선호 > 커뮤니티 힌트: terrain='hill'이면 '오르막많음' 회피를,
+    surface='trail'이면 '노면나쁨'(→ well-paved 유도) 회피를 제외한다.
+    """
+    dropped = set()
+    if prefs.terrain == "hill":
+        dropped.add("오르막많음")
+    if prefs.surface == "trail":
+        dropped.add("노면나쁨")
+    return [t for t in avoid_tags if t not in dropped]
+
+
 async def create_running_route(
     req: RouteRequest, user_id: str | None = None
 ) -> RouteResponse:
@@ -53,8 +113,12 @@ async def create_running_route(
     anonymous requests.
     """
     # Step 0: learning loop — gather what nearby runners disliked, so the
-    # model can avoid it. Best-effort: returns [] on any failure.
-    avoid_tags = await feedback_service.collect_avoidance_hints(req.start)
+    # model can avoid it. Best-effort: returns [] on any failure. The user's
+    # saved ai_course settings load concurrently (also best-effort).
+    avoid_tags, saved_prefs = await asyncio.gather(
+        feedback_service.collect_avoidance_hints(req.start),
+        _ai_course_settings(user_id),
+    )
 
     # If the client points at a specific past route, add its negative
     # feedback on top of the location-based hints (union, de-duplicated).
@@ -65,13 +129,19 @@ async def create_running_route(
             if tag not in avoid_tags:
                 avoid_tags.append(tag)
 
+    # 우선순위: body 명시값 > 유저 설정 > 서버 기본값. 그리고 명시적 선호와
+    # 모순되는 커뮤니티 회피 힌트는 제거 (선호가 이긴다).
+    target_km, prefs = _resolve_course_prefs(req, saved_prefs)
+    avoid_tags = _filter_conflicting_avoid_tags(avoid_tags, prefs)
+
     route = await openai_service.generate_route(
-        target_distance_km=req.target_distance_km,
+        target_distance_km=target_km,
         start=req.start,
         end=req.end,
         pitstop_keyword=req.pitstop_keyword,
         notes=req.notes,
         avoid_tags=avoid_tags,
+        prefs=prefs,
     )
 
     # Step 2: snap the pitstop to a real place if a keyword was given.
@@ -115,13 +185,16 @@ async def create_running_route(
             )
 
     # Step 4: persist the generated route to Supabase (best-effort).
-    await _save_route(req, route, user_id)
+    await _save_route(req, route, user_id, target_distance_km=target_km)
 
     return route
 
 
 async def _save_route(
-    req: RouteRequest, route: RouteResponse, user_id: str | None = None
+    req: RouteRequest,
+    route: RouteResponse,
+    user_id: str | None = None,
+    target_distance_km: float | None = None,
 ) -> None:
     """Insert the generated route into the Supabase `routes` table.
 
@@ -139,8 +212,12 @@ async def _save_route(
     record = {
         # Owner (from a validated token; None when anonymous)
         "user_id": user_id,
-        # Input values (RouteRequest)
-        "target_distance_km": req.target_distance_km,
+        # Input values (RouteRequest; target은 설정 폴백이 반영된 최종값)
+        "target_distance_km": (
+            target_distance_km
+            if target_distance_km is not None
+            else req.target_distance_km
+        ),
         "pitstop_keyword": req.pitstop_keyword,
         "notes": req.notes,
         # Start coordinate (for the learning loop)

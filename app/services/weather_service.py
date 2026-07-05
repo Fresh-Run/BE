@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 import httpx
 
 from app.core.config import settings
-from app.models.schemas import PmReading, RunningIndex, WeatherResponse
+from app.models.schemas import PmReading, RunningIndex, WeatherResponse, WeatherSettings
 
 logger = logging.getLogger(__name__)
 
@@ -188,6 +188,54 @@ def _running_index(
     worst = max(deductions, key=lambda d: d[0])
     comment = worst[1] if worst[0] > 0 else "뛰기 딱 좋은 날씨예요!"
     return RunningIndex(score=score, label=_label(score), comment=comment)
+
+
+# ── personalization (캐시 밖) ─────────────────────────────────────────────────
+
+
+def _is_raining(response: WeatherResponse) -> bool:
+    """뇌우(2xx)·이슬비(3xx)·비(5xx) 또는 최근 1시간 강수량이 있으면 True (눈 제외)."""
+    code = response.condition_code
+    if 200 <= code < 600:
+        return True
+    return (response.rain_1h_mm or 0) > 0
+
+
+def personalize_index(
+    response: WeatherResponse, ws: WeatherSettings
+) -> WeatherResponse:
+    """유저 weather 설정 기준을 넘긴 요인이 있으면 코멘트만 개인화한 복사본 반환.
+
+    캐시가 WeatherResponse 객체 참조를 그대로 돌려주므로 원본은 절대 수정하지
+    않는다 — deep copy 필수 (running_index가 중첩 모델이라 얕은 복사도 오염).
+    score/label은 공용 기준 유지, comment + personalized 플래그만 바뀐다.
+    복수 트리거 시 우선순위: 미세먼지 > 더위 > 비 (건강 위해도 순).
+    """
+    comment = None
+    if (
+        ws.avoid_dust
+        and response.pm10 is not None
+        and response.pm10.value >= ws.dust_level_pm10
+    ):
+        comment = (
+            f"설정하신 미세먼지 기준(PM10 {ws.dust_level_pm10})을 넘었어요 — "
+            "실내 러닝을 추천해요"
+        )
+    elif ws.avoid_heat and response.temp_c >= ws.heat_temp_c:
+        comment = (
+            f"설정하신 더위 기준({ws.heat_temp_c}°C)을 넘었어요 — "
+            "아침·저녁 러닝을 추천해요"
+        )
+    elif ws.avoid_rain and _is_raining(response):
+        comment = "설정하신 비 회피 조건에 해당해요 — 실내 러닝을 추천해요"
+
+    if comment is None:
+        return response
+
+    out = response.model_copy(deep=True)
+    out.running_index.comment = comment
+    out.running_index.personalized = True
+    return out
 
 
 # ── OpenWeather fetch ─────────────────────────────────────────────────────────

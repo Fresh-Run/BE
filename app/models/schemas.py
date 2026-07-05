@@ -200,6 +200,10 @@ class RunningIndex(BaseModel):
     score: int = Field(..., ge=0, le=100)
     label: str = Field(..., description="최고 / 좋음 / 보통 / 주의 / 비추천")
     comment: str = Field(..., description="한줄 코멘트 (최대 감점 요인 기준)")
+    personalized: bool = Field(
+        False,
+        description="True면 comment가 유저의 weather 설정 기준으로 개인화됨 (score/label은 공용).",
+    )
 
 
 class WeatherResponse(BaseModel):
@@ -283,12 +287,22 @@ class RouteRequest(BaseModel):
         None,
         description="End point. If omitted, a loop back to start is assumed.",
     )
-    target_distance_km: float = Field(
-        ...,
+    target_distance_km: Optional[float] = Field(
+        None,
         gt=0,
         le=100,
-        description="Desired total running distance in kilometers.",
+        description=(
+            "Desired total running distance in kilometers. If omitted, the "
+            "caller's settings.ai_course.default_distance_km is used."
+        ),
     )
+    # AI 코스 선호 — None(미지정)이면 유저의 settings.ai_course 값으로 폴백.
+    # 우선순위: body 명시값 > 유저 설정 > 서버 기본값.
+    terrain: Optional[Literal["flat", "mixed", "hill"]] = None
+    scenic: Optional[bool] = None
+    avoid_hills: Optional[bool] = None
+    prefer_loop: Optional[bool] = None
+    surface: Optional[Literal["any", "paved", "trail"]] = None
     pitstop_keyword: Optional[str] = Field(
         None,
         description="Optional waypoint keyword, e.g. '편의점' (convenience store), '공원', 'cafe'.",

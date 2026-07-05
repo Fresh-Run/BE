@@ -14,7 +14,7 @@ import json
 from openai import AsyncOpenAI
 
 from app.core.config import settings
-from app.models.schemas import Coordinate, RouteResponse
+from app.models.schemas import AiCourseSettings, Coordinate, RouteResponse
 
 import os
 
@@ -95,6 +95,32 @@ AVOIDANCE_INSTRUCTIONS = {
 }
 
 
+def _prefs_text(prefs: AiCourseSettings | None) -> str:
+    """유저의 AI 코스 선호(설정+body 머지 결과)를 프롬프트 문단으로 변환.
+
+    terrain='hill'과 avoid_hills=true가 함께 오면 avoid_hills가 이긴다
+    (hill 선호 문구는 생략) — 설정 화면에서 둘 다 켤 수 있으므로 거부하지 않음.
+    """
+    if prefs is None:
+        return ""
+    phrases: list[str] = []
+    if prefs.terrain == "flat":
+        phrases.append("prefer flat terrain")
+    elif prefs.terrain == "hill" and not prefs.avoid_hills:
+        phrases.append("include some uphill sections for training")
+    if prefs.avoid_hills:
+        phrases.append("avoid steep hills")
+    if prefs.scenic:
+        phrases.append("prefer scenic paths — riversides, parks, waterfront")
+    if prefs.surface == "paved":
+        phrases.append("prefer well-paved surfaces")
+    elif prefs.surface == "trail":
+        phrases.append("prefer unpaved trails and dirt paths")
+    if not phrases:
+        return ""
+    return "\nRunner's saved preferences: " + "; ".join(phrases) + "."
+
+
 def _build_prompt(
     target_distance_km: float,
     start: Coordinate,
@@ -102,12 +128,17 @@ def _build_prompt(
     pitstop_keyword: str | None,
     notes: str | None,
     avoid_tags: list[str] | None = None,
+    prefs: AiCourseSettings | None = None,
 ) -> str:
-    end_text = (
-        f"end at ({end.lat}, {end.lng})"
-        if end
-        else "return to the starting point (a loop route)"
-    )
+    if end:
+        end_text = f"end at ({end.lat}, {end.lng})"
+    elif prefs is not None and not prefs.prefer_loop:
+        end_text = (
+            "returning to the starting point is optional — "
+            "a loop or an out-and-back route is fine"
+        )
+    else:
+        end_text = "return to the starting point (a loop route)"
     pitstop_text = (
         f"Include at least one pitstop matching the keyword '{pitstop_keyword}'."
         if pitstop_keyword
@@ -137,6 +168,7 @@ def _build_prompt(
         f"{pitstop_text} "
         "Provide ordered waypoints with realistic WGS84 coordinates near the start, "
         "mark any pitstop with is_pitstop=true, and call build_running_route with the result."
+        f"{_prefs_text(prefs)}"
         f"{notes_text}"
         f"{avoid_text}"
     )
@@ -149,6 +181,7 @@ async def generate_route(
     pitstop_keyword: str | None = None,
     notes: str | None = None,
     avoid_tags: list[str] | None = None,
+    prefs: AiCourseSettings | None = None,
 ) -> RouteResponse:
     """Generate a structured running route via OpenAI Function Calling.
 
@@ -158,6 +191,9 @@ async def generate_route(
         end: Optional end coordinate; if None, a loop back to start is assumed.
         pitstop_keyword: Optional waypoint keyword, e.g. '편의점'.
         notes: Optional free-form preferences.
+        avoid_tags: Negative feedback tags to steer away from.
+        prefs: Effective AI-course preferences (body > user settings > defaults),
+            resolved by route_service. None keeps the legacy prompt shape.
 
     Returns:
         A validated RouteResponse parsed from the model's tool call.
@@ -172,7 +208,7 @@ async def generate_route(
             ),
         },
         {"role": "user", "content": _build_prompt(
-            target_distance_km, start, end, pitstop_keyword, notes, avoid_tags
+            target_distance_km, start, end, pitstop_keyword, notes, avoid_tags, prefs
         )},
     ]
 
