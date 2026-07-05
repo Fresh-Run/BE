@@ -25,6 +25,13 @@ logging.basicConfig(
 # query strings (crew invite codes, the OpenWeather appid) into server logs.
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
+# IAP mock 모드 프로덕션 사고 방지 (안전장치 ① 부팅 거부 — ②③은 iap_service).
+if settings.iap_mode == "mock" and settings.environment == "production":
+    raise RuntimeError(
+        "IAP_MODE=mock은 production에서 금지입니다. "
+        "ENVIRONMENT 또는 IAP_MODE 설정을 확인하세요."
+    )
+
 app = FastAPI(
     title=settings.app_name,
     description="South Korea-based running route AI generator.",

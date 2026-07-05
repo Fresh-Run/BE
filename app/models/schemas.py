@@ -255,6 +255,41 @@ class WeatherResponse(BaseModel):
     fetched_at: str = Field(..., description="원본 데이터 조회 시각 (캐시 공유됨).")
 
 
+# --- IAP (Apple 인앱 구독) ------------------------------------------------------
+
+
+class MockIapTransaction(BaseModel):
+    """mock 모드 전용 페이로드 — 서명 검증만 스킵, 구조 검증은 실거래와 동일."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    original_transaction_id: str = Field(..., min_length=1)
+    product_id: str = Field(..., min_length=1)
+    expires_at: str = Field(..., description="구독 만료 시각 (ISO 8601).")
+
+
+class IapVerifyRequest(BaseModel):
+    """POST /iap/verify 입력.
+
+    apple 모드: StoreKit 2 구매 완료 후 받은 signedTransaction(JWS)을 jws로.
+    mock 모드: mock 객체로 (개발/테스트 전용).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    jws: Optional[str] = None
+    mock: Optional[MockIapTransaction] = None
+
+
+class IapVerifyResponse(BaseModel):
+    """검증 성공 응답 — tier는 즉시 premium으로 전환된 상태."""
+
+    tier: str
+    product_id: str
+    expires_at: str
+    environment: str = Field(..., description="sandbox / production / mock")
+
+
 # --- Tier / quota -------------------------------------------------------------
 
 

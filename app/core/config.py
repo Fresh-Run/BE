@@ -50,6 +50,12 @@ class Settings(BaseSettings):
     tmap_app_key: str = ""
     map_provider: Literal["kakao", "naver", "tmap"] = "kakao"
 
+    # IAP (Apple 인앱 구독 검증)
+    # 'apple' = 실검증 (App Store Server API 크리덴셜 필요 — 출시기 구현),
+    # 'mock'  = 개발/테스트 전용 (서명 검증 스킵, 페이로드 구조 검증만).
+    # 기본값 apple: 미설정 환경에서는 verify가 503으로 안전하게 닫혀 있다.
+    iap_mode: Literal["apple", "mock"] = "apple"
+
 
 @lru_cache
 def get_settings() -> Settings:

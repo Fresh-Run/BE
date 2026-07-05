@@ -173,7 +173,9 @@ fetch(`${API_BASE}/api/me/profile`, {
 | 내 정보 | `GET /me` (auth 확인), `GET /me/profile` | `nickname`, `avatar_url`, `bio`, `tier` |
 | 프로필 생성/수정 | `PATCH /me/profile` | `nickname`(2~20자, 중복 시 409). **tier는 보내도 무시됨** (관리자/IAP 전용) |
 | 누적 통계 | `GET /me/stats` | `all_time.{total_distance_km,run_count,avg_pace_sec_per_km}` — 프로필 헤더 "최고 페이스"는 같은 응답의 `records.best_pace.value`(sec/km) 사용 |
-| 티어/쿼터 | `GET /me/quota` | premium이면 `ai_generation.unlimited=true` |
+| 티어/쿼터 | `GET /me/quota` | premium이면 `ai_generation.unlimited=true`. IAP 구독이 만료된 유저는 **이 호출(또는 아무 프리미엄 게이트) 시점에 자동 강등**되어 free로 옴 |
+| **구독 구매 검증** | `POST /iap/verify` | **프론트: StoreKit 2 구매 완료 직후 받은 `signedTransaction`(JWS)을 `{"jws": "..."}`로 전송** → 서버 검증 후 `{tier: "premium", product_id, expires_at, environment}`. 같은 거래 재전송은 멱등(복원/갱신에 안전), 다른 계정의 거래 재사용은 **409 `transaction_already_used`**. 유효하지 않으면 400(`invalid_transaction`/`transaction_expired`), 서버 미준비 상태는 **503 `iap_not_configured`**(출시 전 현재 상태 — UI에서 결제 버튼 숨김) |
+| Apple 서버 알림 (웹훅) | `POST /iap/notifications` | Apple 전용(App Store Server Notifications V2) — 프론트 호출 없음. 현재 수신+보관만, 갱신/환불 처리는 출시기 (`docs/IAP_LAUNCH_CHECKLIST.md`) |
 | **설정 조회** | `GET /me/settings` | 항상 **기본값이 머지된 완전한 객체** — null 체크 없이 바로 바인딩 가능. 프로필 미생성 유저도 기본값 반환 |
 | **설정 저장** | `PATCH /me/settings` | **보낸 키만 deep merge** (예: `{"run":{"haptics":false}}`는 haptics만 변경), 멱등, 응답은 머지 후 전체 객체. 화이트리스트 밖 키/범위 밖 값 → **422** (저장 안 됨). 프로필 미생성 404 |
 

@@ -30,6 +30,8 @@ from app.models.schemas import (
     CurrentUser,
     FeedbackRequest,
     FollowUserItem,
+    IapVerifyRequest,
+    IapVerifyResponse,
     InviteCodeResponse,
     JoinByCodeRequest,
     JoinRequestItem,
@@ -62,6 +64,7 @@ from app.services import (
     announcement_service,
     coach_service,
     crew_service,
+    iap_service,
     insight_service,
     follow_service,
     map_service,
@@ -166,6 +169,70 @@ async def get_my_quota(
         return await quota_service.get_quota(user.user_id)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"Failed to fetch quota: {exc}")
+
+
+@router.post(
+    "/iap/verify",
+    response_model=IapVerifyResponse,
+    summary="Apple 인앱 구독 검증 → premium 전환",
+)
+async def iap_verify(
+    req: IapVerifyRequest,
+    user: CurrentUser = Depends(get_current_user),
+) -> IapVerifyResponse:
+    """Verify a StoreKit 2 signed transaction and activate premium.
+
+    apple 모드: 구매 완료 직후 받은 signedTransaction(JWS)을 jws로 전송.
+    같은 거래 재전송은 멱등(갱신 거래는 만료 연장). 다른 계정의 거래 재사용은 409.
+    """
+    try:
+        return await iap_service.verify_purchase(user.user_id, req)
+    except iap_service.IapNotConfigured:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "iap_not_configured",
+                "message": "구매 검증이 아직 준비되지 않았습니다.",
+            },
+        )
+    except iap_service.InvalidTransaction:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid_transaction", "message": "유효하지 않은 구매 정보입니다."},
+        )
+    except iap_service.TransactionExpired:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "transaction_expired", "message": "이미 만료된 구독 거래입니다."},
+        )
+    except iap_service.TransactionAlreadyUsed:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "transaction_already_used",
+                "message": "다른 계정에서 이미 사용된 구매입니다.",
+            },
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("IAP 검증 실패", exc_info=True)
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "iap_verify_failed", "message": "구매 검증에 실패했습니다."},
+        )
+
+
+@router.post("/iap/notifications", summary="App Store Server Notifications V2 수신")
+async def iap_notifications(body: dict) -> dict:
+    """Apple 서버 알림 수신 — 현재는 raw 저장만 (처리는 출시기, iap_service TODO).
+
+    Apple은 200이 아니면 재시도하므로 저장 실패도 200으로 응답하고 로그로 추적.
+    인증 없음 (Apple이 호출).
+    """
+    try:
+        await iap_service.store_notification(body.get("signedPayload") or "")
+    except Exception:  # noqa: BLE001
+        logger.warning("IAP notification 저장 실패 (200 반환)", exc_info=True)
+    return {"status": "ok"}
 
 
 # --- Users: public profiles & follows ----------------------------------------
