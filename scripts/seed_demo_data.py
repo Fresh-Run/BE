@@ -49,7 +49,48 @@ _ADM = {"apikey": _SVC, "Authorization": f"Bearer {_SVC}", "Content-Type": "appl
 
 made = {"users": 0, "profiles": 0, "crews": 0, "announcements": 0, "rsvps": 0,
         "join_requests": 0, "runs": 0, "routes": 0, "likes": 0, "comments": 0,
-        "bookmarks": 0, "follows": 0, "kudos": 0, "invite_codes": 0}
+        "bookmarks": 0, "follows": 0, "kudos": 0, "invite_codes": 0,
+        "gps_runs": 0, "coach_scripts": 0, "insights": 0, "body_info": 0}
+
+
+import math
+
+
+def make_gps_track(distance_km, pace_sec_per_km, interval_s=4.0, jitter_m=3.0,
+                   seed=42, start=(37.5445, 127.0374)):
+    """서울숲 인근 현실적 GPS 궤적 (test_gps_track_integration.make_track 미러링).
+
+    방향 랜덤워크 전진 + gaussian jitter로 GPS 노이즈 모사. gps_track POST 포맷
+    ([{lat,lng,t,acc,alt}])을 그대로 반환 → 서버 파이프라인이 verified·splits 산출.
+    """
+    rng = random.Random(seed)
+    step_m = (1000.0 / pace_sec_per_km) * interval_s
+    n = int(distance_km * 1000.0 / step_m) + 1
+    lat, lng = start
+    heading = rng.uniform(0, 2 * math.pi)
+    t = 1_783_300_000_000
+    pts = []
+    for i in range(n):
+        ky, kx = 110540.0, 111320.0 * math.cos(math.radians(lat))
+        alt = 30.0 + 6.0 * math.sin(i * 0.02) + rng.gauss(0, 0.8)
+        pts.append({"lat": round(lat + rng.gauss(0, jitter_m) / ky, 7),
+                    "lng": round(lng + rng.gauss(0, jitter_m) / kx, 7),
+                    "t": t, "acc": round(abs(rng.gauss(8, 2)), 1), "alt": round(alt, 1)})
+        heading += rng.gauss(0, math.radians(6))
+        lat += step_m * math.cos(heading) / ky
+        lng += step_m * math.sin(heading) / kx
+        t += int(interval_s * 1000)
+    return pts
+
+
+def ensure_premium(c, uid):
+    """test1을 premium으로 (코치·인사이트 게이트용). tier는 API로 못 바꿔 admin REST."""
+    r = c.get(f"{_SB}/rest/v1/profiles", headers=_ADM,
+              params={"user_id": f"eq.{uid}", "select": "tier"})
+    if r.status_code == 200 and r.json() and r.json()[0].get("tier") == "premium":
+        return
+    c.patch(f"{_SB}/rest/v1/profiles", headers=_ADM,
+            params={"user_id": f"eq.{uid}"}, json={"tier": "premium"})
 
 
 def log(m): print(f"  {m}")
@@ -333,6 +374,72 @@ def main():
                         die(f"kudos 실패 {kudoser}→{owner}", r.text)
         log(f"kudos {made['kudos']}건 보장 (본인 run 제외 분배)")
 
+        # ── 8. GPS 검증 run (verification=verified + splits) ─────────────
+        section("8. GPS 검증 run (서울숲 궤적)")
+        # (유저키, 거리km, 페이스sec, seed) — POST /runs가 gps_track을 파이프라인에 태움
+        gps_plan = [("test1", 5.0, 330, 101), ("test1", 8.0, 345, 102),
+                    ("demo1", 6.5, 320, 103)]
+        # 멱등: 유저별 all-or-nothing — 이미 has_track run이 하나라도 있으면 그
+        # 유저의 GPS 시딩 전체를 스킵 (계획 항목별 부분 재생성이 중복을 만들지 않도록).
+        has_gps = {}  # key → 이미 GPS run 보유 여부
+        for key in {k for k, *_ in gps_plan}:
+            _, tok = users[key]
+            has_gps[key] = any(r.get("has_track")
+                               for r in api(c, "GET", "/runs", tok, params={"limit": 50}).json())
+        for key, dist, pace, seed in gps_plan:
+            _, tok = users[key]
+            if has_gps[key]:
+                log(f"  {key}: GPS run 이미 있음 — 스킵")
+                continue
+            track = make_gps_track(dist, pace, seed=seed)
+            r = api(c, "POST", "/runs", tok, json={
+                "distance_km": dist, "duration_sec": int(dist * pace), "gps_track": track})
+            if r.status_code != 200:
+                die(f"GPS run 실패 {key}", r.text)
+            d = r.json()
+            made["gps_runs"] += 1
+            log(f"  {key}: {d['distance_km']}km verification={d['verification']} "
+                f"splits={len(d['splits'] or [])}랩 track={d['has_track']}")
+
+        # ── 9. 프리미엄 콘텐츠 (test1: 코치 스크립트·월간 인사이트·신체정보) ──
+        section("9. 프리미엄 콘텐츠 (test1)")
+        ensure_premium(c, uid1)
+        # 신체정보 (본인 /me/profile에만 노출 — 멱등: birth_year 있으면 스킵)
+        prof = api(c, "GET", "/me/profile", t1).json()
+        if prof and prof.get("birth_year") is None:
+            r = api(c, "PATCH", "/me/profile", t1, json={
+                "nickname": prof["nickname"], "birth_year": 1992,
+                "weight_kg": 68.5, "height_cm": 176, "gender": "male"})
+            if r.status_code == 200:
+                made["body_info"] += 1
+            log("  신체정보 저장 (birth 1992·68.5kg·176cm·male — 본인만 조회)")
+        else:
+            log("  신체정보 이미 있음 — 스킵")
+        # 코치 스크립트 (test1 공개 코스 r1 — route당 1회 캐시, 재실행 무비용)
+        r = api(c, "POST", f"/routes/{r1}/coach-script", t1)
+        if r.status_code == 200:
+            cs = r.json()
+            if not cs["from_cache"]:
+                made["coach_scripts"] += 1
+            log(f"  코치 스크립트: cues {len(cs['cues'])}개 "
+                f"(from_cache={cs['from_cache']}) — {cs['cues'][0]['text'][:30]}…")
+        else:
+            log(f"  코치 스크립트 생성 실패 ({r.status_code}) — 건너뜀")
+        # 월간 인사이트 (지난달 2026-06 — 캐시됨, 재실행 무비용)
+        r = api(c, "GET", "/me/insights/monthly", t1, params={"year": 2026, "month": 6})
+        if r.status_code == 200:
+            ins = r.json()
+            if ins.get("ai"):
+                if not ins["ai"]["from_cache"]:
+                    made["insights"] += 1
+                log(f"  월간 인사이트 2026-06: {ins['stats']['run_count']}회 "
+                    f"{ins['stats']['total_distance_km']}km, ai coaching "
+                    f"{len(ins['ai']['coaching'])}자 (from_cache={ins['ai']['from_cache']})")
+            else:
+                log("  월간 인사이트 2026-06: 해당 월 run 0 → ai null (지난달 run 없음)")
+        else:
+            log(f"  월간 인사이트 실패 ({r.status_code})")
+
         # ── 요약 ─────────────────────────────────────────────────────────
         section("시딩 요약 (이번 실행에서 새로 만든 것)")
         for k, v in made.items():
@@ -364,6 +471,41 @@ def main():
                 f"{' (내가 누름)' if a['my_kudos'] else ''}")
         mine_with_kudos = [a for a in acts if a["is_mine"] and a["kudos_count"] > 0]
         log(f"  → 내 run 중 kudos 받은 것: {len(mine_with_kudos)}건")
+
+        # GPS 검증 run — 활동 피드에 뜨는 run 중 verified·splits 확인 (상세 조회)
+        my_runs = api(c, "GET", "/runs", t1, params={"limit": 50}).json()
+        gps_runs = [r for r in my_runs if r.get("has_track")]
+        log(f"GPS 검증 run: {len(gps_runs)}건")
+        for r in gps_runs[:3]:
+            splits = r.get("splits") or []
+            log(f"  · {r['distance_km']}km verification={r['verification']} "
+                f"splits={len(splits)}랩" +
+                (f" (1랩 {splits[0]['sec']}초, 고도 {splits[0].get('elev_gain_m')}m)"
+                 if splits else ""))
+        if gps_runs:
+            tr = api(c, "GET", f"/runs/{gps_runs[0]['id']}/track", t1).json()
+            log(f"  → track: polyline {len(tr['polyline'])}pt, 서버거리 "
+                f"{tr['server_distance_km']}km (원본 {tr['point_count_raw']}→"
+                f"필터 {tr['point_count_kept']}pt), 총고도 {tr.get('elev_gain_m')}m")
+        # 크루 피드에도 verified run이 있는지 (demo1의 GPS run)
+        cfeed = api(c, "GET", f"/crews/{CREW}/runs", t1, params={"limit": 20}).json()
+        log(f"크루 피드 {len(cfeed)}건 (프론트가 run 상세로 verification·splits 조회)")
+
+        # 프리미엄 콘텐츠 확인
+        prof = api(c, "GET", "/me/profile", t1).json()
+        log(f"신체정보 (본인만): birth {prof.get('birth_year')} · "
+            f"{prof.get('weight_kg')}kg · {prof.get('height_cm')}cm · {prof.get('gender')}")
+        cs = api(c, "POST", f"/routes/{r1}/coach-script", t1).json()
+        log(f"코치 스크립트 (코스 r1): cues {len(cs['cues'])}개 · "
+            f"start='{next((q['text'] for q in cs['cues'] if q['trigger']=='start'), '')[:34]}…'")
+        ins = api(c, "GET", "/me/insights/monthly", t1, params={"year": 2026, "month": 6}).json()
+        if ins.get("ai"):
+            log(f"월간 인사이트 2026-06: {ins['stats']['run_count']}회 "
+                f"{ins['stats']['total_distance_km']}km · plan {len(ins['ai']['plan'])}슬롯 · "
+                f"coaching '{ins['ai']['coaching'][:40]}…'")
+        else:
+            log("월간 인사이트 2026-06: ai=null (해당 월 test1 run 없음 — run 시딩 날짜 확인)")
+
         print("\n완료. 프론트에서 test1@freshrun.com / (공유된 비번)으로 로그인해 확인하세요.")
 
 

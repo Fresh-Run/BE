@@ -22,16 +22,21 @@
 - **크루**: "한강 새벽 러닝 크루" (승인제, 멤버 6명 + pending 1명)
 - **공지 2개**: 토요 정기런(러닝 일시·장소·RSVP 마감 有, 참석3/불참1/미정1 투표됨) + 일반 공지
 - **러닝 기록**: 멤버들에게 최근 2주 분산 (3~10km) → 크루 피드·주간 랭킹·통계 살아있음
+- **GPS 검증 run**: test1 2개(5km·8km)·demo1 1개 — 서울숲 궤적으로 서버 파이프라인을 태운 **verification=verified + splits(km별 랩·고도)** run. 활동/크루 피드의 run 상세(`GET /runs/{id}`)에 `splits`·`has_track`, `GET /runs/{id}/track`에 폴리라인
 - **코스**: 공개 3개(좋아요·댓글 달림) + 비공개 1개(크루 피드에서 route_summary null 확인용)
 - **팔로우**: test1↔test2 맞팔, 데모 유저들 ↔ test1 등 8건 → 팔로잉 피드 확인 가능
-- **kudos**: 멤버들 run에 서로 골고루 (본인 run 제외, 42건) → 활동 피드의 kudos_count·my_kudos 살아있음
+- **kudos**: 멤버들 run에 서로 골고루 (본인 run 제외) → 활동 피드의 kudos_count·my_kudos 살아있음
+- **AI 오디오 코치**: test1의 "반포 한강공원 야경 코스"에 코치 스크립트 1개(cues 7개) — `POST /routes/{id}/coach-script`가 캐시 반환
+- **AI 월간 인사이트**: test1 2026-06(지난달) 1개 — `GET /me/insights/monthly?year=2026&month=6`에 stats + ai(coaching·plan 3슬롯)
+- **신체정보**: test1 프로필에 birth 1992·68.5kg·176cm·male — **본인 `GET /me/profile`에만** 노출(다른 유저 응답엔 없음)
 
 ## 확인 포인트 (test1으로 로그인 시)
 
 - 홈: 주간 통계, 팔로잉 피드 (러닝러버·새벽러너의 코스)
-- 활동 피드(`/feed/activities`): 팔로우한 유저+내 run, kudos 수·내가 누른 표시, 내 run이 받은 kudos (`is_mine=true` 카드는 kudos 버튼 비활성)
-- 크루 상세: 러닝 피드, 랭킹, 공지+RSVP 집계, 가입 신청 1건(야간비행)
+- 활동 피드(`/feed/activities`): 팔로우한 유저+내 run, kudos 수·내가 누른 표시, 내 run이 받은 kudos (`is_mine=true` 카드는 kudos 버튼 비활성). **내 GPS run 2개(5·8km)가 상단에** — 상세 진입 시 splits 차트·경로 지도
+- 크루 상세: 러닝 피드(demo1 GPS run 포함), 랭킹, 공지+RSVP 집계, 가입 신청 1건(야간비행)
 - 코스 피드: 좋아요/댓글/북마크 표시
+- **프리미엄(test1=premium)**: 코스 상세의 오디오 코치 스크립트, 기록 탭의 월간 인사이트(2026-06), 프로필 편집의 신체정보
 
 ## 재실행
 
