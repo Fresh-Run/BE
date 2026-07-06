@@ -22,7 +22,7 @@ from app.models.schemas import (
     MonthRecordEntry,
     WeekStat,
 )
-from app.services import openai_service
+from app.services import openai_service, profile_service
 from app.services.run_service import (
     _KST,
     _aggregate,
@@ -194,7 +194,12 @@ async def _ai_block(
             from_cache=True,
         )
 
-    raw = await openai_service.generate_monthly_insight(**stats_kwargs)
+    # 본인 언어 설정 조회 (생성 시에만 — 캐시 히트면 위에서 이미 반환). 실패 시 ko.
+    try:
+        lang = (await profile_service.get_settings(user_id)).lang
+    except Exception:  # noqa: BLE001
+        lang = "ko"
+    raw = await openai_service.generate_monthly_insight(lang=lang, **stats_kwargs)
     coaching = str(raw.get("coaching") or "").strip()
     if not coaching:
         raise ValueError("Insight coaching came back empty.")

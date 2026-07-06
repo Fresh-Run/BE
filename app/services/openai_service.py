@@ -35,57 +35,77 @@ _client = AsyncOpenAI(
     base_url=_base_url,  # routes to Gemini's OpenAI-compatible endpoint
 )
 
-# JSON Schema for the tool the model is forced to call. Mirrors RouteResponse.
-ROUTE_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "build_running_route",
-        "description": (
-            "Return a structured running route for a runner in South Korea, "
-            "including ordered waypoints and an optional pitstop."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "summary": {
-                    "type": "string",
-                    "description": "코스 한 줄 설명 (반드시 한국어).",
-                },
-                "total_distance_km": {
-                    "type": "number",
-                    "description": "Estimated total distance of the route in km.",
-                },
-                "estimated_duration_min": {
-                    "type": "number",
-                    "description": "Estimated jogging duration in minutes.",
-                },
-                "waypoints": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "name": {"type": "string",
-                                     "description": "경유지 이름 (반드시 한국어)."},
-                            "coordinate": {
-                                "type": "object",
-                                "properties": {
-                                    "lat": {"type": "number"},
-                                    "lng": {"type": "number"},
+# AI 생성 텍스트의 출력 언어 — 유저 settings.lang(ko/en)을 따른다. lang name은
+# 프롬프트·스키마 description에 주입돼 "반드시 {한국어/English}로" 지시가 된다.
+_LANG_NAME = {"ko": "한국어(Korean)", "en": "영어(English)"}
+
+
+def _lang_name(lang: str | None) -> str:
+    return _LANG_NAME.get(lang or "ko", _LANG_NAME["ko"])
+
+
+def _looks_lang(text: str, lang: str | None) -> bool:
+    """결과 언어가 요청 언어와 대략 일치하는지 (관측용, 느슨함).
+
+    ko → 한글 음절이 하나라도 있으면 OK. en → 한글이 거의 없으면 OK.
+    """
+    has_hangul = any("가" <= ch <= "힣" for ch in (text or ""))
+    if (lang or "ko") == "en":
+        return not has_hangul
+    return has_hangul
+
+
+# JSON Schema builder — 출력 언어를 description에 주입 (function calling에도 반영).
+def _route_tool(lang: str | None) -> dict:
+    ln = _lang_name(lang)
+    return {
+        "type": "function",
+        "function": {
+            "name": "build_running_route",
+            "description": (
+                "Return a structured running route for a runner in South Korea, "
+                "including ordered waypoints and an optional pitstop."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "summary": {"type": "string",
+                                "description": f"코스 한 줄 설명 (반드시 {ln}로)."},
+                    "total_distance_km": {
+                        "type": "number",
+                        "description": "Estimated total distance of the route in km.",
+                    },
+                    "estimated_duration_min": {
+                        "type": "number",
+                        "description": "Estimated jogging duration in minutes.",
+                    },
+                    "waypoints": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string",
+                                         "description": f"경유지 이름 (반드시 {ln}로)."},
+                                "coordinate": {
+                                    "type": "object",
+                                    "properties": {
+                                        "lat": {"type": "number"},
+                                        "lng": {"type": "number"},
+                                    },
+                                    "required": ["lat", "lng"],
                                 },
-                                "required": ["lat", "lng"],
+                                "is_pitstop": {"type": "boolean"},
+                                "description": {"type": "string",
+                                                "description": f"이 지점 설명 (반드시 {ln}로)."},
                             },
-                            "is_pitstop": {"type": "boolean"},
-                            "description": {"type": "string",
-                                            "description": "이 지점 설명 (반드시 한국어)."},
+                            "required": ["name", "coordinate", "is_pitstop"],
                         },
-                        "required": ["name", "coordinate", "is_pitstop"],
                     },
                 },
+                "required": ["summary", "total_distance_km", "waypoints"],
             },
-            "required": ["summary", "total_distance_km", "waypoints"],
         },
-    },
-}
+    }
 
 
 # Maps a negative feedback tag (stored value) to a concrete avoidance
@@ -202,6 +222,7 @@ async def generate_route(
     avoid_tags: list[str] | None = None,
     prefs: AiCourseSettings | None = None,
     radius_km: float | None = None,
+    lang: str = "ko",
 ) -> RouteResponse:
     """Generate a structured running route via OpenAI Function Calling.
 
@@ -216,10 +237,13 @@ async def generate_route(
             resolved by route_service. None keeps the legacy prompt shape.
         radius_km: Search radius around the start (straight-line). None keeps
             the legacy "near the start" wording.
+        lang: 출력 언어 (유저 settings.lang, ko/en). summary·waypoint 텍스트가
+            이 언어로 나온다.
 
     Returns:
         A validated RouteResponse parsed from the model's tool call.
     """
+    ln = _lang_name(lang)
     messages = [
         {
             "role": "system",
@@ -227,9 +251,9 @@ async def generate_route(
                 "You are a local running coach in South Korea. You design safe, "
                 "runnable routes (riversides, parks, sidewalks) and always respond "
                 "by calling the build_running_route function. "
-                "IMPORTANT: Write ALL human-readable text in Korean (한국어) — the "
-                "summary, every waypoint name, and every waypoint description MUST "
-                "be Korean, regardless of the region. Never use English prose."
+                f"IMPORTANT: Write ALL human-readable text in {ln} — the summary, "
+                f"every waypoint name, and every waypoint description MUST be in "
+                f"{ln}, regardless of the region."
             ),
         },
         {"role": "user", "content": _build_prompt(
@@ -244,7 +268,7 @@ async def generate_route(
     response = await _client.chat.completions.create(
         model=settings.openai_model,
         messages=messages,
-        tools=[ROUTE_TOOL],
+        tools=[_route_tool(lang)],
         tool_choice={"type": "function", "function": {"name": "build_running_route"}},
         reasoning_effort="none",
     )
@@ -256,15 +280,10 @@ async def generate_route(
     arguments = json.loads(tool_calls[0].function.arguments)
     # Validate/coerce the model output against our Pydantic schema.
     result = RouteResponse.model_validate(arguments)
-    # 후처리 안전망(관측용): 요약이 명백히 영어면 로그 경고 — 거부는 하지 않음.
-    if not _looks_korean(result.summary):
-        logger.warning("코스 요약이 한국어가 아닐 수 있음: %r", result.summary[:60])
+    # 후처리 안전망(관측용): 결과 언어가 요청 언어와 다르면 로그 경고 — 거부 안 함.
+    if not _looks_lang(result.summary, lang):
+        logger.warning("코스 요약 언어가 요청(%s)과 다를 수 있음: %r", lang, result.summary[:60])
     return result
-
-
-def _looks_korean(text: str) -> bool:
-    """한글 음절이 하나라도 있으면 한국어로 간주 (영어-only 탐지용, 느슨함)."""
-    return any("가" <= ch <= "힣" for ch in (text or ""))
 
 
 # ── AI 오디오 코치 ─────────────────────────────────────────────────────────────
@@ -308,15 +327,18 @@ COACH_TOOL = {
     },
 }
 
-_COACH_SYSTEM = (
-    "당신은 친근한 한국어 러닝 코치입니다. 러닝 중 TTS로 낭독될 짧은 멘트를 작성합니다. "
-    "규칙: ① 의학적 조언 금지 — 심박수 목표, 건강 상태 진단, 부상·질병 관련 지시를 절대 "
-    "하지 않습니다. 안전 관련은 '몸이 힘들면 천천히 걸어도 좋아요' 수준까지만. "
-    "② 문장은 TTS 낭독용 — 한 멘트 1~2문장, 이모지·특수기호·영어 약어 금지, 숫자와 단위는 "
-    "한글 낭독형으로 씁니다 (예: 5킬로미터, 5분 30초). "
-    "③ 과장 없이 담백하게 격려합니다. "
-    "④ 반드시 build_coach_script 함수를 호출해 응답합니다."
-)
+def _coach_system(lang: str | None) -> str:
+    ln = _lang_name(lang)
+    return (
+        f"당신은 친근한 러닝 코치입니다. 러닝 중 TTS로 낭독될 짧은 멘트를 작성합니다. "
+        f"모든 멘트(text)는 반드시 {ln}로 씁니다. "
+        "규칙: ① 의학적 조언 금지 — 심박수 목표, 건강 상태 진단, 부상·질병 관련 지시를 절대 "
+        "하지 않습니다. 안전 관련은 '몸이 힘들면 천천히 걸어도 좋아요' 수준까지만. "
+        "② 문장은 TTS 낭독용 — 한 멘트 1~2문장, 이모지·특수기호 금지, 숫자와 단위는 "
+        "낭독형으로 씁니다 (한국어 예: 5킬로미터, 5분 30초 / 영어 예: five kilometers). "
+        "③ 과장 없이 담백하게 격려합니다. "
+        "④ 반드시 build_coach_script 함수를 호출해 응답합니다."
+    )
 
 
 def _build_coach_prompt(
@@ -358,14 +380,18 @@ async def generate_coach_script(
     run_count: int | None = None,
     avg_pace_sec_per_km: int | None = None,
     cue_interval_km: float = 1.0,
+    lang: str = "ko",
 ) -> list[CoachCue]:
     """Generate the audio-coach cue list via function calling.
+
+    lang: 멘트 출력 언어 (생성자 settings.lang). 코치 스크립트는 route당 캐시라
+    "생성 시점 생성자 언어로 박제"된다.
 
     Returns raw validated cues; ordering/range cleanup is the caller's job
     (coach_service._sanitize_cues).
     """
     messages = [
-        {"role": "system", "content": _COACH_SYSTEM},
+        {"role": "system", "content": _coach_system(lang)},
         {"role": "user", "content": _build_coach_prompt(
             distance_km, summary, waypoints, run_count, avg_pace_sec_per_km,
             cue_interval_km,
@@ -425,15 +451,18 @@ INSIGHT_TOOL = {
     },
 }
 
-_INSIGHT_SYSTEM = (
-    "당신은 러닝 데이터를 분석해 월간 리포트를 쓰는 한국어 코치입니다. "
-    "규칙: ① 의학적 조언 금지 — 심박수, 건강 상태 진단, 부상·질병 관련 지시를 "
-    "절대 하지 않습니다. ② 제공된 수치만 인용합니다 — 입력에 없는 데이터"
-    "(심박, 고도, 칼로리 등)를 지어내지 않습니다. ③ coaching은 3~5문장, 담백하게 "
-    "격려하되 과장하지 않습니다. ④ plan은 goal(다음 달 목표)·focus(집중 포인트)·"
-    "challenge(다음 도전) 세 슬롯을 각 1개씩, 이번 달 데이터에 근거해 제안합니다. "
-    "⑤ 반드시 build_monthly_insight 함수를 호출해 응답합니다."
-)
+def _insight_system(lang: str | None) -> str:
+    ln = _lang_name(lang)
+    return (
+        f"당신은 러닝 데이터를 분석해 월간 리포트를 쓰는 코치입니다. "
+        f"coaching과 plan의 모든 텍스트는 반드시 {ln}로 씁니다. "
+        "규칙: ① 의학적 조언 금지 — 심박수, 건강 상태 진단, 부상·질병 관련 지시를 "
+        "절대 하지 않습니다. ② 제공된 수치만 인용합니다 — 입력에 없는 데이터"
+        "(심박, 고도, 칼로리 등)를 지어내지 않습니다. ③ coaching은 3~5문장, 담백하게 "
+        "격려하되 과장하지 않습니다. ④ plan은 goal(다음 달 목표)·focus(집중 포인트)·"
+        "challenge(다음 도전) 세 슬롯을 각 1개씩, 이번 달 데이터에 근거해 제안합니다. "
+        "⑤ 반드시 build_monthly_insight 함수를 호출해 응답합니다."
+    )
 
 
 def _pace_str(sec: int | None) -> str:
@@ -489,14 +518,14 @@ def _build_insight_prompt(
     )
 
 
-async def generate_monthly_insight(**kwargs) -> dict:
+async def generate_monthly_insight(lang: str = "ko", **kwargs) -> dict:
     """Generate the monthly insight via function calling.
 
-    Returns {"coaching": str, "plan": [{slot,title,body}, ...]} — slot 검증과
-    정렬은 insight_service의 몫.
+    lang: 출력 언어 (본인 settings.lang). Returns {"coaching": str, "plan":
+    [{slot,title,body}, ...]} — slot 검증·정렬은 insight_service의 몫.
     """
     messages = [
-        {"role": "system", "content": _INSIGHT_SYSTEM},
+        {"role": "system", "content": _insight_system(lang)},
         {"role": "user", "content": _build_insight_prompt(**kwargs)},
     ]
 

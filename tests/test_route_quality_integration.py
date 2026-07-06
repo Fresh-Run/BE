@@ -1,5 +1,5 @@
 """
-Integration test: 코스 생성 품질 (② 소수점 반올림, ③ 한국어 강제)
+Integration test: 코스 생성 품질 (② 소수점 반올림, ③ 유저 언어 설정 lang 반영)
 ① 속도(reasoning_effort=none)는 before/after 계측 보고로 대체 — 여기선 미측정.
 Run: python tests/test_route_quality_integration.py
 """
@@ -81,58 +81,70 @@ def phase_pure():
     ok("거리 5237m→5.2km ✓ 소요시간 1583s→26분 정수 ✓")
 
 
-def phase_real(c, tok):
-    step("3. ③ 실호출 — 비한강 좌표에서 한국어 강제 (인천 아라뱃길)")
+def _gen(c, tok):
     r = c.post(f"{BASE}/routes/generate",
                headers={"Authorization": f"Bearer {tok}"}, timeout=90,
                json={"start": {"lat": 37.5665, "lng": 126.6737}, "target_distance_km": 6})
     assert r.status_code == 200, r.text[:300]
-    d = r.json()
-    assert _hangul(d["summary"]), f"요약이 한국어가 아님: {d['summary'][:60]}"
+    return r.json()
+
+
+def phase_real(c, tok_ko, tok_en):
+    step("3. ③ 실호출 — 유저 언어 설정(lang) 따름 (비한강 좌표: 인천 아라뱃길)")
+    # ko 유저 → 한국어
+    d = _gen(c, tok_ko)
+    assert _hangul(d["summary"]), f"ko 유저 요약이 한국어가 아님: {d['summary'][:60]}"
     for w in d["waypoints"]:
-        assert _hangul(w["name"]), f"경유지명이 한국어가 아님: {w['name']}"
-    # 소수점: 응답도 1자리·정수분
+        assert _hangul(w["name"]), f"ko 경유지명이 한국어가 아님: {w['name']}"
     assert round(d["total_distance_km"], 1) == d["total_distance_km"]
     dur = d.get("estimated_duration_min")
     assert dur is None or dur == int(dur)
-    ok(f"요약·경유지 전부 한국어 ✓ {d['total_distance_km']}km {dur}분 — {d['summary'][:30]}…")
+    ok(f"ko 유저 → 한국어 ✓ {d['total_distance_km']}km {dur}분 — {d['summary'][:26]}…")
+    # en 유저 → 영어 (한글 거의 없음)
+    d2 = _gen(c, tok_en)
+    assert not _hangul(d2["summary"]), f"en 유저인데 한글 요약: {d2['summary'][:60]}"
+    assert not any(_hangul(w["name"]) for w in d2["waypoints"]), "en인데 한글 경유지명"
+    ok(f"en 유저 → 영어 ✓ {d2['total_distance_km']}km — {d2['summary'][:34]}…")
 
 
 def run():
     ts = int(time.time())
-    uid = None
+    uids = []
     with httpx.Client(timeout=30) as c:
         try:
             phase_pure()
-            step("공용: 유저")
-            e = f"rq-{ts}@t.l"
-            r = c.post(f"{_SB}/auth/v1/admin/users", headers=_ADM,
-                       json={"email": e, "password": "TestPass123!", "email_confirm": True})
-            uid = r.json()["id"]
-            r = c.post(f"{_SB}/auth/v1/token?grant_type=password",
-                       headers={"apikey": _ANON, "Content-Type": "application/json"},
-                       json={"email": e, "password": "TestPass123!"})
-            tok = r.json()["access_token"]
-            c.patch(f"{BASE}/me/profile", headers={"Authorization": f"Bearer {tok}"},
-                    json={"nickname": f"품질u-{ts%100000}"})
-            ok("유저 생성")
-            phase_real(c, tok)
+            step("공용: ko 유저 + en 유저")
+            toks = {}
+            for label, lang in (("ko", "ko"), ("en", "en")):
+                e = f"rq-{label}-{ts}@t.l"
+                r = c.post(f"{_SB}/auth/v1/admin/users", headers=_ADM,
+                           json={"email": e, "password": "TestPass123!", "email_confirm": True})
+                uids.append(r.json()["id"])
+                r = c.post(f"{_SB}/auth/v1/token?grant_type=password",
+                           headers={"apikey": _ANON, "Content-Type": "application/json"},
+                           json={"email": e, "password": "TestPass123!"})
+                tok = r.json()["access_token"]
+                c.patch(f"{BASE}/me/profile", headers={"Authorization": f"Bearer {tok}"},
+                        json={"nickname": f"품질{label}-{ts%100000}"})
+                # 언어 설정 지정
+                c.patch(f"{BASE}/me/settings", headers={"Authorization": f"Bearer {tok}"},
+                        json={"lang": lang})
+                toks[label] = tok
+            ok("ko/en 유저 생성 + lang 설정")
+            phase_real(c, toks["ko"], toks["en"])
             print("\n" + "=" * 50)
             print("  ALL TESTS PASSED")
             print("=" * 50)
         finally:
             step("Cleanup")
-            if uid:
-                c.delete(f"{_SB}/rest/v1/route_generations",
-                         headers={**_ADM, "Prefer": "return=minimal"},
-                         params={"user_id": f"eq.{uid}"})
-                c.delete(f"{_SB}/rest/v1/routes",
-                         headers={**_ADM, "Prefer": "return=minimal"},
-                         params={"user_id": f"eq.{uid}"})
-                c.delete(f"{_SB}/rest/v1/profiles",
-                         headers={**_ADM, "Prefer": "return=minimal"},
-                         params={"user_id": f"eq.{uid}"})
-                c.delete(f"{_SB}/auth/v1/admin/users/{uid}", headers=_ADM)
+            for tbl, col in (("route_generations", "user_id"), ("routes", "user_id"),
+                             ("profiles", "user_id")):
+                if uids:
+                    c.delete(f"{_SB}/rest/v1/{tbl}",
+                             headers={**_ADM, "Prefer": "return=minimal"},
+                             params={col: f"in.({','.join(uids)})"})
+            for u in uids:
+                c.delete(f"{_SB}/auth/v1/admin/users/{u}", headers=_ADM)
             ok("route_generations·routes·profiles·auth 삭제")
 
 

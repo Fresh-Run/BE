@@ -47,19 +47,20 @@ class RouteGenerationFailed(Exception):
     """Gemini never produced a usable route across all radius attempts."""
 
 
-async def _ai_course_settings(user_id: str | None) -> AiCourseSettings:
-    """The user's saved ai_course settings; server defaults on any failure.
+async def _course_context(user_id: str | None) -> tuple[AiCourseSettings, str]:
+    """(ai_course 선호, lang) — 한 번의 get_settings로 둘 다 (쿼리 증가 0).
 
     Best-effort like the feedback loop: a settings hiccup must never block
-    route generation.
+    route generation. 실패 시 서버 기본값 + 'ko'.
     """
     if not user_id:
-        return AiCourseSettings()
+        return AiCourseSettings(), "ko"
     try:
-        return (await profile_service.get_settings(user_id)).ai_course
+        s = await profile_service.get_settings(user_id)
+        return s.ai_course, s.lang
     except Exception:  # noqa: BLE001 - settings are a preference, not a gate
-        logger.warning("Failed to load ai_course settings; using defaults.", exc_info=True)
-        return AiCourseSettings()
+        logger.warning("Failed to load settings; using defaults.", exc_info=True)
+        return AiCourseSettings(), "ko"
 
 
 def _resolve_course_prefs(
@@ -143,9 +144,9 @@ async def create_running_route(
     # Step 0: learning loop — gather what nearby runners disliked, so the
     # model can avoid it. Best-effort: returns [] on any failure. The user's
     # saved ai_course settings load concurrently (also best-effort).
-    avoid_tags, saved_prefs = await asyncio.gather(
+    avoid_tags, (saved_prefs, lang) = await asyncio.gather(
         feedback_service.collect_avoidance_hints(req.start),
-        _ai_course_settings(user_id),
+        _course_context(user_id),
     )
 
     # If the client points at a specific past route, add its negative
@@ -188,6 +189,7 @@ async def create_running_route(
                 avoid_tags=avoid_tags,
                 prefs=prefs,
                 radius_km=radius_km,
+                lang=lang,
             )
             _perf["gemini_s"] += time.perf_counter() - _g
             _perf["gemini_calls"] += 1

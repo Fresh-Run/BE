@@ -127,11 +127,13 @@ async def get_or_create_script(route_id: str, user_id: str) -> CoachScriptRespon
     distance_km = float(route.get("total_distance_km") or 5.0)
 
     run_count, avg_pace = await _runner_context(user_id)
+    cue_interval, lang = 1.0, "ko"
     try:
         user_settings = await profile_service.get_settings(user_id)
         cue_interval = user_settings.audio_coach.cue_interval_km
-    except Exception:  # noqa: BLE001 - 설정은 밀도 힌트일 뿐
-        cue_interval = 1.0
+        lang = user_settings.lang  # 생성자 언어로 스크립트 박제 (route당 캐시)
+    except Exception:  # noqa: BLE001 - 설정은 밀도·언어 힌트일 뿐
+        pass
 
     cues = await openai_service.generate_coach_script(
         distance_km=distance_km,
@@ -140,6 +142,7 @@ async def get_or_create_script(route_id: str, user_id: str) -> CoachScriptRespon
         run_count=run_count,
         avg_pace_sec_per_km=avg_pace,
         cue_interval_km=cue_interval,
+        lang=lang,
     )
     cues = _sanitize_cues(cues, distance_km, len(waypoints))
 

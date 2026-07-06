@@ -96,7 +96,7 @@ def mk_run(c, user_id, ran_at, d, dur, pace=None):
 
 def phase1_pure():
     from app.services import insight_service as ins
-    from app.services.openai_service import _build_insight_prompt, _INSIGHT_SYSTEM
+    from app.services.openai_service import _build_insight_prompt, _insight_system
 
     def row(i, ran_at, d=5.0, dur=1500, pace=300):
         return {"id": f"r{i}", "ran_at": ran_at, "distance_km": d,
@@ -144,7 +144,8 @@ def phase1_pure():
     ok("요일 분포 ✓ 최빈 아침 50% ✓ streak 3 ✓ 빈 달 None ✓")
 
     step("1-4. 프롬프트 조립 — 가드 + 수치 포함 + 부재 데이터 미언급")
-    assert "의학적 조언 금지" in _INSIGHT_SYSTEM and "지어내지 않습니다" in _INSIGHT_SYSTEM
+    _sys = _insight_system("ko")
+    assert "의학적 조언 금지" in _sys and "지어내지 않습니다" in _sys and "한국어" in _sys
     prompt = _build_insight_prompt(
         year=2026, month=6, total_distance_km=42.8, run_count=12,
         avg_pace_sec_per_km=318, delta_distance_km=4.6,
