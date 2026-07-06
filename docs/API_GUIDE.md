@@ -93,7 +93,18 @@ fetch(`${API_BASE}/api/me/profile`, {
 |---|---|---|
 | 월 선택 통계 + 캘린더 | `GET /me/stats/monthly?year&month` | `stats`(합계·평균페이스·전월 대비 delta), `days[{date,distance_km,run_count}]` — 뛴 날만 옴, 캘린더 점 찍기용 (KST 기준). **무료** |
 | **AI 월간 인사이트 (프리미엄)** | `GET /me/insights/monthly?year&month` | 프리미엄 월간 리포트 화면 전체 데이터. free는 **403 `premium_required`**(§5), month 1~12 외 422. 스키마는 표 아래 참고 |
-| 러닝 기록 저장 | `POST /runs` | body: `distance_km`(0<d≤350), `duration_sec`(≤7일), `route_id?`, `avg_pace_sec_per_km?`, `notes?`(≤2000자), **`gps_track?`** (아래 규약). **평균 페이스가 1'30"/km보다 빠르면(물리적 불가) 422** — 자율신고 부정 방어. 응답에 `new_records[]` — **비어있지 않으면 "새로운 기록 경신!" 축하 모달을 띄우면 됩니다** (`{type, previous, current, improvement_pct}` — 이전/현재 비교 카드 + "N% 향상" 칩 그대로). 첫 run은 항상 `[]` |
+| 러닝 기록 저장 | `POST /runs` | body: `distance_km`(0<d≤350), `duration_sec`(≤7일), `route_id?`, `avg_pace_sec_per_km?`, **`title?`**(≤60자), **`visibility?`**(public/followers/private, 기본 public), `notes?`(≤2000자), **`gps_track?`** (아래 규약). **평균 페이스가 1'30"/km보다 빠르면(물리적 불가) 422** — 자율신고 부정 방어. 응답에 `new_records[]` — **비어있지 않으면 "새로운 기록 경신!" 축하 모달** (`{type, previous, current, improvement_pct}`) — 첫 run은 `[]`. **저장 화면(시안) 필드 매핑·visibility·페이스 비교는 아래 상세 참고** |
+
+> **저장 화면 (시안) — 필드 매핑 · 공개 범위 · 완료 화면 데이터**
+> - **제목** `title` (optional, ≤60자): 시안 "야간 러닝". **프론트가 시간대 기반 기본값을 생성해 보냄** (서버는 저장만). 미전송이면 null.
+> - **메모** = **`notes`** (기존 필드 그대로, ≤2000자): **개인 메모 — 본인만 봄.** 활동 피드·크루 피드·공개 프로필 어디에도 절대 노출 안 됨. 시안 "메모"는 이 필드에 매핑.
+> - **공개 범위** `visibility` 3단 (기본 **`public`** — 시안 저장 화면 기본이 "전체 공개"):
+>   - `public`(전체): 누구나 — **공개 프로필 `GET /users/{id}/runs`에 노출**, 활동/크루 피드, 아무나 kudos 가능.
+>   - `followers`(팔로워만): 나를 팔로우한 사람 + **같은 크루원**에게 노출 (활동 피드·크루 피드·kudos 가능). 비팔로워·비크루원은 공개 프로필에서 못 봄.
+>   - `private`(비공개): **본인만.** 모든 피드·프로필·kudos에서 제외.
+>   - **기존 run(이 기능 이전 저장분)은 전부 `followers`로 백필** — 당시 노출(팔로워/크루)을 그대로 보존, 공개 프로필엔 안 뜸. 새 run만 기본 public.
+> - **완료 화면 비교 rows** (`POST /runs` 응답에만): `recent_avg_pace_sec_per_km`(최근 30일 평균 페이스, **이번 run 제외**) + `pace_delta_sec`(이번 페이스 − 최근 평균, **음수 = "평소보다 N초 빨라요"**). 히스토리 없으면(첫 run 등) 둘 다 null → 비교 UI 숨김. **주간 누적은 기존 `GET /me/stats`의 `week`로 표시.**
+> - 응답에도 `title`·`visibility` 포함(저장 확인용).
 | 기록 목록 | `GET /runs?limit&route_id?` | `RunResponse[]` 최신순 — GPS run은 `splits[]`·`has_track`·`verification` 포함 |
 | 기록 단건 | `GET /runs/{run_id}` | 본인 것만, 아니면 404 |
 | **러닝 경로 (지도)** | `GET /runs/{run_id}/track` | `{polyline[{lat,lng}], server_distance_km, elev_gain_m, point_count_raw/kept}` — 활동 상세 지도용. 트랙 없는 run(기존/수동)은 404 (`has_track`으로 사전 판단) |
@@ -154,7 +165,7 @@ fetch(`${API_BASE}/api/me/profile`, {
 | 데이터 | 메서드/경로 | 주요 응답 필드 |
 |---|---|---|
 | **팔로잉 피드 (코스, 홈 v1)** | `GET /feed?limit&offset` | `PublicRouteResponse[]`: `summary`, `owner_nickname`, `like_count`, `comment_count`, `copy_count`, `is_liked`, `polyline` — 팔로우 0명이면 `[]`. **홈 피드 v1은 이 코스 피드로 연결** |
-| **활동 피드 (run, 홈 v2)** | `GET /feed/activities?limit&offset` | 팔로우한 유저 **+ 내** run, `ran_at` 최신순: 크루 러닝 피드와 같은 필드 + `is_mine`, `kudos_count`, `my_kudos`. **`is_mine=true`인 내 카드는 kudos 버튼 비활성** (본인 kudos는 400). 댓글 카운트는 run 댓글 출시 때 추가 예정(현재 필드 없음) |
+| **활동 피드 (run, 홈 v2)** | `GET /feed/activities?limit&offset` | 팔로우한 유저 **+ 내** run, `ran_at` 최신순: 크루 러닝 피드와 같은 필드 + `title`, `is_mine`, `kudos_count`, `my_kudos`. **visibility 적용**: 팔로우 대상의 `private` run은 제외(public·followers만), 내 run은 전부. **`is_mine=true`인 내 카드는 kudos 버튼 비활성** (본인 kudos는 400). 댓글 카운트는 run 댓글 출시 때 추가 예정(현재 필드 없음, `visibility`는 피드에선 null) |
 | run kudos | `POST/DELETE /runs/{run_id}/kudos`, `GET /runs/{run_id}/kudos` | 204 멱등(더블탭 안전), 본인 run 400, run 주인에게 `run_kudoed` 알림(9번째 타입). GET은 누른 사람 목록 `[{user_id, nickname, avatar_url, created_at}]`. **가시성 게이트**: 내가 볼 수 있는 run(팔로우 중이거나 같은 크루)에만 kudos·목록 조회 가능 — 그 외 run_id는 **404**(피드에 뜬 run만 대상이므로 실사용엔 영향 없음). **코스 좋아요(route like)와 별개** — 코스 평가 vs 활동 응원 |
 | 전체 공개 코스 | `GET /routes/public?sort=newest\|popular&limit` | 동일 shape |
 | 근처 코스 | `GET /routes/nearby?lat&lng&radius_km` | 동일 shape. `radius_km`은 최대 50으로 클램프, `limit` 1~100 클램프 (음수·거대값도 안전) |
@@ -164,7 +175,8 @@ fetch(`${API_BASE}/api/me/profile`, {
 | 댓글 | `GET/POST /routes/{id}/comments`, `DELETE /routes/{id}/comments/{comment_id}` | `content` 1~500자 |
 | 이 코스 달리기(복사) | `POST /routes/{id}/copy` | 내 코스로 복사본 생성 |
 | 팔로우 토글 | `POST/DELETE /users/{user_id}/follow` | 204, 멱등. 자기 자신 400 |
-| 공개 프로필 | `GET /users/{user_id}/profile` | `nickname`, `bio`, `tier`, `follower_count`, `following_count`, `is_following`, `is_followed_by`(맞팔 표시) |
+| 공개 프로필 | `GET /users/{user_id}/profile` | `nickname`, `bio`, `tier`, `follower_count`, `following_count`, `is_following`, `is_followed_by`(맞팔 표시), **`public_run_count`**(그 유저가 전체 공개로 게시한 러닝 수 — 시안 "게시한 러닝 · 공개 N") |
+| **공개 프로필 러닝** | `GET /users/{user_id}/runs?limit&offset` | 그 유저의 러닝 카드 — **활동 피드와 동일 shape**(`run_id, user_id, nickname, avatar_url, ran_at, title, distance_km, duration_sec, avg_pace_sec_per_km, route_id, route_summary, is_mine, kudos_count, my_kudos`). **조회자 가시성 필터**: 본인=전부 / 타인은 `public` 항상 + `followers`는 내가 그 유저를 팔로우할 때 + `private` 제외. **본인 프로필에서만 각 카드에 `visibility` 채워짐**(뱃지용), 타인 프로필은 `visibility=null`. 좋아요=`kudos_count`, **댓글 수는 run 댓글 미출시라 없음**(카드에서 생략, 후속 기능) |
 | 팔로워/팔로잉 목록 | `GET /users/{user_id}/followers` / `/following` | `[{user_id, nickname, avatar_url, followed_at, is_following}]` — 항목별 팔로우 버튼용 |
 | **크루 둘러보기** | `GET /crews?sido&sigungu&lat&lng&include_full&limit` | 공개 크루 + 내 비공개. `member_count`·`owner_nickname`·`sido`·`sigungu`·`lat`·`lng`·`tags`·`distance_km` 포함. **파라미터 없으면 기존 동작**(최신순, distance_km null). 당근식 사용법은 표 아래 참고 |
 | 크루 검색/상세 | `GET /crews/search?q`, `/crews/mine`, `/crews/{id}` | 검색은 name/area/description 부분일치 |
@@ -185,8 +197,8 @@ fetch(`${API_BASE}/api/me/profile`, {
 | **초대 코드 (크루장)** | `GET /crews/{id}/invite` (미발급 404 → POST로 발급), `POST /crews/{id}/invite` (생성/**재생성** — 이전 코드 즉시 무효, 유출 대응) | `{code}` — 8자 대문자+숫자 (I/O/0/1 없음). 카톡 등으로 공유 |
 | 코드 미리보기 | `GET /crews/preview-by-code?code=` | 가입 확정 전 "어느 크루인지" 확인 — `CrewResponse` 반환. **비공개 크루도 조회됨** (코드 = 초대장). 잘못된 코드 404 |
 | **코드로 가입** | `POST /crews/join-by-code` body `{code}` | 200 `CrewResponse` (바로 크루 화면 이동). **join_policy·비공개 무관 즉시 가입** — 크루 생성 화면의 "비공개: 초대 링크로만 가입 가능해요"가 이 경로. 대소문자·공백은 서버가 정규화. 이미 멤버/정원 409, 잘못된 코드 404. 승인제에 신청해뒀던 pending은 자동 정리 |
-| 멤버/랭킹 | `GET /crews/{id}/members`, `/crews/{id}/ranking` | 랭킹: 이번 주 KST 거리순, `me` 플래그 |
-| **크루 러닝 피드** | `GET /crews/{id}/runs?limit&offset` | 크루원들의 최근 run, `ran_at` 최신순: `[{run_id, user_id, nickname, avatar_url, ran_at, distance_km, duration_sec, avg_pace_sec_per_km, route_id, route_summary}]`. 크루원만(403). 개인 메모/피드백은 절대 미포함, `route_summary`는 공개 코스만(비공개면 null). 탈퇴 멤버의 run은 자동 제외 |
+| 멤버/랭킹 | `GET /crews/{id}/members`, `/crews/{id}/ranking` | 랭킹: 이번 주 KST 거리순, `me` 플래그. **visibility 무관** — 랭킹·챌린지 누적 거리는 `private` run도 포함(크루=활동 공유 원칙 + 거리 은닉 어뷰징 방지). visibility는 run 카드 노출만 제어, 집계 거리엔 영향 없음 |
+| **크루 러닝 피드** | `GET /crews/{id}/runs?limit&offset` | 크루원들의 최근 run, `ran_at` 최신순: `[{run_id, user_id, nickname, avatar_url, ran_at, title, distance_km, duration_sec, avg_pace_sec_per_km, route_id, route_summary}]`. 크루원만(403). **visibility 적용**: `private`만 제외 — `public`·`followers`는 크루원에게 노출(크루=활동 공유 관계). 개인 메모/피드백은 절대 미포함, `route_summary`는 공개 코스만(비공개면 null). 탈퇴 멤버의 run은 자동 제외 |
 | 챌린지 | `GET /crews/{id}/challenges/current`, `POST /crews/{id}/challenges` | `achieved_km`, `progress_pct`, `is_completed` 실시간 계산. 생성 시 `starts_at`/`ends_at`은 **ISO 8601 + 타임존 필수** (아래 노트) |
 | **공지 목록/상세** | `GET /crews/{id}/announcements?limit&offset`, `GET .../{announcement_id}` | `title`, `body`, `run_at`, `place_name/lat/lng`, `rsvp_open`, `rsvp{going,not_going,maybe}`, `my_rsvp`; 상세엔 `going_members[]` 명단 추가. 크루원만 조회 가능(403). 작성 시 `run_at`/`rsvp_closes_at`은 **ISO 8601 + 타임존 필수** |
 

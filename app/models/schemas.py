@@ -376,6 +376,9 @@ class PublicProfileResponse(BaseModel):
     is_followed_by: bool = Field(
         ..., description="True if this user follows the caller (맞팔 표시용)."
     )
+    public_run_count: int = Field(
+        0, description="이 유저가 '전체 공개'로 게시한 러닝 수 (시안 '게시한 러닝 · 공개 N')."
+    )
 
 
 class RouteRequest(BaseModel):
@@ -760,7 +763,16 @@ class RunRequest(BaseModel):
     avg_pace_sec_per_km: Optional[int] = Field(
         None, gt=0, description="Average pace in seconds per km (optional)."
     )
-    notes: Optional[str] = Field(None, max_length=2000, description="Free-form notes about the run.")
+    # 저장 화면의 '메모' = notes (개인 메모 — 피드·크루·공개 프로필에 절대 미노출)
+    notes: Optional[str] = Field(None, max_length=2000, description="개인 메모 (본인만).")
+    title: Optional[str] = Field(
+        None, max_length=60,
+        description="러닝 제목 (예: '야간 러닝'). 프론트가 시간대 기본값 생성해 보냄. optional.",
+    )
+    visibility: Literal["public", "followers", "private"] = Field(
+        "public",
+        description="공개 범위: public(전체)/followers(팔로워만)/private(비공개). 기본 public.",
+    )
     gps_track: Optional[list[GpsPoint]] = Field(
         None,
         max_length=5000,
@@ -795,6 +807,15 @@ class RunResponse(BaseModel):
     duration_sec: int
     avg_pace_sec_per_km: Optional[int] = None
     notes: Optional[str] = None
+    title: Optional[str] = None
+    visibility: str = Field("public", description="public/followers/private.")
+    # 완료 화면 비교 rows (POST /runs 응답에서만 — 최근 30일 평균 대비)
+    recent_avg_pace_sec_per_km: Optional[int] = Field(
+        None, description="최근 30일 평균 페이스 (이번 run 제외). 히스토리 없으면 null.",
+    )
+    pace_delta_sec: Optional[int] = Field(
+        None, description="이번 run 페이스 − 최근 평균 (음수=평소보다 빠름). null이면 비교 불가.",
+    )
     # Feedback loop (NULL/empty until the user submits feedback)
     liked: Optional[bool] = Field(None, description="True=좋았어요, False=별로예요.")
     feedback_tags: list[str] = Field(default_factory=list)
@@ -1019,6 +1040,7 @@ class CrewRunItem(BaseModel):
     nickname: Optional[str] = None
     avatar_url: Optional[str] = None
     ran_at: str
+    title: Optional[str] = None
     distance_km: float
     duration_sec: int
     avg_pace_sec_per_km: Optional[int] = None
@@ -1039,6 +1061,9 @@ class ActivityFeedItem(CrewRunItem):
     is_mine: bool = Field(False, description="내 run이면 true (kudos 버튼 비활성용).")
     kudos_count: int = 0
     my_kudos: bool = Field(False, description="내가 이 run에 kudos를 눌렀는지.")
+    visibility: Optional[str] = Field(
+        None, description="공개 범위 (본인 프로필 뱃지용). 활동 피드/크루 피드에선 생략(null)."
+    )
 
 
 class KudosUserItem(BaseModel):

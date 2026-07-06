@@ -13,7 +13,7 @@ from postgrest.exceptions import APIError
 
 from app.core.supabase_client import get_supabase_admin
 from app.models.schemas import FollowUserItem, PublicProfileResponse
-from app.services import notification_service, profile_service
+from app.services import notification_service, profile_service, run_service
 
 logger = logging.getLogger(__name__)
 
@@ -220,11 +220,13 @@ async def get_public_profile(target_id: str, viewer_id: str) -> PublicProfileRes
     if profile is None:
         raise UserNotFound()
 
-    follower_count, following_count, is_following, is_followed_by = await asyncio.gather(
+    (follower_count, following_count, is_following, is_followed_by,
+     pub_run_count) = await asyncio.gather(
         _follow_count("following_id", target_id),
         _follow_count("follower_id", target_id),
         _follows(viewer_id, target_id),
         _follows(target_id, viewer_id),
+        run_service.public_run_count(target_id),
     )
     return PublicProfileResponse(
         user_id=profile.user_id,
@@ -237,4 +239,5 @@ async def get_public_profile(target_id: str, viewer_id: str) -> PublicProfileRes
         following_count=following_count,
         is_following=is_following,
         is_followed_by=is_followed_by,
+        public_run_count=pub_run_count,
     )

@@ -358,6 +358,27 @@ async def list_user_following(
         raise _bad_gateway("Failed to list following", exc)
 
 
+@router.get(
+    "/users/{user_id}/runs",
+    response_model=list[ActivityFeedItem],
+    summary="공개 프로필 러닝 목록 (조회자 가시성 필터)",
+)
+async def list_public_user_runs(
+    user_id: str,
+    limit: int = 20,
+    offset: int = 0,
+    user: CurrentUser = Depends(get_current_user),
+) -> list[ActivityFeedItem]:
+    """그 유저의 '게시한 러닝' — 조회자가 볼 수 있는 run만 (본인=전부, public=
+    누구나, followers=팔로우 시, private=제외). 활동 피드와 동일 카드 shape."""
+    try:
+        return await run_service.list_user_runs(
+            user_id, caller_id=user.user_id, limit=limit, offset=offset
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise _bad_gateway("Failed to list user runs", exc)
+
+
 @router.post(
     "/routes/generate",
     response_model=RouteResponse,

@@ -738,8 +738,10 @@ async def list_crew_runs(
     runs_res = await asyncio.to_thread(
         lambda: supabase.table("runs")
         .select("id, user_id, ran_at, distance_km, duration_sec, "
-                "avg_pace_sec_per_km, route_id")
+                "avg_pace_sec_per_km, route_id, title")
         .in_("user_id", member_ids)
+        # 크루 피드는 private만 제외 (public·followers는 크루원에게 노출 — 기존 동작 보존)
+        .neq("visibility", "private")
         .order("ran_at", desc=True)
         .range(offset, offset + limit - 1)
         .execute()
@@ -775,6 +777,7 @@ async def list_crew_runs(
             nickname=briefs.get(row["user_id"], {}).get("nickname"),
             avatar_url=briefs.get(row["user_id"], {}).get("avatar_url"),
             ran_at=row["ran_at"],
+            title=row.get("title"),
             distance_km=row["distance_km"],
             duration_sec=row["duration_sec"],
             avg_pace_sec_per_km=row.get("avg_pace_sec_per_km"),

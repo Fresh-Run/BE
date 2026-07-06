@@ -94,6 +94,17 @@ async def create_run(req: RunRequest, user_id: str | None = None) -> RunResponse
         except Exception:  # noqa: BLE001 - celebration is a bonus, not a gate
             logger.warning("PB 경신 감지 실패 — new_records 없이 저장 진행", exc_info=True)
 
+    # 완료 화면 "평소보다 N초 빨라요" — 최근 30일 평균 페이스(이번 run 제외).
+    # 저장 전 스냅샷으로 계산 (best-effort, 실패 시 null — 저장은 막지 않음).
+    recent_avg_pace, pace_delta = None, None
+    if user_id:
+        try:
+            recent_avg_pace, pace_delta = await _pace_vs_recent(
+                user_id, final_distance, req.duration_sec, req.avg_pace_sec_per_km
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("페이스 비교 계산 실패", exc_info=True)
+
     record = {
         "user_id": user_id,
         "route_id": req.route_id,
@@ -101,6 +112,8 @@ async def create_run(req: RunRequest, user_id: str | None = None) -> RunResponse
         "duration_sec": req.duration_sec,
         "avg_pace_sec_per_km": req.avg_pace_sec_per_km,
         "notes": req.notes,
+        "title": req.title,
+        "visibility": req.visibility,
         "verification": verification,
         "distance_km_reported": reported,
         "is_flagged": is_flagged,
@@ -145,7 +158,9 @@ async def create_run(req: RunRequest, user_id: str | None = None) -> RunResponse
             splits_out = None
 
     run = RunResponse(**saved, new_records=new_records,
-                      has_track=has_track, splits=splits_out)
+                      has_track=has_track, splits=splits_out,
+                      recent_avg_pace_sec_per_km=recent_avg_pace,
+                      pace_delta_sec=pace_delta)
 
     if user_id:
         try:
@@ -178,6 +193,33 @@ def _month_boundaries_utc() -> tuple[str, str]:
         this_month.astimezone(timezone.utc).isoformat(),
         last_month.astimezone(timezone.utc).isoformat(),
     )
+
+
+async def _pace_vs_recent(
+    user_id: str, this_dist: float, this_dur: int, this_pace: int | None
+) -> tuple[int | None, int | None]:
+    """(최근 30일 평균 페이스, 이번 run 페이스 − 평균). 음수 delta = 빠름.
+
+    이번 run은 아직 저장 전이라 자동으로 제외됨. 최근 30일 run이 없으면
+    (None, None). 평균은 sum(duration)/sum(distance) — 거리 가중.
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("runs")
+        .select("distance_km, duration_sec")
+        .eq("user_id", user_id)
+        .gte("ran_at", cutoff)
+        .execute()
+    )
+    rows = res.data
+    total_dist = sum(r["distance_km"] for r in rows)
+    if not rows or total_dist <= 0:
+        return None, None
+    recent_avg = round(sum(r["duration_sec"] for r in rows) / total_dist)
+    this = this_pace if this_pace else round(this_dur / this_dist) if this_dist > 0 else None
+    delta = (this - recent_avg) if this is not None else None
+    return recent_avg, delta
 
 
 # ── personal bests (PB) ──────────────────────────────────────────────────────
@@ -520,34 +562,39 @@ async def _my_kudos_set(run_ids: list[str], user_id: str) -> set[str]:
     return {row["run_id"] for row in res.data}
 
 
-async def _run_owner(run_id: str) -> str:
-    """Return the run owner's user_id, or raise RunNotFound."""
+async def _run_owner(run_id: str) -> tuple[str, str]:
+    """Return (owner user_id, visibility), or raise RunNotFound."""
     supabase = get_supabase_admin()
     res = await asyncio.to_thread(
         lambda: supabase.table("runs")
-        .select("user_id")
+        .select("user_id, visibility")
         .eq("id", run_id)
         .limit(1)
         .execute()
     )
     if not res.data:
         raise RunNotFound()
-    return res.data[0]["user_id"]
+    row = res.data[0]
+    return row["user_id"], row.get("visibility") or "followers"
 
 
 class RunNotVisible(Exception):
-    """Caller can't see this run (not owner/follower/crewmate) — kudos·목록 차단."""
+    """Caller can't see this run (visibility·관계상 차단) — kudos·목록 차단."""
 
 
-async def _can_see_run(owner_id: str, caller_id: str) -> bool:
-    """run이 caller에게 보이는가 — 피드 노출 규칙과 일치 (감사 L1).
+async def _can_see_run(owner_id: str, caller_id: str, visibility: str) -> bool:
+    """run이 caller에게 보이는가 — 노출 경로 정책과 일치.
 
-    ① 본인 소유 ② caller가 owner를 팔로우(활동 피드 규칙) ③ 같은 크루 소속
-    (크루 러닝 피드 규칙). run_id는 이 두 피드로만 노출되므로 kudos 가시성도
-    동일 기준으로 게이트한다.
+    ① 본인 → 항상 ② private → 본인만(False) ③ public → 누구나(공개 프로필로
+    노출되므로) ④ followers → 팔로우 중이거나 같은 크루 소속.
     """
     if owner_id == caller_id:
         return True
+    if visibility == "private":
+        return False
+    if visibility == "public":
+        return True
+    # visibility == "followers": 팔로우 or 같은 크루
     supabase = get_supabase_admin()
     follow = await asyncio.to_thread(
         lambda: supabase.table("follows")
@@ -586,10 +633,10 @@ async def give_kudos(run_id: str, user_id: str) -> None:
     Fires a best-effort run_kudoed notification only on a genuinely new kudos.
     보이지 않는 run(팔로우·크루 무관)에는 kudos 불가 — 알림 스팸 방지 (L1).
     """
-    owner_id = await _run_owner(run_id)
+    owner_id, visibility = await _run_owner(run_id)
     if owner_id == user_id:
         raise SelfKudos()
-    if not await _can_see_run(owner_id, user_id):
+    if not await _can_see_run(owner_id, user_id, visibility):
         raise RunNotVisible()
 
     supabase = get_supabase_admin()
@@ -640,8 +687,8 @@ async def list_kudos_users(
     가시성 게이트(L1): 보이는 run(본인·팔로우·크루)만 명단 조회 — 아니면
     RunNotVisible (핸들러가 404로 매핑, 존재 은닉).
     """
-    owner_id = await _run_owner(run_id)  # RunNotFound if the run doesn't exist
-    if not await _can_see_run(owner_id, caller_id):
+    owner_id, visibility = await _run_owner(run_id)  # RunNotFound if missing
+    if not await _can_see_run(owner_id, caller_id, visibility):
         raise RunNotVisible()
     limit = max(1, min(limit, 100))
     offset = max(0, offset)
@@ -695,8 +742,10 @@ async def list_activity_feed(
     runs_res = await asyncio.to_thread(
         lambda: supabase.table("runs")
         .select("id, user_id, ran_at, distance_km, duration_sec, "
-                "avg_pace_sec_per_km, route_id")
+                "avg_pace_sec_per_km, route_id, title")
         .in_("user_id", audience)
+        # private run은 본인 것만 (팔로우 대상의 private는 활동 피드에서 제외)
+        .or_(f"visibility.neq.private,user_id.eq.{user_id}")
         .order("ran_at", desc=True)
         .range(offset, offset + limit - 1)
         .execute()
@@ -734,6 +783,7 @@ async def list_activity_feed(
             nickname=briefs.get(row["user_id"], {}).get("nickname"),
             avatar_url=briefs.get(row["user_id"], {}).get("avatar_url"),
             ran_at=row["ran_at"],
+            title=row.get("title"),
             distance_km=row["distance_km"],
             duration_sec=row["duration_sec"],
             avg_pace_sec_per_km=row.get("avg_pace_sec_per_km"),
@@ -745,6 +795,104 @@ async def list_activity_feed(
         )
         for row in rows
     ]
+
+
+async def list_user_runs(
+    target_id: str, caller_id: str, limit: int = 20, offset: int = 0
+) -> list[ActivityFeedItem]:
+    """공개 프로필의 '게시한 러닝' — target의 run 중 caller가 볼 수 있는 것만.
+
+    가시성: 본인이면 전부 / public은 누구나 / followers는 caller가 target을
+    팔로우할 때 / private은 절대. 카드 shape는 활동 피드와 동일 + title·visibility.
+    """
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+    supabase = get_supabase_admin()
+
+    # caller가 볼 수 있는 visibility 집합 결정 (관계 1쿼리로 판정)
+    if caller_id == target_id:
+        allowed = ["public", "followers", "private"]
+    else:
+        follow = await asyncio.to_thread(
+            lambda: supabase.table("follows")
+            .select("follower_id")
+            .eq("follower_id", caller_id)
+            .eq("following_id", target_id)
+            .limit(1)
+            .execute()
+        )
+        allowed = ["public", "followers"] if follow.data else ["public"]
+
+    runs_res = await asyncio.to_thread(
+        lambda: supabase.table("runs")
+        .select("id, user_id, ran_at, distance_km, duration_sec, "
+                "avg_pace_sec_per_km, route_id, title, visibility")
+        .eq("user_id", target_id)
+        .in_("visibility", allowed)
+        .order("ran_at", desc=True)
+        .range(offset, offset + limit - 1)
+        .execute()
+    )
+    rows = runs_res.data
+    if not rows:
+        return []
+
+    run_ids = [r["id"] for r in rows]
+    route_ids = list({r["route_id"] for r in rows if r.get("route_id")})
+
+    async def _public_route_summaries() -> dict[str, str]:
+        if not route_ids:
+            return {}
+        r = await asyncio.to_thread(
+            lambda: supabase.table("routes")
+            .select("id, summary")
+            .in_("id", route_ids)
+            .eq("is_public", True)
+            .execute()
+        )
+        return {row["id"]: row["summary"] for row in r.data}
+
+    brief, summaries, kudos_counts, my_kudos = await asyncio.gather(
+        profile_service.get_profile_briefs([target_id]),
+        _public_route_summaries(),
+        _kudos_counts(run_ids),
+        _my_kudos_set(run_ids, caller_id),
+    )
+    is_own = caller_id == target_id
+    return [
+        ActivityFeedItem(
+            run_id=row["id"],
+            user_id=row["user_id"],
+            nickname=brief.get(target_id, {}).get("nickname"),
+            avatar_url=brief.get(target_id, {}).get("avatar_url"),
+            ran_at=row["ran_at"],
+            title=row.get("title"),
+            distance_km=row["distance_km"],
+            duration_sec=row["duration_sec"],
+            avg_pace_sec_per_km=row.get("avg_pace_sec_per_km"),
+            route_id=row.get("route_id"),
+            route_summary=summaries.get(row.get("route_id")),
+            is_mine=is_own,
+            kudos_count=kudos_counts.get(row["id"], 0),
+            my_kudos=row["id"] in my_kudos,
+            # 본인 프로필에서만 visibility 뱃지 렌더 (타인 프로필엔 노출 불필요)
+            visibility=row.get("visibility") if is_own else None,
+        )
+        for row in rows
+    ]
+
+
+async def public_run_count(target_id: str) -> int:
+    """target이 '전체 공개'로 게시한 run 수 (공개 프로필 헤더 'N개')."""
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("runs")
+        .select("id", count="exact")
+        .eq("user_id", target_id)
+        .eq("visibility", "public")
+        .execute()
+    )
+    return res.count or 0
 
 
 async def _check_challenge_completion(user_id: str) -> None:
