@@ -211,7 +211,7 @@ def _compute_records(rows: list[dict]) -> RecordsBlock:
 
         def _entry(value: float) -> RecordEntry:
             return RecordEntry(value=value, run_id=r["id"], ran_at=r["ran_at"],
-                               distance_km=round(dist, 2))
+                               distance_km=round(dist, 1))
 
         pace = _run_pace(r)
         if pace is not None and dist >= _MIN_PACE_DISTANCE_KM:
@@ -222,7 +222,7 @@ def _compute_records(rows: list[dict]) -> RecordsBlock:
             if best.best_5k is None or t5k < best.best_5k.value:
                 best.best_5k = _entry(t5k)
         if best.longest_distance is None or dist > best.longest_distance.value:
-            best.longest_distance = _entry(round(dist, 2))
+            best.longest_distance = _entry(round(dist, 1))
         if best.longest_duration is None or dur > best.longest_duration.value:
             best.longest_duration = _entry(dur)
     return best
@@ -257,7 +257,7 @@ def _detect_new_records(prev_rows: list[dict], req: RunRequest) -> list[NewRecor
                                  improvement_pct=_improvement_pct(prev.best_5k.value, t5k, True)))
     if prev.longest_distance is not None and dist > prev.longest_distance.value:
         out.append(NewRecord(
-            type="longest_distance", previous=prev.longest_distance.value, current=round(dist, 2),
+            type="longest_distance", previous=prev.longest_distance.value, current=round(dist, 1),
             improvement_pct=_improvement_pct(prev.longest_distance.value, dist, False)))
     if prev.longest_duration is not None and dur > prev.longest_duration.value:
         out.append(NewRecord(
@@ -303,14 +303,14 @@ def _aggregate(rows: list[dict], delta_distance_km: float | None) -> PeriodStats
             longest_run_km=None,
             delta_distance_km=delta_distance_km,
         )
-    total_dist = round(sum(r["distance_km"] for r in rows), 2)
+    raw_dist = sum(r["distance_km"] for r in rows)   # pace 계산은 raw로 (정밀)
     total_dur = sum(r["duration_sec"] for r in rows)
     return PeriodStats(
-        total_distance_km=total_dist,
+        total_distance_km=round(raw_dist, 1),        # 표시용 거리 1자리
         run_count=len(rows),
         total_duration_sec=total_dur,
-        avg_pace_sec_per_km=round(total_dur / total_dist) if total_dist > 0 else None,
-        longest_run_km=round(max(r["distance_km"] for r in rows), 2),
+        avg_pace_sec_per_km=round(total_dur / raw_dist) if raw_dist > 0 else None,
+        longest_run_km=round(max(r["distance_km"] for r in rows), 1),
         delta_distance_km=delta_distance_km,
     )
 
@@ -337,8 +337,8 @@ async def get_my_stats(user_id: str) -> StatsResponse:
     last_month_dist = sum(r["distance_km"] for r in last_month)
 
     return StatsResponse(
-        week=_aggregate(this_week, round(week_dist - last_week_dist, 2)),
-        month=_aggregate(this_month, round(month_dist - last_month_dist, 2)),
+        week=_aggregate(this_week, round(week_dist - last_week_dist, 1)),
+        month=_aggregate(this_month, round(month_dist - last_month_dist, 1)),
         all_time=_aggregate(all_time, delta_distance_km=None),
         # PB는 이미 읽은 all_time rows에서 계산 — 추가 쿼리 없음.
         records=_compute_records(all_time),
@@ -477,13 +477,13 @@ async def get_monthly_stats(
         day = datetime.fromisoformat(r["ran_at"]).astimezone(_KST).date().isoformat()
         if day not in daily:
             daily[day] = DailyRunStat(date=day, distance_km=0.0, run_count=0)
-        daily[day].distance_km = round(daily[day].distance_km + r["distance_km"], 2)
+        daily[day].distance_km = round(daily[day].distance_km + r["distance_km"], 1)
         daily[day].run_count += 1
 
     return MonthlyStatsResponse(
         year=year,
         month=month,
-        stats=_aggregate(rows, round(dist - prev_dist, 2)),
+        stats=_aggregate(rows, round(dist - prev_dist, 1)),
         days=sorted(daily.values(), key=lambda d: d.date),
     )
 

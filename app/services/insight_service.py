@@ -68,7 +68,7 @@ def _split_weeks(rows: list[dict], year: int, month: int) -> list[WeekStat]:
     out = []
     for idx in range(1, total_weeks + 1):
         rs = buckets[idx]
-        dist = round(sum(r["distance_km"] for r in rs), 2)
+        dist = round(sum(r["distance_km"] for r in rs), 1)
         dur = sum(r["duration_sec"] for r in rs)
         out.append(WeekStat(
             index=idx,
@@ -234,7 +234,7 @@ async def get_monthly_insight(
 
     dist = sum(r["distance_km"] for r in month_rows)
     prev_dist = sum(r["distance_km"] for r in prev_rows)
-    stats = _aggregate(month_rows, round(dist - prev_dist, 2))
+    stats = _aggregate(month_rows, round(dist - prev_dist, 1))
     weeks = _split_weeks(month_rows, year, month)
     records = _month_records(month_rows, rows_until_end, year, month)
     pattern = _compute_pattern(month_rows)

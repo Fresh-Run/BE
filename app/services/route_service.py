@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import time
 from collections import defaultdict
 
 from openai import APIError as OpenAIAPIError
@@ -169,8 +170,15 @@ async def create_running_route(
     nopath_candidate: RouteResponse | None = None
     pitstop_places: list | None = None  # Kakao 검색은 결정적 — 첫 성공 결과 재사용
 
+    # 구간별 계측 (병목 관측용 — 항상 켜둔 경량 타이머)
+    _t0 = time.perf_counter()
+    _perf = {"gemini_s": 0.0, "gemini_calls": 0, "tmap_s": 0.0, "tmap_legs": 0,
+             "attempts": 0}
+
     for i, radius_km in enumerate(_radius_schedule(target_km)):
+        _perf["attempts"] += 1
         try:
+            _g = time.perf_counter()
             route = await openai_service.generate_route(
                 target_distance_km=target_km,
                 start=req.start,
@@ -181,6 +189,8 @@ async def create_running_route(
                 prefs=prefs,
                 radius_km=radius_km,
             )
+            _perf["gemini_s"] += time.perf_counter() - _g
+            _perf["gemini_calls"] += 1
         except OpenAIAPIError:
             # ①-a API 장애: 반경과 무관 — 확장 재시도는 낭비. 이미 확보한
             # 후보가 있으면 그걸로 마무리, 없으면 그대로 실패.
@@ -232,14 +242,18 @@ async def create_running_route(
         if len(route.waypoints) >= 2:
             try:
                 via = [wp.coordinate for wp in route.waypoints[1:-1]] or None
+                _m = time.perf_counter()
                 pedestrian = await map_service.get_pedestrian_route(
                     origin=route.waypoints[0].coordinate,
                     destination=route.waypoints[-1].coordinate,
                     waypoints=via,
                 )
+                _perf["tmap_s"] += time.perf_counter() - _m
+                _perf["tmap_legs"] += len(route.waypoints) - 1
                 route.polyline = pedestrian.path
-                route.total_distance_km = round(pedestrian.distance_m / 1000.0, 2)
-                route.estimated_duration_min = round(pedestrian.duration_s / 60.0, 1)
+                # 표시용: 거리 소수 1자리, 소요시간 정수 분 (소수점 노출 방지)
+                route.total_distance_km = round(pedestrian.distance_m / 1000.0, 1)
+                route.estimated_duration_min = float(round(pedestrian.duration_s / 60.0))
                 actual_km = route.total_distance_km
                 status = "OK" if actual_km >= _SHORT_RATIO * target_km else "SHORT"
             except Exception:  # noqa: BLE001 - keep AI estimates if routing fails
@@ -271,6 +285,16 @@ async def create_running_route(
             best = nopath_candidate
         else:
             raise RouteGenerationFailed()
+
+    # 계측 요약 — 병목 분포 관측 (총합/Gemini/T-map/재시도)
+    _total = time.perf_counter() - _t0
+    logger.info(
+        "[PERF] route generate: total=%.1fs | gemini=%.1fs(%d call) | "
+        "tmap=%.1fs(%d leg) | attempts=%d | expanded=%s",
+        _total, _perf["gemini_s"], _perf["gemini_calls"],
+        _perf["tmap_s"], _perf["tmap_legs"], _perf["attempts"],
+        best.radius_expanded,
+    )
 
     # Step 4: persist the generated route to Supabase (best-effort).
     await _save_route(req, best, user_id, target_distance_km=target_km)

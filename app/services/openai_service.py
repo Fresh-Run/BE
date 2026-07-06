@@ -10,6 +10,7 @@ directly validatable.
 from __future__ import annotations
 
 import json
+import logging
 
 from openai import AsyncOpenAI
 
@@ -17,6 +18,8 @@ from app.core.config import settings
 from app.models.schemas import AiCourseSettings, CoachCue, Coordinate, RouteResponse
 
 import os
+
+logger = logging.getLogger(__name__)
 
 # Resolve the base URL: prefer the value loaded from .env via Settings, but if
 # it is empty or still the OpenAI default, fall back to the OPENAI_BASE_URL
@@ -46,7 +49,7 @@ ROUTE_TOOL = {
             "properties": {
                 "summary": {
                     "type": "string",
-                    "description": "Short human-readable description of the route.",
+                    "description": "코스 한 줄 설명 (반드시 한국어).",
                 },
                 "total_distance_km": {
                     "type": "number",
@@ -61,7 +64,8 @@ ROUTE_TOOL = {
                     "items": {
                         "type": "object",
                         "properties": {
-                            "name": {"type": "string"},
+                            "name": {"type": "string",
+                                     "description": "경유지 이름 (반드시 한국어)."},
                             "coordinate": {
                                 "type": "object",
                                 "properties": {
@@ -71,7 +75,8 @@ ROUTE_TOOL = {
                                 "required": ["lat", "lng"],
                             },
                             "is_pitstop": {"type": "boolean"},
-                            "description": {"type": "string"},
+                            "description": {"type": "string",
+                                            "description": "이 지점 설명 (반드시 한국어)."},
                         },
                         "required": ["name", "coordinate", "is_pitstop"],
                     },
@@ -221,7 +226,10 @@ async def generate_route(
             "content": (
                 "You are a local running coach in South Korea. You design safe, "
                 "runnable routes (riversides, parks, sidewalks) and always respond "
-                "by calling the build_running_route function."
+                "by calling the build_running_route function. "
+                "IMPORTANT: Write ALL human-readable text in Korean (한국어) — the "
+                "summary, every waypoint name, and every waypoint description MUST "
+                "be Korean, regardless of the region. Never use English prose."
             ),
         },
         {"role": "user", "content": _build_prompt(
@@ -230,11 +238,15 @@ async def generate_route(
         )},
     ]
 
+    # reasoning_effort="none" — Gemini 2.5 flash의 thinking(추론) 비활성.
+    # 코스 생성은 명확한 프롬프트를 따르는 구조화 출력이라 깊은 추론이 불필요.
+    # 실측: thinking 켜짐 ~18~34s → 꺼짐 ~1.5s (품질 저하 없이 tool_call 정상).
     response = await _client.chat.completions.create(
         model=settings.openai_model,
         messages=messages,
         tools=[ROUTE_TOOL],
         tool_choice={"type": "function", "function": {"name": "build_running_route"}},
+        reasoning_effort="none",
     )
 
     tool_calls = response.choices[0].message.tool_calls
@@ -243,7 +255,16 @@ async def generate_route(
 
     arguments = json.loads(tool_calls[0].function.arguments)
     # Validate/coerce the model output against our Pydantic schema.
-    return RouteResponse.model_validate(arguments)
+    result = RouteResponse.model_validate(arguments)
+    # 후처리 안전망(관측용): 요약이 명백히 영어면 로그 경고 — 거부는 하지 않음.
+    if not _looks_korean(result.summary):
+        logger.warning("코스 요약이 한국어가 아닐 수 있음: %r", result.summary[:60])
+    return result
+
+
+def _looks_korean(text: str) -> bool:
+    """한글 음절이 하나라도 있으면 한국어로 간주 (영어-only 탐지용, 느슨함)."""
+    return any("가" <= ch <= "힣" for ch in (text or ""))
 
 
 # ── AI 오디오 코치 ─────────────────────────────────────────────────────────────
