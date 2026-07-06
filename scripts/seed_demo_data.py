@@ -51,7 +51,8 @@ made = {"users": 0, "profiles": 0, "crews": 0, "announcements": 0, "rsvps": 0,
         "join_requests": 0, "runs": 0, "routes": 0, "likes": 0, "comments": 0,
         "bookmarks": 0, "follows": 0, "kudos": 0, "invite_codes": 0,
         "gps_runs": 0, "coach_scripts": 0, "insights": 0, "body_info": 0,
-        "browse_crews": 0, "browse_members": 0, "pub_routes": 0, "copies": 0}
+        "browse_crews": 0, "browse_members": 0, "pub_routes": 0, "copies": 0,
+        "public_runs": 0}
 
 
 import math
@@ -214,16 +215,29 @@ def ensure_route(c, tok, uid, summary, is_public, lat, lng, dist) -> str:
     return sb_insert_route(c, uid, summary, is_public, lat, lng, dist)
 
 
-def sb_insert_run(c, uid, ran_at, km, route_id=None, notes=None):
+def sb_insert_run(c, uid, ran_at, km, route_id=None, notes=None, visibility="followers"):
+    # baseline은 followers (신규 환경에서도 대부분 followers, 일부만 public 승격 →
+    # 자연스러운 mix). 공개 프로필 데모용 public 전환은 섹션 12에서 수정 API 경유.
     pace = random.randint(320, 420)
     body = {"user_id": uid, "ran_at": ran_at, "distance_km": km,
-            "duration_sec": round(km * pace), "avg_pace_sec_per_km": pace}
+            "duration_sec": round(km * pace), "avg_pace_sec_per_km": pace,
+            "visibility": visibility}
     if route_id: body["route_id"] = route_id
     if notes: body["notes"] = notes
     r = c.post(f"{_SB}/rest/v1/runs", headers={**_ADM, "Prefer": "return=minimal"}, json=body)
     if r.status_code not in (200, 201):
         die("run insert 실패", r.text)
     made["runs"] += 1
+
+
+def _title_for_hour(ran_at_iso):
+    """KST 시각 기반 기본 제목 (프론트의 시간대 기본값 흉내)."""
+    h = datetime.fromisoformat(ran_at_iso.replace("Z", "+00:00")).astimezone(_KST).hour
+    if 4 <= h < 6:   return "새벽 러닝"
+    if 6 <= h < 11:  return "아침 러닝"
+    if 11 <= h < 17: return "한낮 러닝"
+    if 17 <= h < 21: return "저녁 러닝"
+    return "야간 러닝"
 
 
 def seed_runs_if_absent(c, tok, uid, specs):
@@ -417,8 +431,11 @@ def main():
         cutoff = datetime.now(timezone.utc) - timedelta(days=14)
         for oi, owner in enumerate(member_keys):
             _, otok = users[owner]
+            # private run은 소유자만 보이므로 kudos 대상에서 제외 (크루원은
+            # followers·public만 kudos 가능 — visibility 게이트와 일관)
             runs = [r for r in api(c, "GET", "/runs", otok, params={"limit": 10}).json()
-                    if datetime.fromisoformat(r["ran_at"].replace("Z", "+00:00")) >= cutoff]
+                    if datetime.fromisoformat(r["ran_at"].replace("Z", "+00:00")) >= cutoff
+                    and r.get("visibility") != "private"]
             others = [k for k in member_keys if k != owner]
             # 결정적 분배: n번째 run에 (2~3명)이 돌아가며 kudos
             for ri, run in enumerate(runs[:3]):
@@ -427,9 +444,9 @@ def main():
                     r = api(c, "POST", f"/runs/{run['id']}/kudos", users[kudoser][1])
                     if r.status_code == 204:
                         made["kudos"] += 1
-                    elif r.status_code not in (400,):  # 400 = self (분배상 없음)
+                    elif r.status_code not in (400, 404):  # 400=self, 404=미가시(관대)
                         die(f"kudos 실패 {kudoser}→{owner}", r.text)
-        log(f"kudos {made['kudos']}건 보장 (본인 run 제외 분배)")
+        log(f"kudos {made['kudos']}건 보장 (본인·private run 제외 분배)")
 
         # ── 8. GPS 검증 run (verification=verified + splits) ─────────────
         section("8. GPS 검증 run (서울숲 궤적)")
@@ -450,7 +467,8 @@ def main():
                 continue
             track = make_gps_track(dist, pace, seed=seed)
             r = api(c, "POST", "/runs", tok, json={
-                "distance_km": dist, "duration_sec": int(dist * pace), "gps_track": track})
+                "distance_km": dist, "duration_sec": int(dist * pace), "gps_track": track,
+                "visibility": "followers"})  # baseline; 섹션 12에서 일부 public 승격
             if r.status_code != 200:
                 die(f"GPS run 실패 {key}", r.text)
             d = r.json()
@@ -603,6 +621,30 @@ def main():
                     made["copies"] += 1
         log(f"공개 코스 {len(PUB)}개 보장 (신규 {made['pub_routes']}, 복사 {made['copies']})")
 
+        # ── 12. 공개 프로필 데모: 일부 run을 public으로 (수정 API 경유) ────
+        section("12. 공개 프로필용 public run 승격 (PATCH /runs, 멱등)")
+        # {유저키: 공개로 둘 run 목표 개수} — 개수 기반이라 실제 run 분포와
+        # 무관하게 견고. GPS(has_track) 우선 승격해 카드 다양성 확보.
+        PUBLIC_PLAN = {"test1": 4, "test2": 1, "demo1": 2, "demo2": 1, "demo4": 1}
+        for key, want in PUBLIC_PLAN.items():
+            uid, tok = users[key]
+            runs = api(c, "GET", "/runs", tok, params={"limit": 50}).json()
+            already = sum(1 for r in runs if r.get("visibility") == "public")
+            need = want - already
+            if need <= 0:
+                continue  # 멱등: 이미 목표만큼 공개면 스킵
+            # 승격 후보: private 아님 + 아직 public 아님. GPS 우선, 그다음 최신순.
+            cand = [r for r in runs if r.get("visibility") == "followers"]
+            cand.sort(key=lambda r: (not r.get("has_track"), r["ran_at"]), reverse=False)
+            cand.sort(key=lambda r: not r.get("has_track"))  # has_track=True 먼저
+            for r in cand[:need]:
+                body = {"visibility": "public"}
+                if not r.get("title"):
+                    body["title"] = _title_for_hour(r["ran_at"])
+                if api(c, "PATCH", f"/runs/{r['id']}", tok, json=body).status_code == 200:
+                    made["public_runs"] += 1
+        log(f"public 승격 {made['public_runs']}건 (수정 API 경유)")
+
         # ── 요약 ─────────────────────────────────────────────────────────
         section("시딩 요약 (이번 실행에서 새로 만든 것)")
         for k, v in made.items():
@@ -708,6 +750,18 @@ def main():
         # 행정구역 필터
         seongdong = api(c, "GET", "/crews", t1, params={"sigungu": "성동구"}).json()
         log(f"성동구 필터: {len(seongdong)}개 ({', '.join(x['name'] for x in seongdong)})")
+
+        # 공개 프로필 — 비팔로워(demo4, test1 미팔로우) 시점: public run만 노출
+        uid1 = users["test1"][0]
+        nf_tok = users["demo4"][1]  # demo4는 test1을 팔로우하지 않음
+        prof = api(c, "GET", f"/users/{uid1}/profile", nf_tok).json()
+        pub_runs = api(c, "GET", f"/users/{uid1}/runs", nf_tok).json()
+        vis = {x.get("visibility") for x in pub_runs}
+        log(f"공개 프로필(test1) — 비팔로워 시점: 게시 러닝 {len(pub_runs)}개, "
+            f"public_run_count={prof['public_run_count']} "
+            f"(일치: {len(pub_runs) == prof['public_run_count']})")
+        log(f"  노출 run: {[(x.get('title'), x['distance_km']) for x in pub_runs]}")
+        log(f"  비팔로워엔 visibility null 확인: {vis in ({None}, set())}")
 
         print("\n완료. 프론트에서 test1@freshrun.com / (공유된 비번)으로 로그인해 확인하세요.")
 

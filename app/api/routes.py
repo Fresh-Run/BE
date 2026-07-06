@@ -53,6 +53,7 @@ from app.models.schemas import (
     RouteRequest,
     RouteResponse,
     RunRequest,
+    RunUpdate,
     RunResponse,
     RunTrackResponse,
     SettingsPatch,
@@ -809,6 +810,27 @@ async def create_run(
         return await run_service.create_run(req, user_id=user.user_id)
     except Exception as exc:  # noqa: BLE001
         raise _bad_gateway("Failed to save run", exc)
+
+
+@router.patch(
+    "/runs/{run_id}",
+    response_model=RunResponse,
+    summary="러닝 기록 편집 (제목·공개 범위·메모)",
+)
+async def update_run(
+    run_id: str,
+    req: RunUpdate,
+    user: CurrentUser = Depends(get_current_user),
+) -> RunResponse:
+    """본인 run의 title/visibility/notes만 수정 (보낸 필드만). 404 if 없음/남의 것."""
+    fields = req.model_dump(exclude_none=True)
+    try:
+        run = await run_service.update_run(run_id, user_id=user.user_id, fields=fields)
+    except Exception as exc:  # noqa: BLE001
+        raise _bad_gateway("Failed to update run", exc)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return run
 
 
 @router.patch(

@@ -795,6 +795,16 @@ class RunRequest(BaseModel):
         return self
 
 
+class RunUpdate(BaseModel):
+    """저장 후 편집 (제목·공개 범위·메모). 보낸 필드만 수정, 거리·시간은 불변."""
+
+    model_config = {"extra": "ignore"}
+
+    title: Optional[str] = Field(None, max_length=60)
+    visibility: Optional[Literal["public", "followers", "private"]] = None
+    notes: Optional[str] = Field(None, max_length=2000)
+
+
 class RunResponse(BaseModel):
     """A stored run record returned to the client (mirrors the `runs` table)."""
 

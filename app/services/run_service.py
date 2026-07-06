@@ -1053,3 +1053,27 @@ async def set_feedback(
     updated = result.data[0]
     logger.info("Saved feedback for run (id=%s, liked=%s).", run_id, liked)
     return RunResponse(**updated)
+
+
+async def update_run(
+    run_id: str, user_id: str, fields: dict
+) -> RunResponse | None:
+    """저장 화면 편집: 본인 run의 title/visibility/notes만 수정 (보낸 것만).
+
+    거리·시간·검증값은 불변. user_id로 스코프해 남의 run은 0행(None→404).
+    빈 patch면 조회만 해서 현재 상태 반환. splits/has_track도 채워 반환.
+    """
+    supabase = get_supabase_admin()
+    if fields:
+        result = await asyncio.to_thread(
+            lambda: supabase.table("runs")
+            .update(fields)
+            .eq("id", run_id)
+            .eq("user_id", user_id)
+            .execute()
+        )
+        if not result.data:
+            return None
+        logger.info("Updated run (id=%s, fields=%s).", run_id, list(fields))
+    # 편집 후(또는 빈 patch) 최신 상태를 splits까지 채워 반환
+    return await get_run(run_id, user_id)
