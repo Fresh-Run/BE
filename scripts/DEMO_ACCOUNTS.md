@@ -9,11 +9,11 @@
 |---|---|---|
 | test1@freshrun.com | 한강크루장 | **크루장** (한강 새벽 러닝 크루), 코스 2개(공개1·비공개1) 소유. **premium 테스트 계정** (tier 수동 설정됨 — 오디오 코치·월간 인사이트·크루 무제한 생성 확인용) |
 | test2@freshrun.com | 러닝러버 | 크루원, test1과 맞팔, 코스 1개, 북마크 1개 |
-| demo1@freshrun.com | 새벽러너* | 크루원, 인기 코스("뚝섬 순환") 주인, 팔로워 다수 |
-| demo2@freshrun.com | 한강질주 | 크루원 |
-| demo3@freshrun.com | 뚝섬바람 | 크루원 (RSVP 미정) |
-| demo4@freshrun.com | 마포페이서 | 크루원 (RSVP 불참) |
-| demo5@freshrun.com | 야간비행 | **가입 신청 pending** (크루장 신청 목록 화면 확인용) |
+| demo1@freshrun.com | 새벽러너* | 크루원, 인기 코스("뚝섬 순환") 주인, 팔로워 다수, GPS run 1개. **둘러보기 크루 2개 크루장**(성수동 러닝·강남 인터벌) → 이걸 위해 **premium 승격됨** |
+| demo2@freshrun.com | 한강질주 | 크루원, **둘러보기 크루장**(여의도 퇴근런) |
+| demo3@freshrun.com | 뚝섬바람 | 크루원 (RSVP 미정), **둘러보기 크루장**(반포 한강 나이트런) |
+| demo4@freshrun.com | 마포페이서 | 크루원 (RSVP 불참), **둘러보기 크루장**(잠실 새벽 5시) |
+| demo5@freshrun.com | 야간비행 | **가입 신청 pending**(한강 새벽 크루), **둘러보기 크루장**(마포 주말 트레일) |
 
 \* 닉네임이 선점된 경우 숫자가 붙을 수 있음 (예: 새벽러너84)
 
@@ -29,6 +29,7 @@
 - **AI 오디오 코치**: test1의 "반포 한강공원 야경 코스"에 코치 스크립트 1개(cues 7개) — `POST /routes/{id}/coach-script`가 캐시 반환
 - **AI 월간 인사이트**: test1 2026-06(지난달) 1개 — `GET /me/insights/monthly?year=2026&month=6`에 stats + ai(coaching·plan 3슬롯)
 - **신체정보**: test1 프로필에 birth 1992·68.5kg·176cm·male — **본인 `GET /me/profile`에만** 노출(다른 유저 응답엔 없음)
+- **둘러보기 크루 6개** (데모 유저 소유, test1/test2 미가입 → 둘러보기 탭에 노출): 성수동 러닝(입문·open)·여의도 퇴근런(중급·open)·반포 한강 나이트런(무관·approval)·잠실 새벽 5시(중급·open)·마포 주말 트레일(트레일·approval)·강남 인터벌 클럽(고급·**비공개/초대전용**). 각 멤버 2~4명. `GET /crews`(둘러보기)는 공개 5개만 반환 — **비공개 강남 크루는 비멤버에게 숨김**(정상). `GET /crews/search`로 이름·지역 검색됨
 
 ## 확인 포인트 (test1으로 로그인 시)
 

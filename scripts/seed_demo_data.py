@@ -50,7 +50,8 @@ _ADM = {"apikey": _SVC, "Authorization": f"Bearer {_SVC}", "Content-Type": "appl
 made = {"users": 0, "profiles": 0, "crews": 0, "announcements": 0, "rsvps": 0,
         "join_requests": 0, "runs": 0, "routes": 0, "likes": 0, "comments": 0,
         "bookmarks": 0, "follows": 0, "kudos": 0, "invite_codes": 0,
-        "gps_runs": 0, "coach_scripts": 0, "insights": 0, "body_info": 0}
+        "gps_runs": 0, "coach_scripts": 0, "insights": 0, "body_info": 0,
+        "browse_crews": 0, "browse_members": 0}
 
 
 import math
@@ -91,6 +92,41 @@ def ensure_premium(c, uid):
         return
     c.patch(f"{_SB}/rest/v1/profiles", headers=_ADM,
             params={"user_id": f"eq.{uid}"}, json={"tier": "premium"})
+
+
+def ensure_browse_crew(c, owner_tok, owner_uid, body):
+    """둘러보기용 크루 — owner의 /crews/mine에 동명이 없으면 생성. 반환 crew id.
+
+    free 유저는 크루 1개 한도라, 이미 다른 크루를 소유했으면 premium 승격 후 생성.
+    멱등: 같은 이름 크루가 이미 있으면 그대로 재사용.
+    """
+    mine = c.request("GET", f"{BASE}/crews/mine",
+                     headers={"Authorization": f"Bearer {owner_tok}"}).json()
+    existing = next((cr for cr in mine if cr["name"] == body["name"]), None)
+    if existing:
+        return existing["id"], False
+    if len(mine) >= 1:  # 이미 1개 소유 → 한도 회피 위해 premium
+        ensure_premium(c, owner_uid)
+    r = c.request("POST", f"{BASE}/crews",
+                  headers={"Authorization": f"Bearer {owner_tok}"}, json=body)
+    if r.status_code not in (200, 201):
+        die(f"둘러보기 크루 생성 실패 ({body['name']})", r.text)
+    return r.json()["id"], True
+
+
+def ensure_crew_member(c, crew_id, uid):
+    """크루 멤버 보장 — admin insert(멱등). approval/비공개 크루도 시딩 가능
+    (승인·초대 흐름 없이). 이미 멤버면 스킵."""
+    have = c.get(f"{_SB}/rest/v1/crew_members", headers=_ADM,
+                 params={"crew_id": f"eq.{crew_id}", "user_id": f"eq.{uid}",
+                         "select": "user_id"}).json()
+    if have:
+        return False
+    r = c.post(f"{_SB}/rest/v1/crew_members", headers={**_ADM, "Prefer": "return=minimal"},
+               json={"crew_id": crew_id, "user_id": uid, "role": "member"})
+    if r.status_code not in (200, 201):
+        die("멤버 삽입 실패", r.text)
+    return True
 
 
 def log(m): print(f"  {m}")
@@ -440,6 +476,55 @@ def main():
         else:
             log(f"  월간 인사이트 실패 ({r.status_code})")
 
+        # ── 10. 둘러보기 크루 (데모 유저 소유, test1/test2 미가입) ────────
+        section("10. 둘러보기 크루 (미가입 크루로 노출)")
+        # (owner키, name, area, sport, level, is_public, join_policy, [멤버키...])
+        BROWSE = [
+            ("demo1", "성수동 러닝 크루", "성수동", "러닝", "입문", True, "open",
+             "성수동 카페거리에서 만나 서울숲까지. 초보 환영!", ["demo2", "demo3"]),
+            ("demo2", "여의도 퇴근런", "여의도", "러닝", "중급", True, "open",
+             "평일 저녁 7시, 여의도공원 한 바퀴 후 한강까지", ["demo4"]),
+            ("demo3", "반포 한강 나이트런", "반포", "러닝", "무관", True, "approval",
+             "달빛 아래 반포대교 무지개분수 코스. 승인제로 운영해요", ["demo1", "demo5"]),
+            ("demo4", "잠실 새벽 5시", "잠실", "러닝", "중급", True, "open",
+             "출근 전 석촌호수 두 바퀴. 새벽형 인간 모여라", ["demo2", "demo3", "demo5"]),
+            ("demo5", "마포 주말 트레일", "마포", "트레일", "중급", True, "approval",
+             "주말 아침 안산·매봉산 트레일. 흙길 좋아하는 분", ["demo1"]),
+            ("demo1", "강남 인터벌 클럽", "강남", "러닝", "고급", False, "approval",
+             "양재천 인터벌 훈련. 비공개(초대 전용), 서브3 목표", ["demo4"]),
+        ]
+        crew_ann = {  # 크루 이름 → 공지 (일부만)
+            "성수동 러닝 크루": ("이번 주 토요일 정기런", "8시 서울숲 정문 집합, 5km 가볍게!"),
+            "잠실 새벽 5시": ("겨울 새벽 러닝 안내", "영하권엔 6시로 미룹니다. 방한 필수!"),
+        }
+        for owner, name, area, sport, level, is_pub, policy, desc, members in BROWSE:
+            ouid, otok = users[owner]
+            cid, created = ensure_browse_crew(c, otok, ouid, {
+                "name": name, "area": area, "sport": sport, "level": level,
+                "description": desc, "is_public": is_pub, "join_policy": policy,
+                "max_members": 30})
+            if created:
+                made["browse_crews"] += 1
+            for mkey in members:
+                if ensure_crew_member(c, cid, users[mkey][0]):
+                    made["browse_members"] += 1
+            # 공지 (owner 토큰으로, 감지-스킵)
+            if name in crew_ann:
+                title, bd = crew_ann[name]
+                anns = api(c, "GET", f"/crews/{cid}/announcements", otok,
+                           params={"limit": 50}).json()
+                if not any(a["title"] == title for a in anns):
+                    r = api(c, "POST", f"/crews/{cid}/announcements", otok,
+                            json={"title": title, "body": bd})
+                    if r.status_code == 201:
+                        made["announcements"] += 1
+            mc = api(c, "GET", f"/crews/{cid}", otok).json()["member_count"]
+            vis = "공개" if is_pub else "비공개"
+            log(f"  {name} (owner {owner}, {vis}/{policy}, {level}) — 멤버 {mc}명"
+                + ("" if created else " [기존]"))
+        log(f"둘러보기 크루 {len([1 for b in BROWSE])}개 보장 "
+            f"(신규 {made['browse_crews']}, 멤버 추가 {made['browse_members']})")
+
         # ── 요약 ─────────────────────────────────────────────────────────
         section("시딩 요약 (이번 실행에서 새로 만든 것)")
         for k, v in made.items():
@@ -505,6 +590,21 @@ def main():
                 f"coaching '{ins['ai']['coaching'][:40]}…'")
         else:
             log("월간 인사이트 2026-06: ai=null (해당 월 test1 run 없음 — run 시딩 날짜 확인)")
+
+        # 둘러보기 — test1이 가입 안 한 크루 (프론트 둘러보기 탭)
+        browse = api(c, "GET", "/crews", t1).json()
+        my_crew_ids = {cr["id"] for cr in api(c, "GET", "/crews/mine", t1).json()}
+        not_joined = [cr for cr in browse if cr["id"] not in my_crew_ids]
+        log(f"둘러보기(GET /crews): 전체 {len(browse)}개 중 test1 미가입 "
+            f"{len(not_joined)}개")
+        for cr in sorted(not_joined, key=lambda x: x["name"])[:8]:
+            vis = "공개" if cr["is_public"] else "비공개"
+            log(f"  · {cr['name']} — {cr.get('area')}/{cr['level']}/"
+                f"{vis}·{cr['join_policy']} · 멤버 {cr['member_count']}명 "
+                f"(장 {cr.get('owner_nickname')})")
+        # 검색도 동작 확인
+        sr = api(c, "GET", "/crews/search", t1, params={"q": "한강"}).json()
+        log(f"크루 검색 '한강': {len(sr)}건")
 
         print("\n완료. 프론트에서 test1@freshrun.com / (공유된 비번)으로 로그인해 확인하세요.")
 
