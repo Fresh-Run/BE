@@ -23,7 +23,8 @@
 - **공지 2개**: 토요 정기런(러닝 일시·장소·RSVP 마감 有, 참석3/불참1/미정1 투표됨) + 일반 공지
 - **러닝 기록**: 멤버들에게 최근 2주 분산 (3~10km) → 크루 피드·주간 랭킹·통계 살아있음
 - **GPS 검증 run**: test1 2개(5km·8km)·demo1 1개 — 서울숲 궤적으로 서버 파이프라인을 태운 **verification=verified + splits(km별 랩·고도)** run. 활동/크루 피드의 run 상세(`GET /runs/{id}`)에 `splits`·`has_track`, `GET /runs/{id}/track`에 폴리라인
-- **코스**: 공개 3개(좋아요·댓글 달림) + 비공개 1개(크루 피드에서 route_summary null 확인용)
+- **코스**: 공개 12개+ (좋아요·댓글 달림) + 비공개 1개(크루 피드에서 route_summary null 확인용). 서울 각지(성수·여의도·강남·잠실·반포·마포·남산 등) 3~8km 다양
+- **홈 '전체' 탭** (`GET /routes/public?sort=popular|newest`): 공개 코스가 풍성하게 노출. **인기순**(copy_count)은 "성수 서울숲 야경 5km 루프"(♥6·💬2·복사2) 등 상위, **최신순**은 방금 만든 신규 코스. test1/test2 소유 공개 코스도 좋아요·댓글·복사 받음(본인 콘텐츠 반응 확인용). '이 코스 달리기' 복사 이력 4건 → copy_count 살아있음
 - **팔로우**: test1↔test2 맞팔, 데모 유저들 ↔ test1 등 8건 → 팔로잉 피드 확인 가능
 - **kudos**: 멤버들 run에 서로 골고루 (본인 run 제외) → 활동 피드의 kudos_count·my_kudos 살아있음
 - **AI 오디오 코치**: test1의 "반포 한강공원 야경 코스"에 코치 스크립트 1개(cues 7개) — `POST /routes/{id}/coach-script`가 캐시 반환

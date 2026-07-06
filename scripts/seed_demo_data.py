@@ -51,7 +51,7 @@ made = {"users": 0, "profiles": 0, "crews": 0, "announcements": 0, "rsvps": 0,
         "join_requests": 0, "runs": 0, "routes": 0, "likes": 0, "comments": 0,
         "bookmarks": 0, "follows": 0, "kudos": 0, "invite_codes": 0,
         "gps_runs": 0, "coach_scripts": 0, "insights": 0, "body_info": 0,
-        "browse_crews": 0, "browse_members": 0}
+        "browse_crews": 0, "browse_members": 0, "pub_routes": 0, "copies": 0}
 
 
 import math
@@ -112,6 +112,21 @@ def ensure_browse_crew(c, owner_tok, owner_uid, body):
     if r.status_code not in (200, 201):
         die(f"둘러보기 크루 생성 실패 ({body['name']})", r.text)
     return r.json()["id"], True
+
+
+def ensure_copy(c, source_id, copier_tok, copier_uid):
+    """'이 코스 달리기' 복사 — copier가 이미 이 코스 복사본을 가지면 스킵(멱등).
+    copy_count(copied_from 집계) 증가용."""
+    have = c.get(f"{_SB}/rest/v1/routes", headers=_ADM,
+                 params={"user_id": f"eq.{copier_uid}", "copied_from": f"eq.{source_id}",
+                         "select": "id"}).json()
+    if have:
+        return False
+    r = c.request("POST", f"{BASE}/routes/{source_id}/copy",
+                  headers={"Authorization": f"Bearer {copier_tok}"})
+    if r.status_code not in (200, 201):
+        die("코스 복사 실패", r.text)
+    return True
 
 
 def ensure_crew_member(c, crew_id, uid):
@@ -545,6 +560,49 @@ def main():
         log(f"둘러보기 크루 {len([1 for b in BROWSE])}개 보장 "
             f"(신규 {made['browse_crews']}, 멤버 추가 {made['browse_members']})")
 
+        # ── 11. 공개 코스 피드 확장 (홈 '전체' 탭 = GET /routes/public) ────
+        section("11. 공개 코스 피드 (전체 탭 — 좋아요·댓글·복사)")
+        # (owner, summary, lat, lng, dist, [좋아요 누를 키], [(댓글키,내용)], [복사 키])
+        PUB = [
+            ("test1", "성수 서울숲 야경 5km 루프", 37.544, 127.056, 5.0,
+             ["test2", "demo1", "demo2", "demo3", "demo4", "demo5"],
+             [("demo1", "야경 진짜 미쳤어요 🌃"), ("test2", "루프라 길 안 잃어서 좋네요")],
+             ["demo2", "demo3"]),                                  # 인기+복사
+            ("test2", "여의도 리버사이드 7km", 37.526, 126.924, 7.0,
+             ["test1", "demo1", "demo2", "demo3", "demo5"],
+             [("demo2", "강바람 맞으며 달리기 최고")], ["demo4"]),   # 인기+복사
+            ("demo3", "강남 양재천 인터벌 8km", 37.497, 127.038, 8.0,
+             ["test1", "test2", "demo1", "demo2", "demo4"],
+             [("demo1", "인터벌 훈련하기 딱이에요")], ["test1"]),    # 인기+복사
+            ("demo2", "반포 무지개분수 나이트런 5.5km", 37.513, 126.996, 5.5,
+             ["test1", "demo5"], [], []),                          # 중간
+            ("demo1", "잠실 석촌호수 두 바퀴 4.5km", 37.511, 127.081, 4.5,
+             ["test2", "demo3", "demo4"], [], []),                 # 중간
+            ("demo4", "뚝섬 자전거길 러닝 6km", 37.531, 127.070, 6.0,
+             ["demo1", "demo2"], [], []),                          # 중간
+            ("test1", "서울숲 아침 조깅 3.2km", 37.5445, 127.0374, 3.2,
+             ["demo1"], [], []),                                   # 신규 느낌
+            ("test2", "마포 노을공원 언덕 6.2km", 37.556, 126.925, 6.2, [], [], []),  # 신규
+            ("demo5", "남산 순환 트레일 5km", 37.551, 126.988, 5.0, [], [], []),      # 신규
+        ]
+        for owner, summary, lat, lng, dist, likers, comments, copiers in PUB:
+            ouid, otok = users[owner]
+            before = made["routes"]
+            rid = ensure_route(c, otok, ouid, summary, True, lat, lng, dist)
+            if made["routes"] > before:
+                made["pub_routes"] += 1
+            for lk in likers:
+                api(c, "POST", f"/routes/{rid}/like", users[lk][1])  # 멱등(204)
+            for ck, text in comments:
+                exist = api(c, "GET", f"/routes/{rid}/comments", users[ck][1]).json()
+                if not any(cm["content"] == text for cm in exist):
+                    api(c, "POST", f"/routes/{rid}/comments", users[ck][1],
+                        json={"content": text})
+            for cp in copiers:
+                if ensure_copy(c, rid, users[cp][1], users[cp][0]):
+                    made["copies"] += 1
+        log(f"공개 코스 {len(PUB)}개 보장 (신규 {made['pub_routes']}, 복사 {made['copies']})")
+
         # ── 요약 ─────────────────────────────────────────────────────────
         section("시딩 요약 (이번 실행에서 새로 만든 것)")
         for k, v in made.items():
@@ -565,6 +623,19 @@ def main():
         log(f"팔로잉 피드: {len(ffeed)}건" +
             (f" (최신: {ffeed[0]['owner_nickname']} — {ffeed[0]['summary']}, "
              f"좋아요 {ffeed[0]['like_count']})" if ffeed else " ← 비어있음!"))
+        # 홈 '전체' 탭 — 공개 코스 피드 (인기순 / 최신순)
+        pop = api(c, "GET", "/routes/public", t1, params={"sort": "popular", "limit": 20}).json()
+        log(f"전체 탭(GET /routes/public): 공개 코스 {len(pop)}개")
+        log("  [인기순 top5 — 좋아요·댓글·복사]")
+        for r in pop[:5]:
+            log(f"  · {r['summary']} (장 {r.get('owner_nickname')}) — "
+                f"♥{r['like_count']} 💬{r['comment_count']} ⟳{r['copy_count']}"
+                + (" [내 코스]" if r.get("is_mine") else ""))
+        new = api(c, "GET", "/routes/public", t1, params={"sort": "newest", "limit": 5}).json()
+        log(f"  [최신순 top3] " + " / ".join(r["summary"] for r in new[:3]))
+        mine_pub = [r for r in pop if r.get("is_mine")]
+        log(f"  → test1 소유 공개 코스 {len(mine_pub)}개, 받은 좋아요 "
+            f"{sum(r['like_count'] for r in mine_pub)}개")
         reqs = api(c, "GET", f"/crews/{CREW}/join-requests", t1).json()
         log(f"가입 신청 대기: {len(reqs)}건" +
             (f" ({reqs[0]['nickname']})" if reqs else ""))
