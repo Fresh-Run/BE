@@ -105,8 +105,8 @@ fetch(`${API_BASE}/api/me/profile`, {
 >   - **기존 run(이 기능 이전 저장분)은 전부 `followers`로 백필** — 당시 노출(팔로워/크루)을 그대로 보존, 공개 프로필엔 안 뜸. 새 run만 기본 public.
 > - **완료 화면 비교 rows** (`POST /runs` 응답에만): `recent_avg_pace_sec_per_km`(최근 30일 평균 페이스, **이번 run 제외**) + `pace_delta_sec`(이번 페이스 − 최근 평균, **음수 = "평소보다 N초 빨라요"**). 히스토리 없으면(첫 run 등) 둘 다 null → 비교 UI 숨김. **주간 누적은 기존 `GET /me/stats`의 `week`로 표시.**
 > - 응답에도 `title`·`visibility` 포함(저장 확인용).
-| 기록 목록 | `GET /runs?limit&route_id?` | `RunResponse[]` 최신순 — GPS run은 `splits[]`·`has_track`·`verification` 포함 |
-| 기록 단건 | `GET /runs/{run_id}` | 본인 것만, 아니면 404 |
+| 기록 목록 | `GET /runs?limit&route_id?` | `RunResponse[]` 최신순 — GPS run은 `splits[]`·`has_track`·`verification` 포함. **`kudos_count`**(각 run이 받은 kudos 수 — 기록 카드 ♥ 표시용, 배치 집계라 N+1 없음). 본인 목록이라 `my_kudos`는 없음(본인 kudos 불가), `comment_count`는 run 댓글 미출시라 없음(후속) |
+| 기록 단건 | `GET /runs/{run_id}` | 본인 것만, 아니면 404. 목록과 동일하게 **`kudos_count`** 포함 |
 | **러닝 경로 (지도)** | `GET /runs/{run_id}/track` | `{polyline[{lat,lng}], server_distance_km, elev_gain_m, point_count_raw/kept}` — 활동 상세 지도용. 트랙 없는 run(기존/수동)은 404 (`has_track`으로 사전 판단) |
 | 2탭 피드백 | `PATCH /runs/{run_id}/feedback` | body: `liked`(bool), `tags[]` (허용 태그는 Swagger의 FeedbackTag) |
 

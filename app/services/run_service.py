@@ -425,9 +425,12 @@ async def get_run(run_id: str, user_id: str) -> RunResponse | None:
     if not res.data:
         return None
     row = res.data[0]
-    tracks = await _track_summaries([row["id"]])
+    tracks, kudos = await asyncio.gather(
+        _track_summaries([row["id"]]),
+        _kudos_counts([row["id"]]),
+    )
     return RunResponse(**row, has_track=row["id"] in tracks,
-                       splits=tracks.get(row["id"]))
+                       splits=tracks.get(row["id"]), kudos_count=kudos.get(row["id"], 0))
 
 
 async def get_run_track(run_id: str, user_id: str) -> RunTrackResponse | None:
@@ -1015,9 +1018,15 @@ async def list_runs(
         return q.execute()
 
     result = await asyncio.to_thread(_query)
-    tracks = await _track_summaries([row["id"] for row in result.data])
+    run_ids = [row["id"] for row in result.data]
+    # 배치 1쿼리로 kudos 수 집계 (활동 피드와 동일 방식, N+1 방지)
+    tracks, kudos = await asyncio.gather(
+        _track_summaries(run_ids),
+        _kudos_counts(run_ids),
+    )
     return [
-        RunResponse(**row, has_track=row["id"] in tracks, splits=tracks.get(row["id"]))
+        RunResponse(**row, has_track=row["id"] in tracks,
+                    splits=tracks.get(row["id"]), kudos_count=kudos.get(row["id"], 0))
         for row in result.data
     ]
 

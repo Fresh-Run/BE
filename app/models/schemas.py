@@ -851,6 +851,9 @@ class RunResponse(BaseModel):
     splits: Optional[list[RunSplit]] = Field(
         None, description="km별 랩 (GPS 없는 run은 null)."
     )
+    kudos_count: int = Field(
+        0, description="이 run이 받은 kudos 수 (기록 카드 ♥ 표시용). 본인 목록이라 my_kudos는 없음."
+    )
 
 
 class RunTrackResponse(BaseModel):
