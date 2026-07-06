@@ -997,14 +997,25 @@ async def create_crew(
 @router.get(
     "/crews",
     response_model=list[CrewResponse],
-    summary="Browse crews (public + my private)",
+    summary="Browse crews (지역 필터·거리순·정원 토글, 파라미터 없으면 기존 동작)",
 )
 async def browse_crews(
+    sido: str | None = None,
+    sigungu: str | None = None,
+    lat: float | None = Query(None, ge=33.0, le=39.0),
+    lng: float | None = Query(None, ge=124.0, le=132.0),
+    include_full: bool = False,
+    limit: int = 50,
     user: CurrentUser = Depends(get_current_user),
 ) -> list[CrewResponse]:
-    """List public crews plus any private crews the caller belongs to."""
+    """공개 크루(+내 비공개)를 둘러보기용으로. lat/lng 있으면 거리순+distance_km,
+    sido/sigungu로 행정구역 필터, include_full=false면 정원 찬 크루 제외.
+    """
     try:
-        return await crew_service.list_browse_crews(user.user_id)
+        return await crew_service.list_browse_crews(
+            user.user_id, sido=sido, sigungu=sigungu, lat=lat, lng=lng,
+            include_full=include_full, limit=limit,
+        )
     except Exception as exc:  # noqa: BLE001
         raise _bad_gateway("Failed to list crews", exc)
 

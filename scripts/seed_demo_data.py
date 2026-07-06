@@ -274,9 +274,15 @@ def main():
                 "name": CREW_NAME, "description": "매주 토요일 6시, 뚝섬에서 같이 달려요",
                 "area": "서울 성동구", "sport": "러닝", "level": "무관",
                 "join_policy": "approval", "max_members": 30,
-                "active_days": ["토"], "active_time": "06:00", "color": "#34C759"})
+                "active_days": ["토"], "active_time": "06:00", "color": "#34C759",
+                "sido": "서울특별시", "sigungu": "성동구",
+                "lat": 37.547, "lng": 127.044, "tags": ["새벽", "평지"]})
             crew = r.json() if r.status_code in (200, 201) else die("크루 생성 실패", r.text)
             made["crews"] += 1
+        elif not crew.get("sido"):  # 백필: 기존 크루에 지역·좌표·태그
+            api(c, "PATCH", f"/crews/{crew['id']}", t1, json={
+                "sido": "서울특별시", "sigungu": "성동구",
+                "lat": 37.547, "lng": 127.044, "tags": ["새벽", "평지"]})
         CREW = crew["id"]
 
         # 승인제라 join(202) → 크루장 approve 흐름을 그대로 사용 (API 검증 겸)
@@ -478,33 +484,47 @@ def main():
 
         # ── 10. 둘러보기 크루 (데모 유저 소유, test1/test2 미가입) ────────
         section("10. 둘러보기 크루 (미가입 크루로 노출)")
-        # (owner키, name, area, sport, level, is_public, join_policy, [멤버키...])
+        # (owner, name, area, sport, level, is_public, join_policy, desc, [멤버],
+        #  sigungu, lat, lng, [태그2])  — sido는 전부 서울특별시
         BROWSE = [
             ("demo1", "성수동 러닝 크루", "성수동", "러닝", "입문", True, "open",
-             "성수동 카페거리에서 만나 서울숲까지. 초보 환영!", ["demo2", "demo3"]),
+             "성수동 카페거리에서 만나 서울숲까지. 초보 환영!", ["demo2", "demo3"],
+             "성동구", 37.544, 127.056, ["아침", "입문환영"]),
             ("demo2", "여의도 퇴근런", "여의도", "러닝", "중급", True, "open",
-             "평일 저녁 7시, 여의도공원 한 바퀴 후 한강까지", ["demo4"]),
+             "평일 저녁 7시, 여의도공원 한 바퀴 후 한강까지", ["demo4"],
+             "영등포구", 37.526, 126.924, ["저녁", "평지"]),
             ("demo3", "반포 한강 나이트런", "반포", "러닝", "무관", True, "approval",
-             "달빛 아래 반포대교 무지개분수 코스. 승인제로 운영해요", ["demo1", "demo5"]),
+             "달빛 아래 반포대교 무지개분수 코스. 승인제로 운영해요", ["demo1", "demo5"],
+             "서초구", 37.513, 126.996, ["야간", "친목"]),
             ("demo4", "잠실 새벽 5시", "잠실", "러닝", "중급", True, "open",
-             "출근 전 석촌호수 두 바퀴. 새벽형 인간 모여라", ["demo2", "demo3", "demo5"]),
+             "출근 전 석촌호수 두 바퀴. 새벽형 인간 모여라", ["demo2", "demo3", "demo5"],
+             "송파구", 37.511, 127.081, ["새벽", "평지"]),
             ("demo5", "마포 주말 트레일", "마포", "트레일", "중급", True, "approval",
-             "주말 아침 안산·매봉산 트레일. 흙길 좋아하는 분", ["demo1"]),
+             "주말 아침 안산·매봉산 트레일. 흙길 좋아하는 분", ["demo1"],
+             "마포구", 37.556, 126.925, ["주말", "트레일"]),
             ("demo1", "강남 인터벌 클럽", "강남", "러닝", "고급", False, "approval",
-             "양재천 인터벌 훈련. 비공개(초대 전용), 서브3 목표", ["demo4"]),
+             "양재천 인터벌 훈련. 비공개(초대 전용), 서브3 목표", ["demo4"],
+             "강남구", 37.497, 127.038, ["기록도전", "평지"]),
         ]
         crew_ann = {  # 크루 이름 → 공지 (일부만)
             "성수동 러닝 크루": ("이번 주 토요일 정기런", "8시 서울숲 정문 집합, 5km 가볍게!"),
             "잠실 새벽 5시": ("겨울 새벽 러닝 안내", "영하권엔 6시로 미룹니다. 방한 필수!"),
         }
-        for owner, name, area, sport, level, is_pub, policy, desc, members in BROWSE:
+        for (owner, name, area, sport, level, is_pub, policy, desc, members,
+             sigungu, lat, lng, tags) in BROWSE:
             ouid, otok = users[owner]
             cid, created = ensure_browse_crew(c, otok, ouid, {
                 "name": name, "area": area, "sport": sport, "level": level,
                 "description": desc, "is_public": is_pub, "join_policy": policy,
-                "max_members": 30})
+                "max_members": 30, "sido": "서울특별시", "sigungu": sigungu,
+                "lat": lat, "lng": lng, "tags": tags})
             if created:
                 made["browse_crews"] += 1
+            # 백필: 기존 크루(구코드로 생성돼 좌표 없음)에 지역·좌표·태그 채움
+            elif not api(c, "GET", f"/crews/{cid}", otok).json().get("sido"):
+                api(c, "PATCH", f"/crews/{cid}", otok, json={
+                    "sido": "서울특별시", "sigungu": sigungu,
+                    "lat": lat, "lng": lng, "tags": tags})
             for mkey in members:
                 if ensure_crew_member(c, cid, users[mkey][0]):
                     made["browse_members"] += 1
@@ -605,6 +625,18 @@ def main():
         # 검색도 동작 확인
         sr = api(c, "GET", "/crews/search", t1, params={"q": "한강"}).json()
         log(f"크루 검색 '한강': {len(sr)}건")
+        # 당근식 둘러보기 — 성수동 기준 가까운 순 + distance_km + 태그
+        near = api(c, "GET", "/crews", t1,
+                   params={"lat": 37.5445, "lng": 127.0561, "include_full": "false"}).json()
+        log(f"둘러보기(거리순, 성수동 기준): {len(near)}개")
+        for cr in near[:6]:
+            dk = cr.get("distance_km")
+            log(f"  · {cr['name']} — {cr.get('sigungu')} "
+                f"{(str(dk)+'km') if dk is not None else '거리?'} "
+                f"태그{cr.get('tags')} 멤버 {cr['member_count']}")
+        # 행정구역 필터
+        seongdong = api(c, "GET", "/crews", t1, params={"sigungu": "성동구"}).json()
+        log(f"성동구 필터: {len(seongdong)}개 ({', '.join(x['name'] for x in seongdong)})")
 
         print("\n완료. 프론트에서 test1@freshrun.com / (공유된 비번)으로 로그인해 확인하세요.")
 

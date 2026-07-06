@@ -164,8 +164,15 @@ fetch(`${API_BASE}/api/me/profile`, {
 | 팔로우 토글 | `POST/DELETE /users/{user_id}/follow` | 204, 멱등. 자기 자신 400 |
 | 공개 프로필 | `GET /users/{user_id}/profile` | `nickname`, `bio`, `tier`, `follower_count`, `following_count`, `is_following`, `is_followed_by`(맞팔 표시) |
 | 팔로워/팔로잉 목록 | `GET /users/{user_id}/followers` / `/following` | `[{user_id, nickname, avatar_url, followed_at, is_following}]` — 항목별 팔로우 버튼용 |
-| 크루 목록/검색/상세 | `GET /crews`, `/crews/search?q`, `/crews/mine`, `/crews/{id}` | `member_count`, `owner_nickname` 포함 |
-| 크루 생성/수정/삭제 | `POST /crews`, `PATCH/DELETE /crews/{id}` | 수정·삭제는 크루장만. **생성은 무료 플랜 1개 한도** (내가 owner인 크루 기준) — 초과 시 **403 `premium_required`** `{error, message, feature: "crew_create", limit: 1}` → 업셀 화면. 프리미엄 무제한. 크루를 삭제하거나 소유권을 위임하면 슬롯이 다시 빔. 필드 길이: `name`≤50, `description`≤500, `area`≤50, `sport`≤30, `active_days`≤7개(각 항목 짧게), `max_members`≤100000 — 초과 422 |
+| **크루 둘러보기** | `GET /crews?sido&sigungu&lat&lng&include_full&limit` | 공개 크루 + 내 비공개. `member_count`·`owner_nickname`·`sido`·`sigungu`·`lat`·`lng`·`tags`·`distance_km` 포함. **파라미터 없으면 기존 동작**(최신순, distance_km null). 당근식 사용법은 표 아래 참고 |
+| 크루 검색/상세 | `GET /crews/search?q`, `/crews/mine`, `/crews/{id}` | 검색은 name/area/description 부분일치 |
+| 크루 생성/수정/삭제 | `POST /crews`, `PATCH/DELETE /crews/{id}` | 수정·삭제는 크루장만. **생성은 무료 플랜 1개 한도** (내가 owner인 크루 기준) — 초과 시 **403 `premium_required`** `{error, message, feature: "crew_create", limit: 1}` → 업셀 화면. 프리미엄 무제한. 크루를 삭제하거나 소유권을 위임하면 슬롯이 다시 빔. 필드 길이: `name`≤50, `description`≤500, `area`≤50, `sport`≤30, `active_days`≤7개, `max_members`≤100000. **둘러보기 필드**(전부 optional): `sido`(17개 광역 표준명)·`sigungu`(≤30자)·`lat`/`lng`(한국 bbox)·`tags`(서버 어휘, ≤5개) — 아래 참고 |
+
+> **크루 둘러보기 (당근식) — 프론트 규약 필독**:
+> - **위치·행정구역·역지오코딩은 전부 프론트가 처리** — 서버는 검증·필터·정렬만 한다. GPS 좌표 → "성동구" 역지오코딩은 **프론트가 Kakao Local SDK(coord2regioncode)로 클라이언트 측 수행**하고, 크루 생성/수정 시 `lat`/`lng`/`sido`/`sigungu`를 body로 보낸다. (서버는 지오코딩 프록시를 제공하지 않음.)
+> - **`sido` 표준 명칭 17개** (프론트 정적 목록·서버 Literal·DB CHECK가 이 문자열로 정확히 일치해야 필터 동작): `서울특별시`·`부산광역시`·`대구광역시`·`인천광역시`·`광주광역시`·`대전광역시`·`울산광역시`·`세종특별자치시`·`경기도`·`강원특별자치도`·`충청북도`·`충청남도`·`전북특별자치도`·`전라남도`·`경상북도`·`경상남도`·`제주특별자치도`. **`sigungu`는 자유 문자열**(예: `성동구`, `수원시`) — 프론트가 시군구 목록을 정적 보유해 표준 명칭으로 보낸다.
+> - **`tags` 서버 정의 어휘 13종** (자유입력 아님 — 이 목록에서만, 저장 ≤5개·카드엔 2개): 시간대 `새벽`·`아침`·`저녁`·`야간`·`주말` / 지형 `평지`·`트레일`·`언덕` / 분위기 `입문환영`·`기록도전`·`친목`·`여성전용`·`페이스그룹`. 목록 밖 값은 422.
+> - **조회**: `lat`+`lng`를 **둘 다** 보내면 각 크루까지 `distance_km`(1자리, "0.4km") 계산 + **거리 오름차순 정렬**(좌표 없는 크루는 distance_km=null·맨 뒤). `sido`/`sigungu`로 행정구역 필터. `include_full=false`(기본)면 정원 찬 크루 제외. `limit` 1~100(기본 50).
 | **가입** | `POST /crews/{id}/join` | **상태 코드로 분기**: `200`=즉시 가입(`CrewResponse`, open 크루) / `202`=신청 접수(`JoinRequestResponse{status:"pending"}`, 승인제 크루). `409` = 이미 멤버 또는 `already_requested`(중복 신청). **이미 멤버면 `join_policy`와 무관하게 409가 최우선** — 승인 직후 등 어떤 타이밍에도 멤버에게 202가 가거나 pending이 생기지 않음(서버가 레이스까지 방어). 크루의 `join_policy` 필드(`open`/`approval`)로 버튼 라벨을 미리 정할 수 있음 ("가입하기" vs "가입 신청") |
 | **내 신청 전체 목록** | `GET /me/join-requests?limit&offset` | `[{crew_id, crew_name, status, created_at, decided_at}]` 최신순, 기본 limit 50. **모든 크루의 신청을 한 번에** — 둘러보기 화면 "신청됨" 뱃지용. `status`는 pending/approved/rejected 전부 포함이므로 뱃지는 `pending`만 필터해서 사용 |
 | 내 신청 상태 (크루별) | `GET /crews/{id}/join-requests/me` | `{status: pending\|approved\|rejected}` — 없으면 404. **거절은 알림이 안 오므로** 이 값으로 버튼 상태 결정: `pending`→"신청됨(취소)", `rejected`→"가입 신청"(재신청 가능), 404→"가입 신청" |

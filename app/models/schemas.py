@@ -854,6 +854,24 @@ class CrewLevel(str, Enum):
     ADVANCED = "고급"
 
 
+# 시·도 17개 광역 표준 명칭 (DB CHECK·프론트 정적 목록과 동일 기준). sigungu는
+# 250개 관리 부담 회피 위해 자유 문자열(길이 제한만) — 프론트 표준 목록 신뢰.
+Sido = Literal[
+    "서울특별시", "부산광역시", "대구광역시", "인천광역시", "광주광역시",
+    "대전광역시", "울산광역시", "세종특별자치시", "경기도", "강원특별자치도",
+    "충청북도", "충청남도", "전북특별자치도", "전라남도", "경상북도",
+    "경상남도", "제주특별자치도",
+]
+
+# 크루 카드 태그 — 서버 정의 고정 어휘 (자유입력 아님). 카드엔 최대 2개 노출,
+# 저장은 최대 5개. 시간대/지형/분위기 3분류 13종.
+CrewTag = Literal[
+    "새벽", "아침", "저녁", "야간", "주말",          # 시간대
+    "평지", "트레일", "언덕",                          # 지형
+    "입문환영", "기록도전", "친목", "여성전용", "페이스그룹",  # 분위기
+]
+
+
 def _short_day_items(value: Optional[list[str]]) -> Optional[list[str]]:
     """active_days 각 항목 길이 제한 (요일 라벨은 짧음 — 거대 문자열 방어)."""
     if value is None:
@@ -883,6 +901,15 @@ class CrewCreate(BaseModel):
     )
     active_time: Optional[str] = Field(None, max_length=50, description="활동 시간")
     color: Optional[str] = Field(None, max_length=20, description="색상 (예: #FF8800)")
+    # 둘러보기(당근식) — 프론트가 위치 선택 UI에서 해석해 전송 (서버 지오코딩 안 함)
+    sido: Optional[Sido] = Field(None, description="시·도 (17개 광역 표준명).")
+    sigungu: Optional[str] = Field(None, max_length=30, description="시군구명 (예: 성동구).")
+    lat: Optional[float] = Field(None, ge=33.0, le=39.0, description="대표 좌표 위도.")
+    lng: Optional[float] = Field(None, ge=124.0, le=132.0, description="대표 좌표 경도.")
+    tags: list[CrewTag] = Field(
+        default_factory=list, max_length=5,
+        description="카드 태그 (서버 정의 어휘, 최대 5개 저장·카드엔 2개 노출).",
+    )
 
     _days = field_validator("active_days")(staticmethod(_short_day_items))
 
@@ -918,6 +945,17 @@ class CrewResponse(BaseModel):
     member_count: int = Field(..., description="Current number of members.")
     owner_nickname: Optional[str] = Field(
         None, description="Owner's nickname; null if they have no profile yet."
+    )
+    # 둘러보기 필드
+    sido: Optional[str] = None
+    sigungu: Optional[str] = None
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+    tags: list[str] = Field(default_factory=list)
+    distance_km: Optional[float] = Field(
+        None,
+        description="요청에 lat/lng가 있고 크루에 좌표가 있으면 계산된 거리(km, 1자리). "
+        "그 외 null.",
     )
 
 
@@ -960,6 +998,11 @@ class CrewUpdate(BaseModel):
     active_days: Optional[list[str]] = Field(None, max_length=7, description="활동 요일")
     active_time: Optional[str] = Field(None, max_length=50, description="활동 시간")
     color: Optional[str] = Field(None, max_length=20, description="색상 (예: #FF8800)")
+    sido: Optional[Sido] = Field(None, description="시·도 (17개 광역 표준명).")
+    sigungu: Optional[str] = Field(None, max_length=30, description="시군구명.")
+    lat: Optional[float] = Field(None, ge=33.0, le=39.0)
+    lng: Optional[float] = Field(None, ge=124.0, le=132.0)
+    tags: Optional[list[CrewTag]] = Field(None, max_length=5)
 
     _days = field_validator("active_days")(staticmethod(_short_day_items))
 

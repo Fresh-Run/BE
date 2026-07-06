@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import secrets
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -101,12 +102,27 @@ class AlreadyOwner(CrewError):
 
 
 def _to_response(
-    crew: dict, member_count: int, owner_nickname: str | None = None
+    crew: dict, member_count: int, owner_nickname: str | None = None,
+    distance_km: float | None = None,
 ) -> CrewResponse:
-    """Build a CrewResponse from a crew row dict + computed member count."""
+    """Build a CrewResponse from a crew row dict + computed member count.
+
+    `**crew`가 sido/sigungu/lat/lng/tags 등 신규 컬럼을 자동 전달한다
+    (CrewResponse에 동명 필드 존재). distance_km만 계산값이라 별도 인자.
+    """
     return CrewResponse(
-        **crew, member_count=member_count, owner_nickname=owner_nickname
+        **crew, member_count=member_count, owner_nickname=owner_nickname,
+        distance_km=distance_km,
     )
+
+
+def _crew_haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """두 좌표 간 대권거리(km). nearby routes와 동일 공식 (자립 헬퍼)."""
+    r = 6371.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp, dl = math.radians(lat2 - lat1), math.radians(lng2 - lng1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(a))
 
 
 async def _build_responses(
@@ -232,6 +248,11 @@ async def create_crew(req: CrewCreate, owner_id: str) -> CrewResponse:
         "active_days": req.active_days,
         "active_time": req.active_time,
         "color": req.color,
+        "sido": req.sido,
+        "sigungu": req.sigungu,
+        "lat": req.lat,
+        "lng": req.lng,
+        "tags": req.tags,
     }
     res = await asyncio.to_thread(
         lambda: supabase.table("crews").insert(record).execute()
@@ -297,29 +318,85 @@ async def search_crews(q: str, limit: int = 20) -> list[CrewResponse]:
     return await _build_responses(res.data, counts)
 
 
-async def list_browse_crews(user_id: str) -> list[CrewResponse]:
-    """Return public crews plus private crews the user is a member of."""
+async def list_browse_crews(
+    user_id: str,
+    sido: str | None = None,
+    sigungu: str | None = None,
+    lat: float | None = None,
+    lng: float | None = None,
+    include_full: bool = False,
+    limit: int = 50,
+) -> list[CrewResponse]:
+    """Return public crews (+ my private crews) for the discovery tab.
+
+    파라미터 전무 = 기존 동작(공개 전체 + 내 비공개, 최신순). 확장:
+    - sido/sigungu: 행정구역 정확 일치 필터
+    - lat+lng: distance_km 계산 + 거리 오름차순 정렬 (좌표 없는 크루는 후미·null)
+    - include_full=false(기본): 정원 찬 크루 제외
+    - limit: 1~100 클램프
+    """
+    limit = max(1, min(limit, 100))
     supabase = get_supabase_admin()
-    pub = await asyncio.to_thread(
-        lambda: supabase.table("crews").select("*").eq("is_public", True).execute()
-    )
+
+    def _pub_query():
+        q = supabase.table("crews").select("*").eq("is_public", True)
+        if sido:
+            q = q.eq("sido", sido)
+        if sigungu:
+            q = q.eq("sigungu", sigungu)
+        return q.execute()
+
+    pub = await asyncio.to_thread(_pub_query)
     crews_by_id: dict[str, dict] = {c["id"]: c for c in pub.data}
 
-    # Include private crews the user is in (not covered by the public query).
+    # 내 비공개 크루도 포함 (공개 쿼리에 안 잡힘). 행정구역 필터도 동일 적용.
     my_ids = await _my_crew_ids(user_id)
     missing = [cid for cid in my_ids if cid not in crews_by_id]
     if missing:
-        mine = await asyncio.to_thread(
-            lambda: supabase.table("crews").select("*").in_("id", missing).execute()
-        )
+        def _mine_query():
+            q = supabase.table("crews").select("*").in_("id", missing)
+            if sido:
+                q = q.eq("sido", sido)
+            if sigungu:
+                q = q.eq("sigungu", sigungu)
+            return q.execute()
+        mine = await asyncio.to_thread(_mine_query)
         for c in mine.data:
             crews_by_id[c["id"]] = c
 
-    crews = sorted(
-        crews_by_id.values(), key=lambda c: c["created_at"], reverse=True
-    )
+    crews = list(crews_by_id.values())
     counts = await _member_counts([c["id"] for c in crews])
-    return await _build_responses(crews, counts)
+
+    # include_full=false → 정원 찬 크루 제외
+    if not include_full:
+        crews = [
+            c for c in crews
+            if c.get("max_members") is None
+            or counts.get(c["id"], 0) < c["max_members"]
+        ]
+
+    # 거리 계산 (요청 좌표 + 크루 좌표 둘 다 있을 때만)
+    has_origin = lat is not None and lng is not None
+    dist: dict[str, float | None] = {}
+    for c in crews:
+        if has_origin and c.get("lat") is not None and c.get("lng") is not None:
+            dist[c["id"]] = round(_crew_haversine_km(lat, lng, c["lat"], c["lng"]), 1)
+        else:
+            dist[c["id"]] = None
+
+    # 정렬: 좌표 있으면 거리순(null=후미), 없으면 created_at desc
+    if has_origin:
+        crews.sort(key=lambda c: (dist[c["id"]] is None, dist[c["id"]] or 0.0))
+    else:
+        crews.sort(key=lambda c: c["created_at"], reverse=True)
+
+    crews = crews[:limit]
+    nicknames = await profile_service.get_nicknames([c["owner_id"] for c in crews])
+    return [
+        _to_response(c, counts.get(c["id"], 0), nicknames.get(c["owner_id"]),
+                     distance_km=dist[c["id"]])
+        for c in crews
+    ]
 
 
 async def get_crew(crew_id: str, user_id: str) -> CrewResponse | None:
