@@ -1,0 +1,63 @@
+# Supabase(public 스키마) 주간 논리 백업 → GitHub Actions artifact.
+# 실행 위치를 GH Actions로 택한 이유·복원 절차는 docs/BACKUP.md 참고.
+#
+# 최초 1회 설정 (사람 손): Supabase 대시보드 > Project Settings > Database >
+#   Connection string > "Session pooler"(포트 5432) URI 복사(비밀번호 포함) →
+#   GitHub repo Settings > Secrets and variables > Actions 에 SUPABASE_DB_URL 로 등록.
+#   (직결 db.<ref>.supabase.co 는 IPv6 전용이라 GH 러너에서 안 됨 — 반드시 pooler)
+# 첫 검증: Actions 탭 > DB Backup > Run workflow 로 수동 실행해 초록 확인.
+name: DB Backup
+
+on:
+  schedule:
+    - cron: "0 18 * * 0"   # 매주 일 18:00 UTC = 월 03:00 KST (저트래픽대)
+  workflow_dispatch: {}      # 수동 실행(첫 검증·임시 백업)
+
+concurrency: db-backup       # 동시 실행 방지
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install pg_dump 17 (PGDG — 서버 버전 ≤17 전부 덤프 가능)
+        run: |
+          sudo sh -c 'echo "deb [signed-by=/usr/share/keyrings/pgdg.gpg] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /usr/share/keyrings/pgdg.gpg
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client-17
+
+      - name: Dump public schema
+        env:
+          DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          if [ -z "$DB_URL" ]; then
+            echo "::error::SUPABASE_DB_URL secret 미등록 — docs/BACKUP.md의 설정 절차 참고"; exit 1
+          fi
+          STAMP=$(date -u +%Y%m%d-%H%M%S)
+          FILE="freshrun-public-${STAMP}.sql.gz"
+          echo "FILE=$FILE" >> "$GITHUB_ENV"
+          # public 스키마만(앱 데이터). --clean --if-exists = 복원 시 기존 객체 교체.
+          # 소유자/권한은 대상 환경마다 달라 제외(--no-owner --no-privileges).
+          /usr/lib/postgresql/17/bin/pg_dump "$DB_URL" \
+            --schema=public --no-owner --no-privileges --clean --if-exists \
+            | gzip > "$FILE"
+
+      - name: Validate dump (0바이트·손상·핵심테이블)
+        run: |
+          gzip -t "$FILE" || { echo "::error::gzip 손상 — 백업 무효"; exit 1; }
+          SIZE=$(stat -c%s "$FILE")
+          echo "덤프 크기: ${SIZE} bytes"
+          if [ "$SIZE" -lt 1000 ]; then
+            echo "::error::덤프가 비정상적으로 작음(${SIZE}B) — 연결 실패 의심"; exit 1
+          fi
+          if ! zcat "$FILE" | grep -qE "CREATE TABLE (public\.)?runs"; then
+            echo "::error::runs 테이블이 덤프에 없음 — 백업 무효"; exit 1
+          fi
+          echo "✅ 검증 통과: gzip OK · 크기 OK · runs 테이블 존재"
+
+      - name: Upload artifact (90일 롤링 보존)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.FILE }}
+          path: ${{ env.FILE }}
+          retention-days: 90
