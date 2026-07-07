@@ -19,6 +19,7 @@ from app.models.schemas import (
     PeriodStats,
     RecordEntry,
     RecordsBlock,
+    RunCommentResponse,
     RunRequest,
     RunResponse,
     RunSplit,
@@ -425,12 +426,14 @@ async def get_run(run_id: str, user_id: str) -> RunResponse | None:
     if not res.data:
         return None
     row = res.data[0]
-    tracks, kudos = await asyncio.gather(
+    tracks, kudos, comments = await asyncio.gather(
         _track_summaries([row["id"]]),
         _kudos_counts([row["id"]]),
+        _comment_counts([row["id"]]),
     )
     return RunResponse(**row, has_track=row["id"] in tracks,
-                       splits=tracks.get(row["id"]), kudos_count=kudos.get(row["id"], 0))
+                       splits=tracks.get(row["id"]), kudos_count=kudos.get(row["id"], 0),
+                       comment_count=comments.get(row["id"], 0))
 
 
 async def get_run_track(run_id: str, user_id: str) -> RunTrackResponse | None:
@@ -540,6 +543,23 @@ async def _kudos_counts(run_ids: list[str]) -> dict[str, int]:
     supabase = get_supabase_admin()
     res = await asyncio.to_thread(
         lambda: supabase.table("run_kudos")
+        .select("run_id")
+        .in_("run_id", run_ids)
+        .execute()
+    )
+    counts: dict[str, int] = {}
+    for row in res.data:
+        counts[row["run_id"]] = counts.get(row["run_id"], 0) + 1
+    return counts
+
+
+async def _comment_counts(run_ids: list[str]) -> dict[str, int]:
+    """Return {run_id: comment_count} for the given ids (one IN query)."""
+    if not run_ids:
+        return {}
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("run_comments")
         .select("run_id")
         .in_("run_id", run_ids)
         .execute()
@@ -720,6 +740,112 @@ async def list_kudos_users(
     ]
 
 
+# ── run 댓글 (route 댓글과 동형, 가시성은 _can_see_run 게이트 재사용) ──────────
+
+class RunCommentNotFound(Exception):
+    """이 run에 그 댓글이 없음 (핸들러가 404로 매핑)."""
+
+
+class RunCommentAccessDenied(Exception):
+    """작성자도 run 주인도 아님 — 삭제 불가 (핸들러가 403)."""
+
+
+async def list_run_comments(
+    run_id: str, caller_id: str, limit: int = 20, offset: int = 0
+) -> list[RunCommentResponse]:
+    """run 댓글 최신순 — 가시성 게이트(보이는 run만), 닉네임 배치, 페이지네이션.
+
+    안 보이는 run(private 비소유·미팔로우 followers 등)은 RunNotVisible → 404.
+    """
+    owner_id, visibility = await _run_owner(run_id)  # RunNotFound if missing
+    if not await _can_see_run(owner_id, caller_id, visibility):
+        raise RunNotVisible()
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("run_comments")
+        .select("*")
+        .eq("run_id", run_id)
+        .order("created_at", desc=True)
+        .range(offset, offset + limit - 1)
+        .execute()
+    )
+    rows = res.data
+    if not rows:
+        return []
+    nicknames = await profile_service.get_nicknames([r["user_id"] for r in rows])
+    return [
+        RunCommentResponse(**row, nickname=nicknames.get(row["user_id"]))
+        for row in rows
+    ]
+
+
+async def create_run_comment(
+    run_id: str, caller_id: str, content: str
+) -> RunCommentResponse:
+    """run에 댓글 작성 — 가시성 게이트 통과 시. run 주인에게 run_commented 알림
+    (본인 댓글은 미발송). 안 보이는 run이면 RunNotVisible → 404."""
+    owner_id, visibility = await _run_owner(run_id)  # RunNotFound if missing
+    if not await _can_see_run(owner_id, caller_id, visibility):
+        raise RunNotVisible()
+
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("run_comments")
+        .insert({"run_id": run_id, "user_id": caller_id, "content": content})
+        .execute()
+    )
+    row = res.data[0]
+
+    # run 주인에게 알림 (본인 댓글은 self-skip). payload에 run_id (딥링크).
+    from app.services import notification_service  # local to avoid circular risk
+    try:
+        await notification_service.create_notification(
+            recipient_id=owner_id,
+            actor_id=caller_id,
+            type="run_commented",
+            target_id=run_id,
+            target_type="run",
+            payload={"run_id": run_id},
+        )
+    except Exception:  # noqa: BLE001 - 알림 실패가 댓글 작성을 막지 않음
+        logger.warning("run_commented 알림 생성 실패", exc_info=True)
+
+    nick = (await profile_service.get_nicknames([caller_id])).get(caller_id)
+    return RunCommentResponse(**row, nickname=nick)
+
+
+async def delete_run_comment(run_id: str, comment_id: str, caller_id: str) -> None:
+    """댓글 삭제 — 작성자 또는 run 주인만. 없으면 RunCommentNotFound(404),
+    권한 없으면 RunCommentAccessDenied(403)."""
+    supabase = get_supabase_admin()
+    c = await asyncio.to_thread(
+        lambda: supabase.table("run_comments")
+        .select("user_id")
+        .eq("id", comment_id)
+        .eq("run_id", run_id)
+        .limit(1)
+        .execute()
+    )
+    if not c.data:
+        raise RunCommentNotFound()
+
+    if c.data[0]["user_id"] != caller_id:
+        # 작성자가 아니면 run 주인인지 확인
+        owner_id, _ = await _run_owner(run_id)
+        if owner_id != caller_id:
+            raise RunCommentAccessDenied()
+
+    await asyncio.to_thread(
+        lambda: supabase.table("run_comments")
+        .delete()
+        .eq("id", comment_id)
+        .execute()
+    )
+
+
 async def list_activity_feed(
     user_id: str, limit: int = 20, offset: int = 0
 ) -> list[ActivityFeedItem]:
@@ -773,11 +899,12 @@ async def list_activity_feed(
         )
         return {row["id"]: row["summary"] for row in r.data}
 
-    briefs, summaries, kudos_counts, my_kudos = await asyncio.gather(
+    briefs, summaries, kudos_counts, my_kudos, comment_counts = await asyncio.gather(
         profile_service.get_profile_briefs([r["user_id"] for r in rows]),
         _public_route_summaries(),
         _kudos_counts(run_ids),
         _my_kudos_set(run_ids, user_id),
+        _comment_counts(run_ids),
     )
     return [
         ActivityFeedItem(
@@ -792,6 +919,7 @@ async def list_activity_feed(
             avg_pace_sec_per_km=row.get("avg_pace_sec_per_km"),
             route_id=row.get("route_id"),
             route_summary=summaries.get(row.get("route_id")),
+            comment_count=comment_counts.get(row["id"], 0),
             is_mine=(row["user_id"] == user_id),
             kudos_count=kudos_counts.get(row["id"], 0),
             my_kudos=row["id"] in my_kudos,
@@ -855,11 +983,12 @@ async def list_user_runs(
         )
         return {row["id"]: row["summary"] for row in r.data}
 
-    brief, summaries, kudos_counts, my_kudos = await asyncio.gather(
+    brief, summaries, kudos_counts, my_kudos, comment_counts = await asyncio.gather(
         profile_service.get_profile_briefs([target_id]),
         _public_route_summaries(),
         _kudos_counts(run_ids),
         _my_kudos_set(run_ids, caller_id),
+        _comment_counts(run_ids),
     )
     is_own = caller_id == target_id
     return [
@@ -875,6 +1004,7 @@ async def list_user_runs(
             avg_pace_sec_per_km=row.get("avg_pace_sec_per_km"),
             route_id=row.get("route_id"),
             route_summary=summaries.get(row.get("route_id")),
+            comment_count=comment_counts.get(row["id"], 0),
             is_mine=is_own,
             kudos_count=kudos_counts.get(row["id"], 0),
             my_kudos=row["id"] in my_kudos,
@@ -1019,14 +1149,16 @@ async def list_runs(
 
     result = await asyncio.to_thread(_query)
     run_ids = [row["id"] for row in result.data]
-    # 배치 1쿼리로 kudos 수 집계 (활동 피드와 동일 방식, N+1 방지)
-    tracks, kudos = await asyncio.gather(
+    # 배치 집계로 kudos·댓글 수 (활동 피드와 동일 방식, N+1 방지)
+    tracks, kudos, comments = await asyncio.gather(
         _track_summaries(run_ids),
         _kudos_counts(run_ids),
+        _comment_counts(run_ids),
     )
     return [
         RunResponse(**row, has_track=row["id"] in tracks,
-                    splits=tracks.get(row["id"]), kudos_count=kudos.get(row["id"], 0))
+                    splits=tracks.get(row["id"]), kudos_count=kudos.get(row["id"], 0),
+                    comment_count=comments.get(row["id"], 0))
         for row in result.data
     ]
 

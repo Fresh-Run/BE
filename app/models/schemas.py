@@ -704,6 +704,11 @@ class NotificationResponse(BaseModel):
     actor_nickname: Optional[str] = None
     target_id: str
     target_type: str
+    payload: Optional[dict] = Field(
+        None,
+        description="딥링크 보조 데이터. crew_announcement는 {\"crew_id\":...}. "
+        "이 기능 이전에 발송된 알림은 null일 수 있음(소급 불가).",
+    )
     is_read: bool
     created_at: str
 
@@ -715,6 +720,17 @@ class CommentCreate(BaseModel):
 class CommentResponse(BaseModel):
     id: str
     route_id: str
+    user_id: str
+    nickname: Optional[str] = None
+    content: str
+    created_at: str
+
+
+class RunCommentResponse(BaseModel):
+    """run 댓글 (route 댓글과 동형, route_id 대신 run_id)."""
+
+    id: str
+    run_id: str
     user_id: str
     nickname: Optional[str] = None
     content: str
@@ -854,6 +870,7 @@ class RunResponse(BaseModel):
     kudos_count: int = Field(
         0, description="이 run이 받은 kudos 수 (기록 카드 ♥ 표시용). 본인 목록이라 my_kudos는 없음."
     )
+    comment_count: int = Field(0, description="이 run이 받은 댓글 수 (카드 💬 표시용).")
 
 
 class RunTrackResponse(BaseModel):
@@ -1061,14 +1078,15 @@ class CrewRunItem(BaseModel):
     route_summary: Optional[str] = Field(
         None, description="연결된 코스 요약 — 공개 코스일 때만, 비공개면 null."
     )
+    comment_count: int = Field(0, description="run 댓글 수 (카드 💬).")
 
 
 class ActivityFeedItem(CrewRunItem):
     """One run in the following activity feed (GET /feed/activities).
 
     Inherits CrewRunItem's privacy guarantees (no notes/feedback fields,
-    route_summary only for public courses). comment_count is deliberately
-    absent — added later (non-breaking) when run comments ship.
+    route_summary only for public courses). comment_count now included
+    (run comments shipped 2026-07-08).
     """
 
     is_mine: bool = Field(False, description="내 run이면 true (kudos 버튼 비활성용).")

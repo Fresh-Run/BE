@@ -766,9 +766,11 @@ async def list_crew_runs(
         )
         return {r["id"]: r["summary"] for r in res.data}
 
-    briefs, summaries = await asyncio.gather(
+    from app.services.run_service import _comment_counts  # local: 순환 import 회피
+    briefs, summaries, comment_counts = await asyncio.gather(
         profile_service.get_profile_briefs([r["user_id"] for r in rows]),
         _public_route_summaries(),
+        _comment_counts([r["id"] for r in rows]),
     )
     return [
         CrewRunItem(
@@ -783,6 +785,7 @@ async def list_crew_runs(
             avg_pace_sec_per_km=row.get("avg_pace_sec_per_km"),
             route_id=row.get("route_id"),
             route_summary=summaries.get(row.get("route_id")),
+            comment_count=comment_counts.get(row["id"], 0),
         )
         for row in rows
     ]

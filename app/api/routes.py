@@ -21,6 +21,7 @@ from app.models.schemas import (
     CoachScriptResponse,
     CommentCreate,
     CommentResponse,
+    RunCommentResponse,
     Coordinate,
     CrewCreate,
     CrewMemberResponse,
@@ -998,6 +999,70 @@ async def list_kudos_users(
         raise HTTPException(status_code=404, detail="Run not found")  # 존재 은닉
     except Exception as exc:  # noqa: BLE001
         raise _bad_gateway("Failed to list kudos", exc)
+
+
+@router.get(
+    "/runs/{run_id}/comments",
+    response_model=list[RunCommentResponse],
+    summary="run 댓글 목록 (최신순)",
+)
+async def list_run_comments(
+    run_id: str,
+    limit: int = 20,
+    offset: int = 0,
+    user: CurrentUser = Depends(get_current_user),
+) -> list[RunCommentResponse]:
+    """run 댓글 최신순. 보이는 run만(본인·public·팔로우/크루의 followers) — 아니면 404."""
+    try:
+        return await run_service.list_run_comments(
+            run_id, caller_id=user.user_id, limit=limit, offset=offset
+        )
+    except (run_service.RunNotFound, run_service.RunNotVisible):
+        raise HTTPException(status_code=404, detail="Run not found")
+    except Exception as exc:  # noqa: BLE001
+        raise _bad_gateway("Failed to list comments", exc)
+
+
+@router.post(
+    "/runs/{run_id}/comments",
+    response_model=RunCommentResponse,
+    summary="run 댓글 작성",
+)
+async def create_run_comment(
+    run_id: str,
+    req: CommentCreate,
+    user: CurrentUser = Depends(get_current_user),
+) -> RunCommentResponse:
+    """보이는 run에 댓글 작성. run 주인에게 알림(본인 댓글 제외). 안 보이면 404."""
+    try:
+        return await run_service.create_run_comment(
+            run_id, caller_id=user.user_id, content=req.content
+        )
+    except (run_service.RunNotFound, run_service.RunNotVisible):
+        raise HTTPException(status_code=404, detail="Run not found")
+    except Exception as exc:  # noqa: BLE001
+        raise _bad_gateway("Failed to create comment", exc)
+
+
+@router.delete(
+    "/runs/{run_id}/comments/{comment_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="run 댓글 삭제 (작성자 또는 run 주인)",
+)
+async def delete_run_comment(
+    run_id: str,
+    comment_id: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> None:
+    """댓글 삭제 — 작성자 또는 run 주인만. 없으면 404, 권한 없으면 403."""
+    try:
+        await run_service.delete_run_comment(run_id, comment_id, caller_id=user.user_id)
+    except run_service.RunCommentNotFound:
+        raise HTTPException(status_code=404, detail="Comment not found")
+    except run_service.RunCommentAccessDenied:
+        raise HTTPException(status_code=403, detail="Not allowed")
+    except Exception as exc:  # noqa: BLE001
+        raise _bad_gateway("Failed to delete comment", exc)
 
 
 # --- Community: crews --------------------------------------------------------

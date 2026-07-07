@@ -18,29 +18,33 @@ async def create_notification(
     target_id: str,
     target_type: str,
     allow_self: bool = False,
+    payload: dict | None = None,
 ) -> None:
     """Insert one notification row.
 
     Silently skips when recipient == actor, unless allow_self=True
     (used for challenge_completed where the triggering runner should
     also receive the notification).
+
+    payload: 딥링크 보조 데이터(jsonb). 예: crew_announcement는
+    {"crew_id": ...}로 공지가 속한 크루로 이동. target_id로 충분한 타입은 None.
     """
     if not allow_self and recipient_id == actor_id:
         return
 
+    record = {
+        "user_id": recipient_id,
+        "actor_id": actor_id,
+        "type": type,
+        "target_id": target_id,
+        "target_type": target_type,
+    }
+    if payload is not None:
+        record["payload"] = payload
+
     supabase = get_supabase_admin()
     await asyncio.to_thread(
-        lambda: supabase.table("notifications")
-        .insert(
-            {
-                "user_id": recipient_id,
-                "actor_id": actor_id,
-                "type": type,
-                "target_id": target_id,
-                "target_type": target_type,
-            }
-        )
-        .execute()
+        lambda: supabase.table("notifications").insert(record).execute()
     )
 
 

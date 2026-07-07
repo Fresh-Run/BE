@@ -102,9 +102,10 @@ def run():
             assert by[rid[2]]["kudos_count"] == 2, by[rid[2]]["kudos_count"]
             assert by[rid[1]]["kudos_count"] == 1
             assert by[rid[0]]["kudos_count"] == 0
-            # my_kudos·comment_count 없음 (본인 목록)
-            assert "my_kudos" not in by[rid[2]] and "comment_count" not in by[rid[2]]
-            ok("run2=2 ✓ run1=1 ✓ run0=0 ✓ my_kudos·comment_count 미포함 ✓")
+            # my_kudos 없음(본인 목록). comment_count는 이제 포함(댓글 0 → 0)
+            assert "my_kudos" not in by[rid[2]]
+            assert by[rid[2]]["comment_count"] == 0
+            ok("run2=2 ✓ run1=1 ✓ run0=0 ✓ my_kudos 미포함·comment_count=0 ✓")
 
             step("2. GET /runs/{id} 단건 — 동일 카운트")
             one = api(c, "GET", f"/runs/{rid[2]}", A).json()

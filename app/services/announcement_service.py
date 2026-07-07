@@ -144,6 +144,7 @@ async def _notify_members(crew_id: str, author_id: str, announcement_id: str) ->
                 type="crew_announcement",
                 target_id=announcement_id,
                 target_type="announcement",
+                payload={"crew_id": crew_id},  # 공지가 속한 크루 딥링크용
             )
             for row in res.data
         ])

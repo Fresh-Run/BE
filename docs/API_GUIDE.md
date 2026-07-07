@@ -105,7 +105,7 @@ fetch(`${API_BASE}/api/me/profile`, {
 >   - **기존 run(이 기능 이전 저장분)은 전부 `followers`로 백필** — 당시 노출(팔로워/크루)을 그대로 보존, 공개 프로필엔 안 뜸. 새 run만 기본 public.
 > - **완료 화면 비교 rows** (`POST /runs` 응답에만): `recent_avg_pace_sec_per_km`(최근 30일 평균 페이스, **이번 run 제외**) + `pace_delta_sec`(이번 페이스 − 최근 평균, **음수 = "평소보다 N초 빨라요"**). 히스토리 없으면(첫 run 등) 둘 다 null → 비교 UI 숨김. **주간 누적은 기존 `GET /me/stats`의 `week`로 표시.**
 > - 응답에도 `title`·`visibility` 포함(저장 확인용).
-| 기록 목록 | `GET /runs?limit&route_id?` | `RunResponse[]` 최신순 — GPS run은 `splits[]`·`has_track`·`verification` 포함. **`kudos_count`**(각 run이 받은 kudos 수 — 기록 카드 ♥ 표시용, 배치 집계라 N+1 없음). 본인 목록이라 `my_kudos`는 없음(본인 kudos 불가), `comment_count`는 run 댓글 미출시라 없음(후속) |
+| 기록 목록 | `GET /runs?limit&route_id?` | `RunResponse[]` 최신순 — GPS run은 `splits[]`·`has_track`·`verification` 포함. **`kudos_count`**(♥)·**`comment_count`**(💬) 배치 집계(N+1 없음). 본인 목록이라 `my_kudos`는 없음(본인 kudos 불가) |
 | 기록 단건 | `GET /runs/{run_id}` | 본인 것만, 아니면 404. 목록과 동일하게 **`kudos_count`** 포함 |
 | **러닝 경로 (지도)** | `GET /runs/{run_id}/track` | `{polyline[{lat,lng}], server_distance_km, elev_gain_m, point_count_raw/kept}` — 활동 상세 지도용. 트랙 없는 run(기존/수동)은 404 (`has_track`으로 사전 판단) |
 | 2탭 피드백 | `PATCH /runs/{run_id}/feedback` | body: `liked`(bool), `tags[]` (허용 태그는 Swagger의 FeedbackTag) |
@@ -165,8 +165,9 @@ fetch(`${API_BASE}/api/me/profile`, {
 | 데이터 | 메서드/경로 | 주요 응답 필드 |
 |---|---|---|
 | **팔로잉 피드 (코스, 홈 v1)** | `GET /feed?limit&offset` | `PublicRouteResponse[]`: `summary`, `owner_nickname`, `like_count`, `comment_count`, `copy_count`, `is_liked`, `polyline` — 팔로우 0명이면 `[]`. **홈 피드 v1은 이 코스 피드로 연결** |
-| **활동 피드 (run, 홈 v2)** | `GET /feed/activities?limit&offset` | 팔로우한 유저 **+ 내** run, `ran_at` 최신순: 크루 러닝 피드와 같은 필드 + `title`, `is_mine`, `kudos_count`, `my_kudos`. **visibility 적용**: 팔로우 대상의 `private` run은 제외(public·followers만), 내 run은 전부. **`is_mine=true`인 내 카드는 kudos 버튼 비활성** (본인 kudos는 400). 댓글 카운트는 run 댓글 출시 때 추가 예정(현재 필드 없음, `visibility`는 피드에선 null) |
-| run kudos | `POST/DELETE /runs/{run_id}/kudos`, `GET /runs/{run_id}/kudos` | 204 멱등(더블탭 안전), 본인 run 400, run 주인에게 `run_kudoed` 알림(9번째 타입). GET은 누른 사람 목록 `[{user_id, nickname, avatar_url, created_at}]`. **가시성 게이트**: 내가 볼 수 있는 run(팔로우 중이거나 같은 크루)에만 kudos·목록 조회 가능 — 그 외 run_id는 **404**(피드에 뜬 run만 대상이므로 실사용엔 영향 없음). **코스 좋아요(route like)와 별개** — 코스 평가 vs 활동 응원 |
+| **활동 피드 (run, 홈 v2)** | `GET /feed/activities?limit&offset` | 팔로우한 유저 **+ 내** run, `ran_at` 최신순: 크루 러닝 피드와 같은 필드 + `title`, `is_mine`, `kudos_count`, `my_kudos`, **`comment_count`**. **visibility 적용**: 팔로우 대상의 `private` run은 제외(public·followers만), 내 run은 전부. **`is_mine=true`인 내 카드는 kudos 버튼 비활성** (본인 kudos는 400). (`visibility`는 피드에선 null) |
+| run kudos | `POST/DELETE /runs/{run_id}/kudos`, `GET /runs/{run_id}/kudos` | 204 멱등(더블탭 안전), 본인 run 400, run 주인에게 `run_kudoed` 알림. GET은 누른 사람 목록 `[{user_id, nickname, avatar_url, created_at}]`. **가시성 게이트**: 내가 볼 수 있는 run(public, 또는 팔로우/크루의 followers)에만 kudos·목록 조회 가능 — 그 외 run_id는 **404**. **코스 좋아요(route like)와 별개** |
+| **run 댓글** | `GET /runs/{run_id}/comments?limit&offset`, `POST`, `DELETE /runs/{run_id}/comments/{comment_id}` | route 댓글과 동형. GET **최신순**(닉네임 포함, 페이지네이션) `[{id, run_id, user_id, nickname, content, created_at}]`. POST body `{content}`(1~500자, 초과/빈값 422) → run 주인에게 `run_commented` 알림(본인 댓글 미발송). DELETE는 **작성자 또는 run 주인**(그 외 403). **가시성 게이트 동일**: 안 보이는 run은 404. 카드 수는 위 피드/목록의 `comment_count` |
 | 전체 공개 코스 | `GET /routes/public?sort=newest\|popular&limit` | 동일 shape |
 | 근처 코스 | `GET /routes/nearby?lat&lng&radius_km` | 동일 shape. `radius_km`은 최대 50으로 클램프, `limit` 1~100 클램프 (음수·거대값도 안전) |
 | 코스 검색 | `GET /routes/search?q` | 동일 shape. `limit` 1~100 클램프 |
@@ -176,7 +177,7 @@ fetch(`${API_BASE}/api/me/profile`, {
 | 이 코스 달리기(복사) | `POST /routes/{id}/copy` | 내 코스로 복사본 생성 |
 | 팔로우 토글 | `POST/DELETE /users/{user_id}/follow` | 204, 멱등. 자기 자신 400 |
 | 공개 프로필 | `GET /users/{user_id}/profile` | `nickname`, `bio`, `tier`, `follower_count`, `following_count`, `is_following`, `is_followed_by`(맞팔 표시), **`public_run_count`**(그 유저가 전체 공개로 게시한 러닝 수 — 시안 "게시한 러닝 · 공개 N") |
-| **공개 프로필 러닝** | `GET /users/{user_id}/runs?limit&offset` | 그 유저의 러닝 카드 — **활동 피드와 동일 shape**(`run_id, user_id, nickname, avatar_url, ran_at, title, distance_km, duration_sec, avg_pace_sec_per_km, route_id, route_summary, is_mine, kudos_count, my_kudos`). **조회자 가시성 필터**: 본인=전부 / 타인은 `public` 항상 + `followers`는 내가 그 유저를 팔로우할 때 + `private` 제외. **본인 프로필에서만 각 카드에 `visibility` 채워짐**(뱃지용), 타인 프로필은 `visibility=null`. 좋아요=`kudos_count`, **댓글 수는 run 댓글 미출시라 없음**(카드에서 생략, 후속 기능) |
+| **공개 프로필 러닝** | `GET /users/{user_id}/runs?limit&offset` | 그 유저의 러닝 카드 — **활동 피드와 동일 shape**(`run_id, user_id, nickname, avatar_url, ran_at, title, distance_km, duration_sec, avg_pace_sec_per_km, route_id, route_summary, is_mine, kudos_count, my_kudos, comment_count`). **조회자 가시성 필터**: 본인=전부 / 타인은 `public` 항상 + `followers`는 내가 그 유저를 팔로우할 때 + `private` 제외. **본인 프로필에서만 각 카드에 `visibility` 채워짐**(뱃지용), 타인 프로필은 `visibility=null`. 좋아요=`kudos_count`, 댓글=`comment_count`(💬) |
 | 팔로워/팔로잉 목록 | `GET /users/{user_id}/followers` / `/following` | `[{user_id, nickname, avatar_url, followed_at, is_following}]` — 항목별 팔로우 버튼용 |
 | **크루 둘러보기** | `GET /crews?sido&sigungu&lat&lng&include_full&limit` | 공개 크루 + 내 비공개. `member_count`·`owner_nickname`·`sido`·`sigungu`·`lat`·`lng`·`tags`·`distance_km` 포함. **파라미터 없으면 기존 동작**(최신순, distance_km null). 당근식 사용법은 표 아래 참고 |
 | 크루 검색/상세 | `GET /crews/search?q`, `/crews/mine`, `/crews/{id}` | 검색은 name/area/description 부분일치 |
@@ -198,14 +199,14 @@ fetch(`${API_BASE}/api/me/profile`, {
 | 코드 미리보기 | `GET /crews/preview-by-code?code=` | 가입 확정 전 "어느 크루인지" 확인 — `CrewResponse` 반환. **비공개 크루도 조회됨** (코드 = 초대장). 잘못된 코드 404 |
 | **코드로 가입** | `POST /crews/join-by-code` body `{code}` | 200 `CrewResponse` (바로 크루 화면 이동). **join_policy·비공개 무관 즉시 가입** — 크루 생성 화면의 "비공개: 초대 링크로만 가입 가능해요"가 이 경로. 대소문자·공백은 서버가 정규화. 이미 멤버/정원 409, 잘못된 코드 404. 승인제에 신청해뒀던 pending은 자동 정리 |
 | 멤버/랭킹 | `GET /crews/{id}/members`, `/crews/{id}/ranking` | 랭킹: 이번 주 KST 거리순, `me` 플래그. **visibility 무관** — 랭킹·챌린지 누적 거리는 `private` run도 포함(크루=활동 공유 원칙 + 거리 은닉 어뷰징 방지). visibility는 run 카드 노출만 제어, 집계 거리엔 영향 없음 |
-| **크루 러닝 피드** | `GET /crews/{id}/runs?limit&offset` | 크루원들의 최근 run, `ran_at` 최신순: `[{run_id, user_id, nickname, avatar_url, ran_at, title, distance_km, duration_sec, avg_pace_sec_per_km, route_id, route_summary}]`. 크루원만(403). **visibility 적용**: `private`만 제외 — `public`·`followers`는 크루원에게 노출(크루=활동 공유 관계). 개인 메모/피드백은 절대 미포함, `route_summary`는 공개 코스만(비공개면 null). 탈퇴 멤버의 run은 자동 제외 |
+| **크루 러닝 피드** | `GET /crews/{id}/runs?limit&offset` | 크루원들의 최근 run, `ran_at` 최신순: `[{run_id, user_id, nickname, avatar_url, ran_at, title, distance_km, duration_sec, avg_pace_sec_per_km, route_id, route_summary, comment_count}]`. 크루원만(403). **visibility 적용**: `private`만 제외 — `public`·`followers`는 크루원에게 노출(크루=활동 공유 관계). 개인 메모/피드백은 절대 미포함, `route_summary`는 공개 코스만(비공개면 null). 탈퇴 멤버의 run은 자동 제외 |
 | 챌린지 | `GET /crews/{id}/challenges/current`, `POST /crews/{id}/challenges` | `achieved_km`, `progress_pct`, `is_completed` 실시간 계산. 생성 시 `starts_at`/`ends_at`은 **ISO 8601 + 타임존 필수** (아래 노트) |
 | **공지 목록/상세** | `GET /crews/{id}/announcements?limit&offset`, `GET .../{announcement_id}` | `title`, `body`, `run_at`, `place_name/lat/lng`, `rsvp_open`, `rsvp{going,not_going,maybe}`, `my_rsvp`; 상세엔 `going_members[]` 명단 추가. 크루원만 조회 가능(403). 작성 시 `run_at`/`rsvp_closes_at`은 **ISO 8601 + 타임존 필수** |
 
 > **⚠️ 날짜·시각 필드는 타임존 필수 (프론트 필독)**: 챌린지 `starts_at`/`ends_at`, 공지 `run_at`/`rsvp_closes_at`은 **반드시 타임존 오프셋을 포함한 ISO 8601**로 보내세요 — `2026-07-07T20:00:00+09:00`(KST) 또는 `...Z`(UTC). **타임존 없는 `2026-07-07T20:00:00`은 422**로 거부됩니다 (서버가 UTC로 오해석하면 KST 의도가 9시간 밀리기 때문). 에러 메시지에 "timezone" 안내가 포함됩니다.
 | 공지 작성/수정/삭제 | `POST/PATCH/DELETE /crews/{id}/announcements...` | 크루장만. 작성 시 크루원 전체 알림, 수정은 알림 없음 |
 | **참석 투표** | `PUT /crews/{id}/announcements/{aid}/rsvp` | body: `{"status": "going"\|"not_going"\|"maybe"}` → 204. 재투표=덮어쓰기 |
-| 알림 | `GET /notifications`, `GET /notifications/unread-count`, `PATCH /notifications/read-all`, `PATCH /notifications/{id}/read` | `type` 8종: `route_liked`, `route_commented`, `crew_joined`, `challenge_completed`, `user_followed`, `crew_announcement`, `join_requested`(크루장에게→신청 목록으로 딥링크), `join_approved`(신청자에게→크루로 딥링크) (+`actor_nickname`, `target_id/target_type`) |
+| 알림 | `GET /notifications`, `GET /notifications/unread-count`, `PATCH /notifications/read-all`, `PATCH /notifications/{id}/read` | `type` **10종**: `route_liked`·`route_commented`(→코스), `crew_joined`·`join_requested`(크루장→신청목록)·`join_approved`·`challenge_completed`·`crew_announcement`(→크루), `user_followed`(→프로필), `run_kudoed`·`run_commented`(→run 상세). 각 항목 `actor_nickname`·`target_id`·`target_type`(route/crew/user/announcement/run) + **`payload`**(딥링크 보조 jsonb). **`crew_announcement`는 `payload.crew_id`로 크루 딥링크**(target_id는 공지id), `run_commented`는 `payload.run_id`. **이 기능(2026-07-08) 이전 발송된 알림은 `payload=null`일 수 있음**(소급 불가) — 프론트는 payload 없으면 target_id로 폴백 |
 
 ### 프로필
 
