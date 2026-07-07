@@ -31,6 +31,8 @@ from app.models.schemas import (
     MyJoinRequestItem,
 )
 from app.services import notification_service, profile_service
+# 주 경계(월 00:00 KST) 계산은 run_service 단일 정의를 재사용 — 드리프트 방지(L7)
+from app.services.run_service import _week_start_utc
 
 _UNIQUE_VIOLATION = "23505"
 
@@ -819,7 +821,7 @@ async def decide_join_request(
         # CrewFull propagates and the request stays pending (retry when space frees).
         await _admit_member(crew, requester_id, notify_owner=False)
 
-    await asyncio.to_thread(
+    upd = await asyncio.to_thread(
         lambda: supabase.table("crew_join_requests")
         .update({
             "status": "approved" if approve else "rejected",
@@ -831,7 +833,9 @@ async def decide_join_request(
         .execute()
     )
 
-    if approve:  # 거절은 무알림 (설계 결정)
+    # 이 호출이 실제로 pending→approved를 뒤집었을 때만 알림 (동시 승인 2건 중
+    # 하나는 0행 반환 → 이중 발송 방지, L8). 거절은 무알림(설계 결정).
+    if approve and upd.data:
         try:
             await notification_service.create_notification(
                 recipient_id=requester_id,
@@ -872,9 +876,13 @@ async def transfer_ownership(
     Only the current owner may call. The target must already be a member.
     The old owner becomes a regular 'member' (and leaves too if leave_after).
 
-    Atomicity: this performs several updates app-side (no transaction). Crew
-    ownership transfers are rare, so the small race window is acceptable; an
-    RPC could make it atomic later.
+    Atomicity: no DB transaction available. crews.owner_id is the *sole*
+    authority (ensure_owner checks it), and crew_members.role is secondary
+    roster data. So we set the cosmetic roles first and flip owner_id LAST as
+    the commit point; on any failure before/at the commit we best-effort
+    restore the original state (roles + owner_id). Transfers are rare, so this
+    bounds the tiny window and self-heals instead of leaving a split state.
+    A single RPC could make it truly atomic later (race backlog).
     """
     supabase = get_supabase_admin()
     crew = await ensure_owner(crew_id, caller_id, "*")
@@ -883,29 +891,30 @@ async def transfer_ownership(
     if not await _is_member(crew_id, new_owner_id):
         raise TargetNotMember()
 
-    # 1) Point the crew at the new owner.
-    await asyncio.to_thread(
-        lambda: supabase.table("crews")
-        .update({"owner_id": new_owner_id})
-        .eq("id", crew_id)
-        .execute()
-    )
-    # 2) Promote the new owner's membership role.
-    await asyncio.to_thread(
-        lambda: supabase.table("crew_members")
-        .update({"role": "owner"})
-        .eq("crew_id", crew_id)
-        .eq("user_id", new_owner_id)
-        .execute()
-    )
-    # 3) Demote the old owner to a regular member.
-    await asyncio.to_thread(
-        lambda: supabase.table("crew_members")
-        .update({"role": "member"})
-        .eq("crew_id", crew_id)
-        .eq("user_id", caller_id)
-        .execute()
-    )
+    def _set_role(uid: str, role: str):
+        return (supabase.table("crew_members").update({"role": role})
+                .eq("crew_id", crew_id).eq("user_id", uid).execute())
+
+    def _set_owner(uid: str):
+        return (supabase.table("crews").update({"owner_id": uid})
+                .eq("id", crew_id).execute())
+
+    try:
+        # 1) roles first (부차적) → 2) owner_id 플립 = 커밋 지점(권한 이전 확정)
+        await asyncio.to_thread(lambda: _set_role(new_owner_id, "owner"))
+        await asyncio.to_thread(lambda: _set_role(caller_id, "member"))
+        await asyncio.to_thread(lambda: _set_owner(new_owner_id))
+    except Exception:
+        # 보상 복구: 원상태로 되돌림 (best-effort — 로그만 남기고 원래 예외 전파)
+        logger.warning("소유권 이전 실패 (crew=%s) — 원상 복구 시도", crew_id, exc_info=True)
+        for restore in (lambda: _set_owner(caller_id),
+                        lambda: _set_role(caller_id, "owner"),
+                        lambda: _set_role(new_owner_id, "member")):
+            try:
+                await asyncio.to_thread(restore)
+            except Exception:  # noqa: BLE001
+                logger.error("소유권 보상 복구 일부 실패 (crew=%s)", crew_id, exc_info=True)
+        raise
     logger.info(
         "Crew %s ownership: %s -> %s.", crew_id, caller_id, new_owner_id
     )
@@ -979,19 +988,6 @@ async def list_members(crew_id: str, caller_id: str) -> list[CrewMemberResponse]
         )
         for m in members
     ]
-
-
-def _week_start_utc() -> str:
-    """ISO-8601 UTC string for this week's Monday 00:00 KST.
-
-    KST = UTC+9. Monday 00:00 KST == Sunday 15:00 UTC of the prior week.
-    We anchor on the local KST date so the boundary feels right to Korean users.
-    """
-    now_kst = datetime.now(_KST)
-    monday_kst = (now_kst - timedelta(days=now_kst.weekday())).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    )
-    return monday_kst.astimezone(timezone.utc).isoformat()
 
 
 async def get_weekly_ranking(crew_id: str, caller_id: str) -> list[CrewRankingEntry]:

@@ -1164,16 +1164,39 @@ async def my_crews(
 # must stay declared BEFORE /crews/{crew_id} (else {crew_id} swallows them).
 
 
+@router.post(
+    "/crews/preview-by-code",
+    response_model=CrewResponse,
+    summary="초대 코드로 크루 미리보기 (권장 — 코드가 URL/로그에 안 남음)",
+)
+async def preview_crew_by_code_post(
+    req: JoinByCodeRequest,
+    user: CurrentUser = Depends(get_current_user),
+) -> CrewResponse:
+    """미리보기 (권장 경로): 초대 코드를 body로 받아 access log 노출을 막는다.
+    GET 버전과 동작 동일 — 프론트는 이 POST로 붙일 것을 권장."""
+    try:
+        return await crew_service.preview_by_code(req.code)
+    except crew_service.CrewNotFound:
+        raise HTTPException(status_code=404, detail="Invalid invite code")
+    except Exception:  # noqa: BLE001 — 코드 값이 에러에 실리지 않게 고정 메시지
+        raise HTTPException(status_code=502, detail="Failed to preview invite code")
+
+
 @router.get(
     "/crews/preview-by-code",
     response_model=CrewResponse,
-    summary="초대 코드로 크루 미리보기 (가입 확정 전 확인)",
+    summary="초대 코드로 크루 미리보기 (레거시 — 코드가 쿼리스트링에 노출, POST 권장)",
 )
 async def preview_crew_by_code(
     code: str,
     user: CurrentUser = Depends(get_current_user),
 ) -> CrewResponse:
-    """Which crew does this code open? Works for private crews too."""
+    """Which crew does this code open? Works for private crews too.
+
+    ⚠️ 코드가 쿼리스트링 → access log에 평문으로 남음. 하위 호환 위해 유지하되
+    신규/변경은 POST /crews/preview-by-code(body) 사용 권장.
+    """
     try:
         return await crew_service.preview_by_code(code)
     except crew_service.CrewNotFound:

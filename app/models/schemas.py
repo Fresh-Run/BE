@@ -772,7 +772,8 @@ class RunRequest(BaseModel):
     )
     # 상한 350km = 세계 최장 울트라(현실 초장거리) 여유. 상한 없으면 9999km
     # 1회 전송으로 랭킹·챌린지·PB·통계 오염 가능 (unverified도 집계 포함).
-    distance_km: float = Field(..., gt=0, le=350, description="Actual distance run, in km.")
+    # ge=0.01: gt=0이면 1e-308 같은 값이 통과해 round 후 0.00km가 됨 — 하한 명시(L8)
+    distance_km: float = Field(..., ge=0.01, le=350, description="Actual distance run, in km.")
     duration_sec: int = Field(
         ..., gt=0, le=7 * 24 * 3600, description="Elapsed time, in seconds (≤7일)."
     )
@@ -889,8 +890,16 @@ class FeedbackRequest(BaseModel):
     liked: bool = Field(..., description="좋았어요(true) / 별로예요(false).")
     tags: list[FeedbackTag] = Field(
         default_factory=list,
+        max_length=20,  # 허용 태그 수 이내 — 무제한 배열 방어(L8)
         description="Detail tags (multi-select). Must be from the allowed list.",
     )
+
+    @field_validator("tags")
+    @classmethod
+    def _dedupe_tags(cls, v: list) -> list:
+        # 순서 보존 중복 제거 (같은 태그 반복 전송 방어)
+        seen: set = set()
+        return [t for t in v if not (t in seen or seen.add(t))]
 
 
 # --- Community: crews --------------------------------------------------------

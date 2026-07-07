@@ -75,20 +75,34 @@ async def _get_announcement(crew_id: str, announcement_id: str) -> dict:
     return res.data[0]
 
 
-async def _tallies(announcement_ids: list[str]) -> dict[str, RsvpTally]:
-    """Batch {announcement_id: RsvpTally} (one IN query, counted in Python)."""
+async def _tallies(announcement_ids: list[str], crew_id: str) -> dict[str, RsvpTally]:
+    """Batch {announcement_id: RsvpTally} (one IN query, counted in Python).
+
+    현재 크루원의 표만 집계 — 탈퇴/강퇴자의 RSVP는 _cleanup_member_rsvps가
+    best-effort라 잔존할 수 있으므로 crew_members 교집합으로 필터한다(L6).
+    """
     if not announcement_ids:
         return {}
     supabase = get_supabase_admin()
-    res = await asyncio.to_thread(
-        lambda: supabase.table("crew_announcement_rsvps")
-        .select("announcement_id, status")
-        .in_("announcement_id", announcement_ids)
-        .execute()
+    rsvps, members = await asyncio.gather(
+        asyncio.to_thread(
+            lambda: supabase.table("crew_announcement_rsvps")
+            .select("announcement_id, status, user_id")
+            .in_("announcement_id", announcement_ids)
+            .execute()
+        ),
+        asyncio.to_thread(
+            lambda: supabase.table("crew_members")
+            .select("user_id")
+            .eq("crew_id", crew_id)
+            .execute()
+        ),
     )
+    member_ids = {m["user_id"] for m in members.data}
     counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
-    for row in res.data:
-        counts[row["announcement_id"]][row["status"]] += 1
+    for row in rsvps.data:
+        if row["user_id"] in member_ids:  # 탈퇴자 표 제외
+            counts[row["announcement_id"]][row["status"]] += 1
     return {
         aid: RsvpTally(
             going=c["going"], not_going=c["not_going"], maybe=c["maybe"]
@@ -203,7 +217,7 @@ async def list_announcements(
 
     ann_ids = [r["id"] for r in rows]
     tallies, mine, nicknames = await asyncio.gather(
-        _tallies(ann_ids),
+        _tallies(ann_ids, crew_id),
         _my_rsvps(ann_ids, caller_id),
         profile_service.get_nicknames([r.get("author_id") for r in rows]),
     )
@@ -235,7 +249,7 @@ async def get_announcement(
             .order("updated_at")
             .execute()
         ),
-        _tallies([announcement_id]),
+        _tallies([announcement_id], crew_id),
         _my_rsvps([announcement_id], caller_id),
         profile_service.get_nicknames([row.get("author_id")]),
     )
@@ -282,7 +296,7 @@ async def update_announcement(
         row = res.data[0]
 
     tallies, mine, nicknames = await asyncio.gather(
-        _tallies([announcement_id]),
+        _tallies([announcement_id], crew_id),
         _my_rsvps([announcement_id], caller_id),
         profile_service.get_nicknames([row.get("author_id")]),
     )
