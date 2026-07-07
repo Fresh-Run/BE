@@ -1,0 +1,24 @@
+# main에 push되면 Fly.io로 자동 배포.
+# 최초 1회 설정 (사람 손): 로컬에서 `fly tokens create deploy` 실행 →
+#   출력된 토큰을 GitHub repo Settings > Secrets and variables > Actions >
+#   New repository secret 에 FLY_API_TOKEN 이름으로 등록.
+# 이 secret이 없으면 워크플로는 실패만 할 뿐(배포 영향 없음), 그땐 로컬
+#   `fly deploy`로 배포하면 된다. secrets(키) 자체는 Fly에 저장돼 있으므로
+#   여기선 코드만 배포한다.
+name: Fly Deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    name: Deploy app
+    runs-on: ubuntu-latest
+    concurrency: deploy-group   # 동시 배포 방지
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - run: flyctl deploy --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
