@@ -1,15 +1,21 @@
-# main에 push되면 Fly.io로 자동 배포.
+# 자동배포 보류 중 (2026-07-07 결정, 스테이징 안정성) — 활성화: on push 복원 + FLY_API_TOKEN GitHub secret 등록
+#
+# Fly.io 배포 워크플로. 현재는 수동 실행 전용(workflow_dispatch): GitHub의
+#   Actions 탭 > Fly Deploy > "Run workflow" 로만 돈다 (push 트리거 없음).
 # 최초 1회 설정 (사람 손): 로컬에서 `fly tokens create deploy` 실행 →
 #   출력된 토큰을 GitHub repo Settings > Secrets and variables > Actions >
 #   New repository secret 에 FLY_API_TOKEN 이름으로 등록.
 # 이 secret이 없으면 워크플로는 실패만 할 뿐(배포 영향 없음), 그땐 로컬
 #   `fly deploy`로 배포하면 된다. secrets(키) 자체는 Fly에 저장돼 있으므로
 #   여기선 코드만 배포한다.
+# 자동배포를 켜려면 아래 on: 을 push 트리거로 되돌린다:
+#   on:
+#     push:
+#       branches: [main]
 name: Fly Deploy
 
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:   # 수동 실행 전용 (Actions 탭에서 Run workflow)
 
 jobs:
   deploy:
