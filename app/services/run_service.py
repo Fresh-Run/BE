@@ -1116,6 +1116,8 @@ async def _check_challenge_completion(user_id: str) -> None:
                 target_id=ch_crew_id,
                 target_type="crew",
                 allow_self=True,
+                # crew_id는 target_id, challenge_id는 payload로 — 특정 챌린지 딥링크용
+                payload={"crew_id": ch_crew_id, "challenge_id": ch_id},
             )
             for mid in member_ids
         ])

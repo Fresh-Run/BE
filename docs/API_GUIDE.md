@@ -206,7 +206,21 @@ fetch(`${API_BASE}/api/me/profile`, {
 > **⚠️ 날짜·시각 필드는 타임존 필수 (프론트 필독)**: 챌린지 `starts_at`/`ends_at`, 공지 `run_at`/`rsvp_closes_at`은 **반드시 타임존 오프셋을 포함한 ISO 8601**로 보내세요 — `2026-07-07T20:00:00+09:00`(KST) 또는 `...Z`(UTC). **타임존 없는 `2026-07-07T20:00:00`은 422**로 거부됩니다 (서버가 UTC로 오해석하면 KST 의도가 9시간 밀리기 때문). 에러 메시지에 "timezone" 안내가 포함됩니다.
 | 공지 작성/수정/삭제 | `POST/PATCH/DELETE /crews/{id}/announcements...` | 크루장만. 작성 시 크루원 전체 알림, 수정은 알림 없음 |
 | **참석 투표** | `PUT /crews/{id}/announcements/{aid}/rsvp` | body: `{"status": "going"\|"not_going"\|"maybe"}` → 204. 재투표=덮어쓰기 |
-| 알림 | `GET /notifications`, `GET /notifications/unread-count`, `PATCH /notifications/read-all`, `PATCH /notifications/{id}/read`, **`DELETE /notifications/{id}`**(스와이프 삭제 — 본인 것만, 없음/남의 것 404, 성공 204), **`DELETE /notifications`**(모두 지우기 — 멱등, 0건이어도 204) | `type` **10종**: `route_liked`·`route_commented`(→코스), `crew_joined`·`join_requested`(크루장→신청목록)·`join_approved`·`challenge_completed`·`crew_announcement`(→크루), `user_followed`(→프로필), `run_kudoed`·`run_commented`(→run 상세). 각 항목 `actor_nickname`·`target_id`·`target_type`(route/crew/user/announcement/run) + **`payload`**(딥링크 보조 jsonb). **`crew_announcement`는 `payload.crew_id`로 크루 딥링크**(target_id는 공지id), `run_commented`는 `payload.run_id`. **이 기능(2026-07-08) 이전 발송된 알림은 `payload=null`일 수 있음**(소급 불가) — 프론트는 payload 없으면 target_id로 폴백 |
+| 알림 | `GET /notifications`, `GET /notifications/unread-count`, `PATCH /notifications/read-all`, `PATCH /notifications/{id}/read`, **`DELETE /notifications/{id}`**(스와이프 삭제 — 본인 것만, 없음/남의 것 404, 성공 204), **`DELETE /notifications`**(모두 지우기 — 멱등, 0건이어도 204) | 각 항목: `type`·`actor_nickname`·`target_id`·`target_type`·**`payload`**(딥링크 보조 jsonb, 없으면 null). **탭 시 목적지·사용 필드는 아래 "딥링크 라우팅 표"를 그대로 따를 것** |
+
+> **알림 딥링크 라우팅 표** — 알림 탭 시 이 표대로 화면을 특정한다. **`target_type`으로 분기**하고 표의 "사용 필드"로 id를 얻는다. (대부분 `target_id`면 충분, `crew_announcement`만 `payload.crew_id` 필요.)
+>
+> | type | target_type | 목적지 화면 | 사용 필드 |
+> |---|---|---|---|
+> | `route_liked` / `route_commented` | route | 코스 상세 | `target_id`(=route_id) |
+> | `run_kudoed` / `run_commented` | run | 내 run 상세 (수신자=run 주인) | `target_id`(=run_id) → `GET /runs/{id}` |
+> | `crew_joined` / `join_approved` | crew | 크루 상세 | `target_id`(=crew_id) |
+> | `join_requested` | crew | 크루 **신청 관리** 화면 | `target_id`(=crew_id) |
+> | `challenge_completed` | crew | 크루 챌린지 화면 | `target_id`(=crew_id) + `payload.challenge_id`(특정 챌린지, 2026-07-08~ 신규 발송분) |
+> | `user_followed` | user | 유저 공개 프로필 | `target_id`(=follower_id) |
+> | **`crew_announcement`** | announcement | 크루 공지 (`/crews/{crew_id}/…`) | **`payload.crew_id`** (target_id는 공지id) + `target_id`(=공지id) |
+>
+> **주의**: `crew_announcement`는 target_id가 공지id라 **crew_id는 `payload`에만** 있다. `payload.crew_id`가 없으면(2026-07-08 이전 발송분) 크루로 못 가니 폴백으로 무시하거나 크루 목록으로 보낸다. 그 외 type은 target_id만으로 라우팅 가능 — payload 불필요.
 
 ### 프로필
 
