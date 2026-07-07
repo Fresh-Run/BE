@@ -1980,6 +1980,39 @@ async def mark_notification_read(
         raise HTTPException(status_code=404, detail="Notification not found")
 
 
+@router.delete(
+    "/notifications",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="알림 전체 삭제 (모두 지우기)",
+)
+async def delete_all_notifications(
+    user: CurrentUser = Depends(get_current_user),
+) -> None:
+    """Delete all of the caller's notifications. 멱등(0건이어도 204)."""
+    try:
+        await notification_service.delete_all(user.user_id)
+    except Exception as exc:  # noqa: BLE001
+        raise _bad_gateway("Failed to delete notifications", exc)
+
+
+@router.delete(
+    "/notifications/{notification_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="알림 개별 삭제 (스와이프)",
+)
+async def delete_notification(
+    notification_id: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> None:
+    """Delete one notification; 404 if not found or not owned (존재 은닉)."""
+    try:
+        found = await notification_service.delete_notification(notification_id, user.user_id)
+    except Exception as exc:  # noqa: BLE001
+        raise _bad_gateway("Failed to delete notification", exc)
+    if not found:
+        raise HTTPException(status_code=404, detail="Notification not found")
+
+
 @router.get(
     "/weather",
     response_model=WeatherResponse,

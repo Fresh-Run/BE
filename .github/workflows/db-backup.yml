@@ -56,7 +56,7 @@ jobs:
           echo "✅ 검증 통과: gzip OK · 크기 OK · runs 테이블 존재"
 
       - name: Upload artifact (90일 롤링 보존)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7   # Node 24 (v4는 Node20 deprecated)
         with:
           name: ${{ env.FILE }}
           path: ${{ env.FILE }}

@@ -124,3 +124,31 @@ async def mark_all_read(user_id: str) -> None:
         .eq("is_read", False)
         .execute()
     )
+
+
+async def delete_notification(notification_id: str, user_id: str) -> bool:
+    """Delete one notification (스와이프). Returns False if not found or not owned.
+
+    user_id로 스코프해 남의 알림은 0행 삭제(→False→404, 존재 은닉). mark_read와
+    동일 패턴 — 성공 삭제 204, 없음/남의 것 404.
+    """
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("notifications")
+        .delete()
+        .eq("id", notification_id)
+        .eq("user_id", user_id)
+        .execute()
+    )
+    return bool(res.data)
+
+
+async def delete_all(user_id: str) -> None:
+    """Delete all of the caller's notifications (모두 지우기). 멱등 — 0건이어도 204."""
+    supabase = get_supabase_admin()
+    await asyncio.to_thread(
+        lambda: supabase.table("notifications")
+        .delete()
+        .eq("user_id", user_id)
+        .execute()
+    )
