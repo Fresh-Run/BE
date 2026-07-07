@@ -396,8 +396,12 @@ async def generate_route(
     Free-tier users are limited to 3 generations per KST week (429 when
     exceeded, checked before any external API call). Premium is unlimited.
     """
+    # 쿼터 슬롯을 Gemini 전에 원자 예약 (M3): 동시 N건 중 한도 내만 통과.
+    # tier→limit 해석은 Python(lazy IAP 강등 포함).
     try:
-        await quota_service.check_ai_quota(user.user_id)
+        tier = await quota_service.get_tier(user.user_id)
+        limit = None if tier == "premium" else quota_service.AI_WEEKLY_LIMIT
+        reservation_id = await quota_service.reserve_ai_generation(user.user_id, limit)
     except quota_service.QuotaExceeded as exc:
         raise HTTPException(
             status_code=429,
@@ -410,11 +414,13 @@ async def generate_route(
             },
         )
     except Exception as exc:  # noqa: BLE001
-        raise _bad_gateway("Failed to check quota", exc)
+        raise _bad_gateway("Failed to reserve quota", exc)
 
     try:
         route = await route_service.create_running_route(req, user_id=user.user_id)
     except Exception:  # noqa: BLE001
+        # 생성 실패 = 무료: 예약 해제 (기존 "실패는 쿼터 미소모" 시맨틱 보존)
+        await quota_service.release_ai_generation(reservation_id)
         logger.warning("코스 생성 실패", exc_info=True)
         raise HTTPException(
             status_code=502,
@@ -424,8 +430,7 @@ async def generate_route(
             },
         )
 
-    # Only successful generations consume quota (a 502 above costs nothing).
-    await quota_service.record_ai_generation(user.user_id)
+    # 성공: 예약이 곧 소모 기록 — 별도 record 없음.
     return route
 
 
@@ -1078,8 +1083,11 @@ async def create_crew(
     Free tier may own FREE_CREW_LIMIT(=1) crews; premium is unlimited.
     Deleting a crew or transferring ownership frees the slot again.
     """
+    # tier→limit 해석은 Python(lazy IAP 강등 포함), 한도 검사+생성은 원자 RPC(M8).
     try:
-        await quota_service.ensure_crew_creation(user.user_id)
+        tier = await quota_service.get_tier(user.user_id)
+        limit = None if tier == "premium" else quota_service.FREE_CREW_LIMIT
+        return await crew_service.create_crew(req, owner_id=user.user_id, limit=limit)
     except quota_service.CrewLimitExceeded as exc:
         raise HTTPException(
             status_code=403,
@@ -1093,11 +1101,6 @@ async def create_crew(
                 "limit": exc.limit,
             },
         )
-    except Exception as exc:  # noqa: BLE001
-        raise _bad_gateway("Failed to check crew limit", exc)
-
-    try:
-        return await crew_service.create_crew(req, owner_id=user.user_id)
     except Exception as exc:  # noqa: BLE001
         raise _bad_gateway("Failed to create crew", exc)
 

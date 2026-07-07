@@ -233,40 +233,35 @@ async def _cleanup_member_rsvps(crew_id: str, user_id: str) -> None:
 # --- Operations --------------------------------------------------------------
 
 
-async def create_crew(req: CrewCreate, owner_id: str) -> CrewResponse:
-    """Create a crew and add the owner to crew_members (role='owner')."""
-    supabase = get_supabase_admin()
-    record = {
-        "owner_id": owner_id,
-        "name": req.name,
-        "description": req.description,
-        "area": req.area,
-        "radius_km": req.radius_km,
-        "sport": req.sport,
-        "level": req.level.value,
-        "max_members": req.max_members,
-        "is_public": req.is_public,
-        "join_policy": req.join_policy,
-        "active_days": req.active_days,
-        "active_time": req.active_time,
-        "color": req.color,
-        "sido": req.sido,
-        "sigungu": req.sigungu,
-        "lat": req.lat,
-        "lng": req.lng,
-        "tags": req.tags,
-    }
-    res = await asyncio.to_thread(
-        lambda: supabase.table("crews").insert(record).execute()
-    )
-    crew = res.data[0]
+async def create_crew(
+    req: CrewCreate, owner_id: str, limit: int | None = None
+) -> CrewResponse:
+    """Create a crew + owner membership atomically (M8).
 
-    # Owner is automatically a member.
-    await asyncio.to_thread(
-        lambda: supabase.table("crew_members")
-        .insert({"crew_id": crew["id"], "user_id": owner_id, "role": "owner"})
-        .execute()
-    )
+    create_crew_limited RPC가 owner advisory lock으로 per-owner 직렬화 후 count를
+    검사하고 crews·crew_members insert를 한 트랜잭션으로 수행 → 동시 2건이 free
+    한도를 초과할 수 없음. limit=None이면 검사 없이 생성(premium). tier→limit
+    해석은 호출부(핸들러)가 담당. 한도 초과 시 CrewLimitExceeded(기존 계약).
+    """
+    supabase = get_supabase_admin()
+    try:
+        res = await asyncio.to_thread(
+            lambda: supabase.rpc(
+                "create_crew_limited",
+                {
+                    "_owner_id": owner_id,
+                    "_limit": limit,
+                    "_crew": req.model_dump(mode="json"),  # level enum→str 등
+                },
+            ).execute()
+        )
+    except APIError as exc:
+        if "crew_limit_exceeded" in str(exc):
+            from app.services.quota_service import CrewLimitExceeded
+            raise CrewLimitExceeded(limit) from exc
+        raise
+    # 단일 composite(public.crews) 반환 → res.data는 dict (TABLE 반환과 달리 list 아님)
+    crew = res.data[0] if isinstance(res.data, list) else res.data
     logger.info("Created crew (id=%s, owner=%s).", crew["id"], owner_id)
     return await _one_response(crew, member_count=1)
 
@@ -447,24 +442,27 @@ async def _admit_member(crew: dict, user_id: str, *, notify_owner: bool = True) 
     approvals — the owner just approved it themselves.
     """
     crew_id = crew["id"]
-    counts = await _member_counts([crew_id])
-    current = counts.get(crew_id, 0)
-    if crew["max_members"] is not None and current >= crew["max_members"]:
-        raise CrewFull()
-
     supabase = get_supabase_admin()
-    try:
-        await asyncio.to_thread(
-            lambda: supabase.table("crew_members")
-            .insert({"crew_id": crew_id, "user_id": user_id, "role": "member"})
-            .execute()
-        )
-    except APIError as exc:
-        if exc.code != _UNIQUE_VIOLATION:
-            raise
-        return current  # admitted concurrently — treat as success
+    # 정원 검사+삽입을 admit_crew_member RPC로 원자화 (H3): crews 행 FOR UPDATE로
+    # per-crew 직렬화 → 동시 가입/승인이 max_members를 초과할 수 없음.
+    res = await asyncio.to_thread(
+        lambda: supabase.rpc(
+            "admit_crew_member",
+            {"_crew_id": crew_id, "_user_id": user_id, "_role": "member"},
+        ).execute()
+    )
+    row = res.data[0]  # {'status':..., 'member_count':...}
+    status = row["status"]
+    if status == "crew_full":
+        raise CrewFull()
+    if status == "crew_not_found":
+        raise CrewNotFound()
+    current = row["member_count"]
+    if status == "already_member":  # 멱등 — 함수 내부 잠금이라 중복 insert 자체가 없음
+        return current
     logger.info("User %s joined crew %s.", user_id, crew_id)
 
+    # status == 'admitted' — 실제 새 가입일 때만 알림
     if notify_owner:
         try:
             await notification_service.create_notification(
@@ -477,7 +475,7 @@ async def _admit_member(crew: dict, user_id: str, *, notify_owner: bool = True) 
         except Exception:
             logger.warning("crew_joined 알림 생성 실패", exc_info=True)
 
-    return current + 1
+    return current  # RPC member_count = admitted 후 새 카운트
 
 
 async def _create_join_request(crew: dict, user_id: str) -> JoinRequestResponse:

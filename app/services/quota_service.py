@@ -14,6 +14,8 @@ import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 
+from postgrest.exceptions import APIError
+
 from app.core.supabase_client import get_supabase_admin
 from app.models.schemas import AiGenerationQuota, QuotaResponse
 from app.services.run_service import _KST, _week_start_utc
@@ -59,24 +61,9 @@ class CrewLimitExceeded(Exception):
         super().__init__("Free-tier crew creation limit reached")
 
 
-async def ensure_crew_creation(user_id: str) -> None:
-    """크루 생성 한도 게이트 — 전용(ensure_premium)이 아닌 카운트 한도.
-
-    free는 자기가 owner인 크루 FREE_CREW_LIMIT개까지, 프리미엄은 무제한.
-    count 기반이라 크루 삭제·소유권 위임으로 슬롯이 자연히 다시 빈다.
-    """
-    if await get_tier(user_id) == "premium":
-        return
-    supabase = get_supabase_admin()
-    res = await asyncio.to_thread(
-        lambda: supabase.table("crews")
-        .select("id", count="exact")
-        .eq("owner_id", user_id)
-        .limit(1)
-        .execute()
-    )
-    if (res.count or 0) >= FREE_CREW_LIMIT:
-        raise CrewLimitExceeded(FREE_CREW_LIMIT)
+# 크루 생성 한도는 create_crew_limited RPC로 원자화(M8) — 옛 count-then-insert
+# 게이트(ensure_crew_creation)는 제거. tier→limit 계산은 create_crew 핸들러가 하고
+# CrewLimitExceeded는 crew_service.create_crew가 RPC 에러에서 매핑한다.
 
 
 def _reset_at_kst() -> str:
@@ -178,36 +165,51 @@ async def _generations_this_week(user_id: str) -> int:
     return res.count or 0
 
 
-async def check_ai_quota(user_id: str) -> None:
-    """Raise QuotaExceeded if a free user has no generations left this week.
+# AI 쿼터 검사는 reserve_ai_generation RPC로 원자화(M3) — 옛 check-then-record
+# 게이트(check_ai_quota)·기록(record_ai_generation)은 reserve/release로 대체.
 
-    Called BEFORE the OpenAI/map pipeline so a blocked request costs nothing.
-    Premium users are never blocked.
+
+async def reserve_ai_generation(user_id: str, limit: int | None) -> str:
+    """Gemini 호출 전에 쿼터 슬롯을 원자 예약 (M3). 예약 id 반환.
+
+    reserve_ai_generation RPC가 user advisory lock으로 직렬화 후 주간 count를
+    검사하고 route_generations에 삽입 → 동시 N건 중 한도 내 개수만 예약 성공,
+    나머지는 QuotaExceeded. limit=None(premium)은 검사 없이 로그만 남김
+    (get_quota의 used 표시 보존). 생성 실패 시 release_ai_generation으로 회수.
     """
-    tier, used = await asyncio.gather(
-        get_tier(user_id), _generations_this_week(user_id)
-    )
-    if tier == "premium":
+    supabase = get_supabase_admin()
+    try:
+        res = await asyncio.to_thread(
+            lambda: supabase.rpc(
+                "reserve_ai_generation",
+                {"_user_id": user_id, "_limit": limit, "_week_start": _week_start_utc()},
+            ).execute()
+        )
+    except APIError as exc:
+        if "quota_exceeded" in str(exc):
+            # 예약 거부 시점의 used는 한도와 같음(그래서 막힌 것)
+            raise QuotaExceeded(used=limit or 0, reset_at=_reset_at_kst()) from exc
+        raise
+    return res.data  # RPC returns the reservation uuid (scalar)
+
+
+async def release_ai_generation(reservation_id: str) -> None:
+    """예약 해제 (생성 실패 시) — 예약 행 삭제로 '실패는 무료' 시맨틱 보존.
+
+    Best-effort: 삭제 실패해도 다음 주 리셋으로 회수되므로 치명적이지 않다.
+    """
+    if not reservation_id:
         return
-    if used >= AI_WEEKLY_LIMIT:
-        raise QuotaExceeded(used=used, reset_at=_reset_at_kst())
-
-
-async def record_ai_generation(user_id: str) -> None:
-    """Log one successful AI generation (consumes quota).
-
-    Best-effort: the route was already generated (and paid for), so a
-    logging failure must not break the response — it just undercounts.
-    """
     try:
         supabase = get_supabase_admin()
         await asyncio.to_thread(
             lambda: supabase.table("route_generations")
-            .insert({"user_id": user_id})
+            .delete()
+            .eq("id", reservation_id)
             .execute()
         )
     except Exception:  # noqa: BLE001
-        logger.warning("AI 생성 쿼터 기록 실패", exc_info=True)
+        logger.warning("AI 예약 해제 실패 (다음 주 리셋으로 회수)", exc_info=True)
 
 
 async def get_quota(user_id: str) -> QuotaResponse:
