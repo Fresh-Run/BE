@@ -258,6 +258,13 @@ class PmReading(BaseModel):
     grade: str = Field(..., description="좋음 / 보통 / 나쁨 / 매우나쁨")
 
 
+class UvReading(BaseModel):
+    """자외선 지수 + 기상청 단계."""
+
+    value: float = Field(..., description="UV index (OpenWeather uvi).")
+    grade: str = Field(..., description="낮음 / 보통 / 높음 / 매우높음 / 위험")
+
+
 class RunningIndex(BaseModel):
     """Rule-based '오늘 뛰기 좋은 날' score (no LLM call)."""
 
@@ -283,6 +290,7 @@ class WeatherResponse(BaseModel):
     rain_1h_mm: Optional[float] = Field(None, description="최근 1시간 강수량(mm).")
     pm25: Optional[PmReading] = Field(None, description="미세먼지 API 실패 시 null.")
     pm10: Optional[PmReading] = None
+    uv: Optional[UvReading] = Field(None, description="자외선 API 실패 시 null (타일 숨김).")
     running_index: RunningIndex
     fetched_at: str = Field(..., description="원본 데이터 조회 시각 (캐시 공유됨).")
 
@@ -660,6 +668,7 @@ class InsightPattern(BaseModel):
     )
     time_of_day_pct: Optional[int] = Field(None, description="최빈 시간대 비율 %.")
     longest_streak_days: int = Field(0, description="월 내 최장 연속 러닝 일수.")
+    run_days: int = Field(0, description="월 내 러닝한 날 수 (꾸준함 지표).")
 
 
 class InsightPlanItem(BaseModel):

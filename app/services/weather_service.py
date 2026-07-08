@@ -17,7 +17,13 @@ from datetime import datetime, timezone
 import httpx
 
 from app.core.config import settings
-from app.models.schemas import PmReading, RunningIndex, WeatherResponse, WeatherSettings
+from app.models.schemas import (
+    PmReading,
+    RunningIndex,
+    UvReading,
+    WeatherResponse,
+    WeatherSettings,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +81,21 @@ def _cache_put(key: tuple[float, float], value: WeatherResponse) -> None:
 _PM25_BOUNDS = (15.0, 35.0, 75.0)   # 좋음 / 보통 / 나쁨 upper bounds
 _PM10_BOUNDS = (30.0, 80.0, 150.0)
 _GRADE_ORDER = ["좋음", "보통", "나쁨", "매우나쁨"]
+
+_UV_BOUNDS = (2.0, 5.0, 7.0, 10.0)  # 기상청 단계: 낮음/보통/높음/매우높음 upper bounds
+
+
+def _uv_grade(value: float) -> str:
+    low, moderate, high, very_high = _UV_BOUNDS
+    if value <= low:
+        return "낮음"
+    if value <= moderate:
+        return "보통"
+    if value <= high:
+        return "높음"
+    if value <= very_high:
+        return "매우높음"
+    return "위험"
 
 
 def _pm_grade(value: float, bounds: tuple[float, float, float]) -> str:
@@ -262,6 +283,28 @@ async def _fetch_current(
     return res.json()
 
 
+async def _fetch_uv(
+    client: httpx.AsyncClient, lat: float, lng: float, key: str
+) -> float | None:
+    """UV index; best-effort — any failure returns None (타일 숨김).
+
+    /data/2.5/uvi는 공식 deprecated지만 무료 키로 동작 확인(2026-07-09 실검증).
+    One Call 3.0(uvi 포함)은 별도 구독이라 보류 — 이 엔드포인트가 끊기면
+    null이 되며(무해), 그때 One Call/Open-Meteo 전환 검토.
+    """
+    try:
+        res = await client.get(
+            f"{settings.openweather_base_url}/data/2.5/uvi",
+            params={"lat": lat, "lon": lng, "appid": key},
+        )
+        if res.status_code != 200:
+            return None
+        return float(res.json()["value"])
+    except Exception:  # noqa: BLE001 — partial failure must not break weather
+        logger.warning("OpenWeather uvi 호출 실패 (자외선 없이 응답)")
+        return None
+
+
 async def _fetch_air(
     client: httpx.AsyncClient, lat: float, lng: float, key: str
 ) -> dict | None:
@@ -291,9 +334,10 @@ async def get_weather(lat: float, lng: float) -> WeatherResponse:
 
     api_key = settings.openweather_api_key
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-        current, air = await asyncio.gather(
+        current, air, uv_v = await asyncio.gather(
             _fetch_current(client, lat, lng, api_key),
             _fetch_air(client, lat, lng, api_key),
+            _fetch_uv(client, lat, lng, api_key),
         )
 
     main = current.get("main", {})
@@ -318,6 +362,8 @@ async def get_weather(lat: float, lng: float) -> WeatherResponse:
         if pm25_v is not None else None,
         pm10=PmReading(value=pm10_v, grade=_pm_grade(pm10_v, _PM10_BOUNDS))
         if pm10_v is not None else None,
+        uv=UvReading(value=round(uv_v, 1), grade=_uv_grade(uv_v))
+        if uv_v is not None else None,
         running_index=_running_index(feels, code, wind, pm25_v, pm10_v, humidity),
         fetched_at=datetime.now(timezone.utc).isoformat(),
     )

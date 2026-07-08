@@ -145,6 +145,7 @@ def _compute_pattern(rows: list[dict]) -> InsightPattern:
         time_of_day=time_of_day,
         time_of_day_pct=pct,
         longest_streak_days=best,
+        run_days=len(days),
     )
 
 
@@ -244,20 +245,11 @@ async def get_monthly_insight(
     records = _month_records(month_rows, rows_until_end, year, month)
     pattern = _compute_pattern(month_rows)
 
-    ai = await _ai_block(
-        user_id, year, month, run_count=len(month_rows),
-        stats_kwargs={
-            "year": year,
-            "month": month,
-            "total_distance_km": stats.total_distance_km,
-            "run_count": stats.run_count,
-            "avg_pace_sec_per_km": stats.avg_pace_sec_per_km,
-            "delta_distance_km": stats.delta_distance_km if prev_rows else None,
-            "weeks": [w.model_dump() for w in weeks],
-            "records": [r.model_dump() for r in records],
-            "pattern": pattern.model_dump(),
-        },
-    )
+    # AI 블록(coaching·plan) 생성 중단 (2026-07-09 결정: Gemini 비용 + 로딩
+    # UX, 프론트는 렌더 제거·타입 유지). ai 필드는 하위 호환용으로 항상 null.
+    # 복원: 아래를 _ai_block(...) 호출로 되돌리면 됨. _ai_block·
+    # generate_monthly_insight·monthly_insights 캐시의 완전 제거는 출시기 정리.
+    ai = None
 
     return MonthlyInsightResponse(
         year=year, month=month, stats=stats, weeks=weeks,

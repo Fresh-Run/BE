@@ -1,8 +1,9 @@
 """
-Integration test: AI 월간 인사이트 (GET /me/insights/monthly, 프리미엄)
-1) 결정론 — 주차 분할(KST 경계)·월 PR+all_time_best·패턴 버킷·streak·
-   프롬프트 조립·403/422·캐시 3케이스·run 0 달 (Gemini 호출 0)
-2) 실호출 1회 — 지난달 fixture runs → 구조·한국어 → 재호출 캐시 → 쿼터 미차감
+Integration test: 월간 인사이트 (GET /me/insights/monthly, 프리미엄)
+1) 결정론 — 주차 분할(KST 경계)·월 PR+all_time_best·패턴 버킷·streak·run_days·
+   프롬프트 조립(dead code 문서화)·403/422·AI 생성 중단(ai 항상 null, Gemini 0회)
+2) HTTP 통합 — 지난달 fixture runs → 수치 블록 + ai=null → 쿼터 미차감
+   (2026-07-09 AI 블록 생성 중단 — Gemini 실호출 0회)
 Run: python tests/test_monthly_insight_integration.py
 """
 from __future__ import annotations
@@ -86,9 +87,12 @@ def api(c, method, path, tok, **kw):
 
 
 def mk_run(c, user_id, ran_at, d, dur, pace=None):
+    # 직접 insert라 verification을 verified로 박음 — records는 verified만
+    # 자격(집계 정합 정책)이라 fixture가 GPS 트랙 없이도 PB 집계에 잡히게.
     r = c.post(f"{_SB}/rest/v1/runs", headers={**_ADM, "Prefer": "return=minimal"},
                json={"user_id": user_id, "ran_at": ran_at, "distance_km": d,
-                     "duration_sec": dur, "avg_pace_sec_per_km": pace})
+                     "duration_sec": dur, "avg_pace_sec_per_km": pace,
+                     "verification": "verified"})
     assert r.status_code in (200, 201), r.text[:200]
 
 
@@ -99,8 +103,10 @@ def phase1_pure():
     from app.services.openai_service import _build_insight_prompt, _insight_system
 
     def row(i, ran_at, d=5.0, dur=1500, pace=300):
+        # PB(records)는 verified만 자격 (집계 정합 정책)
         return {"id": f"r{i}", "ran_at": ran_at, "distance_km": d,
-                "duration_sec": dur, "avg_pace_sec_per_km": pace}
+                "duration_sec": dur, "avg_pace_sec_per_km": pace,
+                "verification": "verified"}
 
     step("1-1. 주차 분할 — KST 경계 (2026-07: 1일=수요일 → 5주)")
     rows = [
@@ -140,8 +146,10 @@ def phase1_pure():
     assert p.weekday_counts == [2, 1, 1, 0, 0, 0, 0]
     assert p.time_of_day == "morning" and p.time_of_day_pct == 50
     assert p.longest_streak_days == 3
-    assert ins._compute_pattern([]).time_of_day is None
-    ok("요일 분포 ✓ 최빈 아침 50% ✓ streak 3 ✓ 빈 달 None ✓")
+    assert p.run_days == 4, f"러닝한 날 수(중복 없는 날짜): {p.run_days}"
+    empty = ins._compute_pattern([])
+    assert empty.time_of_day is None and empty.run_days == 0
+    ok("요일 분포 ✓ 최빈 아침 50% ✓ streak 3 ✓ run_days 4 ✓ 빈 달 0 ✓")
 
     step("1-4. 프롬프트 조립 — 가드 + 수치 포함 + 부재 데이터 미언급")
     _sys = _insight_system("ko")
@@ -175,34 +183,25 @@ def phase1_pure():
 
 
 def phase1_cache_mock(uid_prem, prev2_y, prev2_m, cur_y, cur_m, c):
-    """전전달(prev2)·이번 달을 사용 — phase2 실호출(지난달 캐시 선점)과 격리."""
+    """AI 생성 중단(2026-07-09) 계약 — run이 있어도 ai=null + Gemini 0회.
+
+    (구 캐시 3케이스 테스트는 _ai_block 미호출로 무의미해져 교체. 함수·캐시
+    테이블은 출시기 완전 제거 예정이라 dead code로만 남아 있음.)
+    """
     from app.services import insight_service as ins
 
-    step("1-6. 캐시 3케이스 (mock): 재사용 / 이번 달 run 추가 → 재생성 / 지난달 유지")
-    fake = {"coaching": "테스트 코칭 문단입니다. 꾸준했어요. 다음 달도 화이팅.",
-            "plan": [{"slot": "goal", "title": "목표", "body": "b"},
-                     {"slot": "focus", "title": "집중", "body": "b"},
-                     {"slot": "challenge", "title": "도전", "body": "b"}]}
-    gen = AsyncMock(return_value=fake)
+    step("1-6. AI 생성 중단: run 있는 달도 ai=null + Gemini 미호출")
+    gen = AsyncMock()
     mk_run(c, uid_prem, f"{cur_y}-{cur_m:02d}-01T08:00:00+09:00", 3.0, 1000, 333)
     with patch.object(ins.openai_service, "generate_monthly_insight", gen):
-        # 지난(전전)달: 2회 조회 → 생성 1회 + from_cache
-        r1 = asyncio.run(ins.get_monthly_insight(uid_prem, prev2_y, prev2_m))
-        r2 = asyncio.run(ins.get_monthly_insight(uid_prem, prev2_y, prev2_m))
-        assert gen.call_count == 1 and r1.ai.from_cache is False and r2.ai.from_cache is True
-        # 이번 달: 생성(2회째) → run 추가 → run_count 불일치 → 재생성(3회째)
-        r3 = asyncio.run(ins.get_monthly_insight(uid_prem, cur_y, cur_m))
-        assert gen.call_count == 2 and r3.ai.from_cache is False
-        mk_run(c, uid_prem, f"{cur_y}-{cur_m:02d}-02T09:00:00+09:00", 2.0, 700, 350)
-        r4 = asyncio.run(ins.get_monthly_insight(uid_prem, cur_y, cur_m))
-        assert gen.call_count == 3 and r4.ai.from_cache is False, "run 추가 시 재생성"
-        assert r4.stats.run_count == r3.stats.run_count + 1, "수치는 항상 최신"
-        # 지난 달들은 이번 달 run 추가와 무관하게 캐시 유지
-        r5 = asyncio.run(ins.get_monthly_insight(uid_prem, prev2_y, prev2_m))
-        assert gen.call_count == 3 and r5.ai.from_cache is True
-    ok("같은 달 캐시 ✓ 이번 달 run_count 무효화 ✓ 지난달 영구 ✓ 수치 fresh ✓")
+        r1 = asyncio.run(ins.get_monthly_insight(uid_prem, prev2_y, prev2_m))  # run 1개 달
+        r2 = asyncio.run(ins.get_monthly_insight(uid_prem, cur_y, cur_m))      # run 있는 이번 달
+    assert gen.call_count == 0, "Gemini가 호출되면 안 됨 (생성 중단)"
+    assert r1.ai is None and r2.ai is None, "ai는 항상 null (하위 호환 필드)"
+    assert r1.stats.run_count >= 1 and r2.stats.run_count >= 1, "수치 블록은 정상"
+    ok("run 있는 달 2곳 ai=null ✓ Gemini 0회 ✓ 수치 블록 유지 ✓")
 
-    step("1-7. run 0회 달 → ai=null + Gemini 미호출")
+    step("1-7. run 0회 달 → ai=null + Gemini 미호출 (기존 계약 그대로)")
     gen0 = AsyncMock()
     with patch.object(ins.openai_service, "generate_monthly_insight", gen0):
         r = asyncio.run(ins.get_monthly_insight(uid_prem, 2020, 1))
@@ -224,12 +223,10 @@ def phase1_gates(c, tok_free, tok_prem):
     ok("403 premium_required ✓ month/year 검증 422 ✓")
 
 
-# ═══ Phase 2: 실호출 1회 ═════════════════════════════════════════════════════
+# ═══ Phase 2: HTTP 통합 (Gemini 실호출 0 — 생성 중단) ═══════════════════════
 
 def phase2(c, tok_prem, prev_y, prev_m):
-    import re
-
-    step("2-1. Gemini 실호출: 지난달 리포트 → 구조·한국어")
+    step("2-1. 지난달 리포트 — 수치 블록 + ai=null (생성 중단)")
     r = api(c, "GET", "/me/insights/monthly", tok_prem,
             params={"year": prev_y, "month": prev_m}, timeout=90)
     assert r.status_code == 200, r.text[:400]
@@ -238,21 +235,17 @@ def phase2(c, tok_prem, prev_y, prev_m):
     assert len(d["weeks"]) >= 4 and sum(w["run_count"] for w in d["weeks"]) == 5
     assert {x["type"] for x in d["records"]} >= {"best_pace", "longest_distance"}
     assert sum(d["pattern"]["weekday_counts"]) == 5
-    ai = d["ai"]
-    assert ai and ai["from_cache"] is False
-    assert re.search(r"[가-힣]", ai["coaching"]) and len(ai["coaching"]) >= 30
-    slots = [p["slot"] for p in ai["plan"]]
-    assert slots == [s for s in ("goal", "focus", "challenge") if s in slots] and "goal" in slots
-    ok(f"수치 블록 ✓ coaching {len(ai['coaching'])}자 ✓ plan {slots} — "
-       f"{ai['coaching'][:60]}…")
+    assert d["pattern"]["run_days"] == 5, f"run_days: {d['pattern']}"
+    assert d["ai"] is None, "ai는 항상 null (생성 중단, 필드는 하위 호환 유지)"
+    ok("수치 블록 ✓ run_days=5 ✓ ai=null ✓")
 
-    step("2-2. 재호출 → 캐시 (비용 0) + 쿼터 미차감")
+    step("2-2. 재호출 동일 + 쿼터 미차감")
     r = api(c, "GET", "/me/insights/monthly", tok_prem,
             params={"year": prev_y, "month": prev_m})
-    assert r.status_code == 200 and r.json()["ai"]["from_cache"] is True
+    assert r.status_code == 200 and r.json()["ai"] is None
     r = api(c, "GET", "/me/quota", tok_prem)
     assert r.json()["ai_generation"]["used"] == 0
-    ok("from_cache ✓ 쿼터 used=0 ✓ (인사이트는 쿼터 별개)")
+    ok("ai=null 일관 ✓ 쿼터 used=0 ✓")
 
 
 def run():

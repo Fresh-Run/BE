@@ -102,6 +102,13 @@ def phase1():
     assert ws._pm_grade(81.0, ws._PM10_BOUNDS) == "나쁨"
     ok("PM2.5·PM10 경계값 ✓")
 
+    step("1-2b. UV 등급 (기상청 단계)")
+    for v, g in ((0.0, "낮음"), (2.0, "낮음"), (2.1, "보통"), (5.0, "보통"),
+                 (5.1, "높음"), (7.0, "높음"), (7.1, "매우높음"), (10.0, "매우높음"),
+                 (10.1, "위험")):
+        assert ws._uv_grade(v) == g, (v, g, ws._uv_grade(v))
+    ok("UV 5단계 경계값 ✓")
+
     step("1-3. 캐시 키 반올림 (~1.1km 격자)")
     assert ws._cache_key(37.5445, 127.0374) == ws._cache_key(37.5449, 127.0351)
     assert ws._cache_key(37.5445, 127.0374) != ws._cache_key(37.60, 127.0374)
@@ -136,10 +143,11 @@ WEATHER_JSON = {
     "weather": [{"id": 800, "main": "Clear", "description": "맑음"}],
 }
 AIR_JSON = {"list": [{"components": {"pm2_5": 12.0, "pm10": 28.0}}]}
+UVI_JSON = {"value": 6.23}
 
 
 class MockOW(BaseHTTPRequestHandler):
-    counts = {"weather": 0, "air": 0}
+    counts = {"weather": 0, "air": 0, "uv": 0}
 
     def _send(self, code, obj):
         body = json.dumps(obj).encode()
@@ -164,6 +172,12 @@ class MockOW(BaseHTTPRequestHandler):
                 self._send(500, {"error": "boom"})
             else:
                 self._send(200, AIR_JSON)
+        elif parsed.path == "/data/2.5/uvi":
+            MockOW.counts["uv"] += 1
+            if lat == 13.0:
+                self._send(500, {"error": "boom"})
+            else:
+                self._send(200, UVI_JSON)
         else:
             self._send(404, {})
 
@@ -213,8 +227,9 @@ def phase2(c, tok):
         assert d["pm10"] == {"value": 28.0, "grade": "좋음"}
         assert d["running_index"]["score"] == 100
         assert d["running_index"]["label"] == "최고"
+        assert d["uv"] == {"value": 6.2, "grade": "높음"}, d.get("uv")
         assert d["fetched_at"]
-        ok("전체 필드 파싱 ✓ PM 등급 ✓ 러닝지수 100 ✓")
+        ok("전체 필드 파싱 ✓ PM 등급 ✓ UV 6.2 높음 ✓ 러닝지수 100 ✓")
 
         step("2-2. 캐시: 같은 격자 재요청 → 외부 호출 없음")
         n0 = MockOW.counts["weather"]
@@ -248,6 +263,14 @@ def phase2(c, tok):
         assert d["running_index"]["score"] == 100, "먼지 없이 지수 계산돼야 함"
         ok("부분 실패 격리 ✓ (200 + pm null + 지수 유지)")
 
+        step("2-6. 자외선 API만 실패 → 200 + uv null (타일 숨김)")
+        r = w(13.0, 127.0)
+        assert r.status_code == 200, r.text[:300]
+        d = r.json()
+        assert d["uv"] is None and d["pm25"] is not None
+        assert d["running_index"]["score"] == 100
+        ok("uv만 null ✓ 나머지 정상 ✓")
+
     finally:
         proc.terminate()
         try:
@@ -271,7 +294,15 @@ def phase3(c, tok):
         assert isinstance(d["temp_c"], (int, float))
         assert 0 <= d["running_index"]["score"] <= 100
         assert d["running_index"]["comment"]
-        ok(f"실호출 200 ✓ {d.get('area')}: {d['temp_c']}°C, "
+        # UV: deprecated 엔드포인트 실확인 — 끊기면 null(무해)이라 warn만
+        if d.get("uv") is not None:
+            assert d["uv"]["value"] >= 0 and d["uv"]["grade"] in (
+                "낮음", "보통", "높음", "매우높음", "위험")
+            uv_txt = f"UV {d['uv']['value']} [{d['uv']['grade']}]"
+        else:
+            warn("실호출 uv=null — /2.5/uvi 서비스 종료 가능성, 전환 검토 신호")
+            uv_txt = "UV null"
+        ok(f"실호출 200 ✓ {d.get('area')}: {d['temp_c']}°C, {uv_txt}, "
            f"지수 {d['running_index']['score']}점 [{d['running_index']['label']}]")
     elif r.status_code == 503 and r.json().get("detail", {}).get("error") == "weather_key_inactive":
         warn("키 활성화 대기 — 스킵 (활성화 후 이 테스트만 다시 돌리면 됨)")
