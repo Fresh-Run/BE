@@ -8,18 +8,27 @@ Run with:  python tests/test_ranking_integration.py
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 import httpx
 
 BASE = "http://localhost:8000/api"
 SUPABASE_URL = "https://jlmmqnpddkokyintlawd.supabase.co"
-ANON_KEY = (
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
-    ".eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpsbW1xbnBkZGtva3lpbnRsYXdkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE3NTkxMTgsImV4cCI6MjA5NzMzNTExOH0"
-    ".l2yL07n7V84FyGvS9SZiO7La6x7aAcIV2D02R3pONSo"
-)
-SERVICE_KEY = "sb_secret_och_B_efnohN80MjSTFong_OtyRUZCH"
+
+
+def _keys() -> tuple[str, str]:
+    env = os.path.join(os.path.dirname(__file__), "..", ".env")
+    anon = svc = ""
+    with open(env) as f:
+        for line in f:
+            line = line.strip()
+            if   line.startswith("SUPABASE_KEY="):              anon = line.split("=", 1)[1]
+            elif line.startswith("SUPABASE_SERVICE_ROLE_KEY="): svc  = line.split("=", 1)[1]
+    return anon, svc
+
+
+ANON_KEY, SERVICE_KEY = _keys()
 
 ADMIN_HEADERS = {
     "apikey": SERVICE_KEY,

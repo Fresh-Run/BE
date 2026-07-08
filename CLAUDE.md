@@ -20,7 +20,8 @@
 4. `docs/API_GUIDE.md` 갱신 — 프론트가 소비하는 데이터면 **소비 규칙 표**까지
    (어느 필드로 무엇을 하는지).
 5. 커밋 전 키 패턴 검사 clean:
-   `git grep --cached -E "sk-[A-Za-z0-9]{16,}|eyJ[A-Za-z0-9_-]{30,}|AIza"`
+   `git grep --cached -E "sk-[A-Za-z0-9]{16,}|eyJ[A-Za-z0-9_-]{30,}|AIza|sb_(secret|publishable)_"`
+   (【제안】 `sb_*`는 Supabase 새 키 형식 — 구패턴이 못 잡은 실누출 1건에서 추가)
 6. 임시 테스트 데이터 정리, **키·초대코드 값 화면 출력 0**.
 7. 스테이징 영향 시: `fly deploy --app freshrun-api` + `/health` + 해당 기능
    스모크 1사이클(→ `freshrun-deploy` 스킬).
@@ -52,7 +53,8 @@
   direct(`db.*`)는 IPv6, transaction pooler(6543)는 pg_dump 불가.
 - **Gemini**: thinking 기본 ON → 구조화 호출(function calling)은
   `reasoning_effort="none"` 필수. 자연어 생성물(코치·인사이트)은 thinking 유지.
-  선불 크레딧 소진 시 429 RESOURCE_EXHAUSTED.
+  선불 크레딧 소진 시 429 RESOURCE_EXHAUSTED → 서버는 502로 변환, Sentry에
+  캡처됨(체인에 RateLimitError).
 - **httpx INFO 로그가 요청 URL 전체**(쿼리스트링의 키 포함)를 기록 — 로그 레벨
   유지, 민감값은 쿼리스트링 금지(POST body).
 - **uvicorn은 git pull로 코드가 안 바뀐다** — 수정 후 반드시 재시작. 테스트
@@ -67,6 +69,9 @@
   `fly scale count 1`로 축소.
 - **데모 계정**: test1(premium, 수동)·test2·demo1~5, 비번 전부 `test1234`.
   시드는 멱등(감지-스킵)·삭제 금지.
+- supabase-py 동기 httpx의 **유휴 HTTP/2 keepalive 연결**이 상대편 idle timeout
+  후 재사용되며 **간헐 502** 유발 가능 — 자가 회복형(재시도 1초 내 성공). 상세와
+  대응 카드는 `docs/AUDIT_BACKLOG.md` "운영 관측" 절.
 
 ## 하위 호환 — additive가 기본
 

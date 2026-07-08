@@ -40,6 +40,10 @@ fly logs --app freshrun-api --no-tail    # 최근 로그 한 번(부팅 tracebac
 fly logs --app freshrun-api              # 실시간 스트리밍
 ```
 
+> ⚠️ **fly logs 링버퍼는 짧다** — 시간이 지나면 소실(실사례: 502 예외 클래스
+> 미확정). 이슈 발생 시 즉시 `--no-tail`로 캡처해 둘 것. 【제안】 사후 조사는
+> Sentry 이벤트(chained exception 상세)가 1차 소스 — 스테이징 라이브.
+
 **문제 시 1분 점검:** ① `fly status`(머신 started/checks) → ② `fly logs`(부팅
 traceback = secret 누락이면 여기) → ③ `curl .../health`(200 production).
 
