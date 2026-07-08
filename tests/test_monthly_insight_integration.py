@@ -237,7 +237,17 @@ def phase2(c, tok_prem, prev_y, prev_m):
     assert sum(d["pattern"]["weekday_counts"]) == 5
     assert d["pattern"]["run_days"] == 5, f"run_days: {d['pattern']}"
     assert d["ai"] is None, "ai는 항상 null (생성 중단, 필드는 하위 호환 유지)"
-    ok("수치 블록 ✓ run_days=5 ✓ ai=null ✓")
+    # pace_trend: [전전전(무기록 null), 전전(4km/1300s=325), 조회월(=stats와 일치)]
+    pt = d["pace_trend"]
+    assert len(pt) == 3, pt
+    assert (pt[2]["year"], pt[2]["month"]) == (prev_y, prev_m), "마지막 = 조회 월"
+    assert (pt[0]["year"], pt[0]["month"]) < (pt[1]["year"], pt[1]["month"]) \
+        or pt[0]["year"] < pt[1]["year"], "오래된 달부터"
+    assert pt[0]["avg_pace_sec_per_km"] is None, f"무기록 달은 null: {pt[0]}"
+    assert pt[1]["avg_pace_sec_per_km"] == 325, f"전전달 4km/1300s → 325: {pt[1]}"
+    assert pt[2]["avg_pace_sec_per_km"] == d["stats"]["avg_pace_sec_per_km"], \
+        "화면 내 수치 일치: trend 마지막 == stats.avg_pace"
+    ok("수치 블록 ✓ run_days=5 ✓ ai=null ✓ pace_trend [null, 325, =stats] ✓")
 
     step("2-2. 재호출 동일 + 쿼터 미차감")
     r = api(c, "GET", "/me/insights/monthly", tok_prem,

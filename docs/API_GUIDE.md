@@ -123,6 +123,10 @@ fetch(`${API_BASE}/api/me/profile`, {
 >                "time_of_day": "morning", "time_of_day_pct": 58,  // dawn|morning|day|evening|night
 >                "longest_streak_days": 5,
 >                "run_days": 12 },                            // 이번 달 러닝한 날 수 (꾸준함 지표)
+>   "pace_trend": [                                           // 페이스 추이 라인 차트 — 조회 월 포함 최근 3개월, 오래된 달부터
+>     { "year": 2026, "month": 4, "avg_pace_sec_per_km": null },   // run 없는 달은 null → 라인 결측(끊김) 표시, 0으로 그리지 말 것
+>     { "year": 2026, "month": 5, "avg_pace_sec_per_km": 331 },
+>     { "year": 2026, "month": 6, "avg_pace_sec_per_km": 326 } ],  // 마지막 값 == stats.avg_pace_sec_per_km (같은 기준 보장)
 >   "ai": null   // ⚠️ 항상 null (2026-07-09 AI 코칭·추천 플랜 생성 중단 — 비용/로딩. 필드는 하위 호환용 유지, 타입은 지우지 말 것)
 > }
 > ```

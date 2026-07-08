@@ -20,6 +20,7 @@ from app.models.schemas import (
     InsightPlanItem,
     MonthlyInsightResponse,
     MonthRecordEntry,
+    PaceTrendPoint,
     WeekStat,
 )
 from app.services import openai_service, profile_service
@@ -231,10 +232,14 @@ async def get_monthly_insight(
     start, end = _month_range_utc(year, month)
     prev_year, prev_month = (year - 1, 12) if month == 1 else (year, month - 1)
     prev_start, _ = _month_range_utc(prev_year, prev_month)
+    p2_year, p2_month = ((prev_year - 1, 12) if prev_month == 1
+                         else (prev_year, prev_month - 1))
+    p2_start, _ = _month_range_utc(p2_year, p2_month)
 
-    month_rows, prev_rows, rows_until_end = await asyncio.gather(
+    month_rows, prev_rows, prev2_rows, rows_until_end = await asyncio.gather(
         _fetch_runs_range(user_id, start, end),
         _fetch_runs_range(user_id, prev_start, start),
+        _fetch_runs_range(user_id, p2_start, prev_start),
         _fetch_runs_range(user_id, None, end),
     )
 
@@ -244,6 +249,15 @@ async def get_monthly_insight(
     weeks = _split_weeks(month_rows, year, month)
     records = _month_records(month_rows, rows_until_end, year, month)
     pattern = _compute_pattern(month_rows)
+    # 페이스 추이(최근 3개월, 오래된 달부터) — 기준을 stats와 단일 소스로
+    # 맞추기 위해 같은 _aggregate를 재사용 (마지막 값 == stats.avg_pace 보장).
+    pace_trend = [
+        PaceTrendPoint(year=y, month=m,
+                       avg_pace_sec_per_km=_aggregate(rows, None).avg_pace_sec_per_km)
+        for (y, m, rows) in ((p2_year, p2_month, prev2_rows),
+                             (prev_year, prev_month, prev_rows),
+                             (year, month, month_rows))
+    ]
 
     # AI 블록(coaching·plan) 생성 중단 (2026-07-09 결정: Gemini 비용 + 로딩
     # UX, 프론트는 렌더 제거·타입 유지). ai 필드는 하위 호환용으로 항상 null.
@@ -253,5 +267,5 @@ async def get_monthly_insight(
 
     return MonthlyInsightResponse(
         year=year, month=month, stats=stats, weeks=weeks,
-        records=records, pattern=pattern, ai=ai,
+        records=records, pattern=pattern, pace_trend=pace_trend, ai=ai,
     )

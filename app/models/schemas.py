@@ -679,6 +679,16 @@ class InsightPlanItem(BaseModel):
     body: str
 
 
+class PaceTrendPoint(BaseModel):
+    """페이스 추이 한 달 치 (시안 라인 차트) — stats.avg_pace와 동일 기준."""
+
+    year: int
+    month: int
+    avg_pace_sec_per_km: Optional[int] = Field(
+        None, description="그 달 평균 페이스(거리 가중). run 없으면 null(결측)."
+    )
+
+
 class InsightAi(BaseModel):
     """Gemini 생성 블록 — monthly_insights에 캐시됨."""
 
@@ -701,6 +711,10 @@ class MonthlyInsightResponse(BaseModel):
     weeks: list[WeekStat]
     records: list[MonthRecordEntry]
     pattern: InsightPattern
+    pace_trend: list[PaceTrendPoint] = Field(
+        default_factory=list,
+        description="조회 월 포함 최근 3개월 평균 페이스 (오래된 달부터).",
+    )
     ai: Optional[InsightAi] = None
 
 
