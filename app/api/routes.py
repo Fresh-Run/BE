@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
@@ -934,12 +935,27 @@ async def my_monthly_stats(
 async def list_runs(
     limit: int = 20,
     route_id: str | None = None,
+    before: str | None = None,
     user: CurrentUser = Depends(get_current_user),
 ) -> list[RunResponse]:
-    """Return the caller's logged runs, newest first; optionally filter by route_id."""
+    """Return the caller's logged runs, newest first; optionally filter by route_id.
+
+    before: 커서 페이지네이션 — 직전 페이지 마지막 run의 ran_at(ISO 8601 +
+    타임존)을 그대로 보내면 그 이전 run들이 온다. 응답이 limit보다 짧으면 끝.
+    """
+    if before is not None:
+        try:
+            parsed = datetime.fromisoformat(before)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="before must be ISO 8601")
+        if parsed.tzinfo is None:
+            raise HTTPException(
+                status_code=422,
+                detail="before must include a timezone offset (e.g. +09:00 or Z)",
+            )
     try:
         return await run_service.list_runs(
-            user_id=user.user_id, limit=limit, route_id=route_id
+            user_id=user.user_id, limit=limit, route_id=route_id, before=before
         )
     except Exception as exc:  # noqa: BLE001
         raise _bad_gateway("Failed to list runs", exc)
@@ -973,7 +989,11 @@ async def get_run_track(
     run_id: str,
     user: CurrentUser = Depends(get_current_user),
 ) -> RunTrackResponse:
-    """The run's simplified GPS polyline. 404 if not mine or no track."""
+    """The run's simplified GPS polyline.
+
+    본인 + 공개범위 내 타인(run visibility 게이트 — kudos·댓글과 동일).
+    404 if not visible or no track (존재 은닉).
+    """
     try:
         track = await run_service.get_run_track(run_id, user_id=user.user_id)
     except Exception as exc:  # noqa: BLE001

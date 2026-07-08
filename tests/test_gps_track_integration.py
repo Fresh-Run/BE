@@ -232,8 +232,10 @@ def phase2(c, uids, toks, crew_id):
     t = r.json()
     assert len(t["polyline"]) >= 20 and t["server_distance_km"] > 4.5
     assert t["point_count_raw"] > t["point_count_kept"] - 1 >= 0
-    assert api(c, "GET", f"/runs/{run1}/track", tok2).status_code == 404, "남의 track 404"
-    ok("verified + splits ✓ /track polyline·본인만 ✓")
+    # track은 visibility 게이트(집계 정합 설계) — 이 run은 기본 public이라 타인도 200.
+    # 매트릭스 전수는 test_run_track_and_stats_integration.
+    assert api(c, "GET", f"/runs/{run1}/track", tok2).status_code == 200, "남의 public track 200"
+    ok("verified + splits ✓ /track polyline·공개범위 게이트 ✓")
 
     step("2-2. 거리 괴리 신고 → verified+is_flagged (조정) + 서버 값이 정본")
     track = make_track(5.0, 330, seed=23)

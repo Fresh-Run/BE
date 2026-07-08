@@ -84,8 +84,10 @@ def phase1():
     from app.services import run_service as rs
 
     def row(i, ran_at, d, dur, pace=None):
+        # PB는 verified만 자격 (집계 정합 정책 — RUN_TRACK_AND_STATS_DESIGN)
         return {"id": f"r{i}", "ran_at": ran_at, "distance_km": d,
-                "duration_sec": dur, "avg_pace_sec_per_km": pace}
+                "duration_sec": dur, "avg_pace_sec_per_km": pace,
+                "verification": "verified"}
 
     step("1-1. 4종 정상 계산 + 빈 rows")
     b = rs._compute_records([])
@@ -157,8 +159,18 @@ def phase2(c, tok, uid):
         return c.request(method, f"{BASE}{path}",
                          headers={"Authorization": f"Bearer {tok}"}, **kw)
 
+    def _track(distance_km, pace_s_per_km):
+        # 직선 GPS 궤적 — PB는 verified run만 자격이라 트랙 동봉 (집계 정합 정책)
+        step_m = 22.24
+        n = round(distance_km * 1000 / step_m) + 1
+        t0 = (int(time.time()) - 7200) * 1000
+        return [{"lat": 37.5445 + i * 0.0002, "lng": 127.0374,
+                 "t": t0 + i * round(step_m * pace_s_per_km), "acc": 5.0}
+                for i in range(n)]
+
     def save_run(d, dur, pace=None):
-        body = {"distance_km": d, "duration_sec": dur}
+        body = {"distance_km": d, "duration_sec": dur,
+                "gps_track": _track(d, pace or round(dur / d))}
         if pace is not None:
             body["avg_pace_sec_per_km"] = pace
         r = api("POST", "/runs", json=body)

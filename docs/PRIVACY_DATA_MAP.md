@@ -31,6 +31,8 @@
     `kept_point_count` (필터 동작·부정 사용 추적용 집계).
 - 한국 bbox(위도 33–39, 경도 124–132) 밖 좌표는 수신 시 필터로 폐기.
 - 노출: run의 `visibility`(public/followers/private, 기본 followers)에 따름.
+  궤적 조회(`GET /runs/{id}/track`)도 동일 게이트(2026-07-08부터 공개범위 내
+  타인 허용 — 범위 밖은 404 은닉, 가시성 매트릭스 테스트로 검증).
 
 ### 기타 위치 데이터
 

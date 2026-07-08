@@ -295,7 +295,8 @@ def classify(processed: ProcessedTrack | None, app_distance_km: float) -> str:
     판정 순서가 중요:
     1) suspect를 low_confidence보다 먼저 — 자전거는 속도 필터에 스스로 걸려
        제거율이 높아지므로, low_confidence를 먼저 보면 부정이 unverified로
-       빠져나간다 (unverified는 랭킹에 포함되는 현행 정책이라 구멍이 됨).
+       빠져나간다. (집계는 이제 verified만 포함이라 랭킹 구멍은 아니지만,
+       suspect는 is_flagged 표시·거리 정본 채택 방지에 여전히 필요.)
        그래서 필터 전 raw 페이스로 우선 판정.
     2) suspect가 adjusted보다 우선 — 부정 의심 거리를 정본으로 채택하지 않기
        위해 (거리 대체는 호출부에서 adjusted에만 적용).

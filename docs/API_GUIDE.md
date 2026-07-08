@@ -105,9 +105,9 @@ fetch(`${API_BASE}/api/me/profile`, {
 >   - **기존 run(이 기능 이전 저장분)은 전부 `followers`로 백필** — 당시 노출(팔로워/크루)을 그대로 보존, 공개 프로필엔 안 뜸. 새 run만 기본 public.
 > - **완료 화면 비교 rows** (`POST /runs` 응답에만): `recent_avg_pace_sec_per_km`(최근 30일 평균 페이스, **이번 run 제외**) + `pace_delta_sec`(이번 페이스 − 최근 평균, **음수 = "평소보다 N초 빨라요"**). 히스토리 없으면(첫 run 등) 둘 다 null → 비교 UI 숨김. **주간 누적은 기존 `GET /me/stats`의 `week`로 표시.**
 > - 응답에도 `title`·`visibility` 포함(저장 확인용).
-| 기록 목록 | `GET /runs?limit&route_id?` | `RunResponse[]` 최신순 — GPS run은 `splits[]`·`has_track`·`verification` 포함. **`kudos_count`**(♥)·**`comment_count`**(💬) 배치 집계(N+1 없음). 본인 목록이라 `my_kudos`는 없음(본인 kudos 불가) |
+| 기록 목록 | `GET /runs?limit&route_id?&before?` | `RunResponse[]` 최신순 — GPS run은 `splits[]`·`has_track`·`verification` 포함. **`kudos_count`**(♥)·**`comment_count`**(💬) 배치 집계(N+1 없음). 본인 목록이라 `my_kudos`는 없음(본인 kudos 불가). **커서 페이지네이션**: 다음 페이지는 `before=<마지막 run의 ran_at 그대로>`(ISO+타임존, naive는 422) — 응답이 `limit`보다 짧으면 끝 |
 | 기록 단건 | `GET /runs/{run_id}` | 본인 것만, 아니면 404. 목록과 동일하게 **`kudos_count`** 포함 |
-| **러닝 경로 (지도)** | `GET /runs/{run_id}/track` | `{polyline[{lat,lng}], server_distance_km, elev_gain_m, point_count_raw/kept}` — 활동 상세 지도용. 트랙 없는 run(기존/수동)은 404 (`has_track`으로 사전 판단) |
+| **러닝 경로 (지도)** | `GET /runs/{run_id}/track` | `{polyline[{lat,lng}], server_distance_km, elev_gain_m, point_count_raw/kept}` — 활동 상세 지도용. `polyline`은 코스의 `polyline`과 동일 포맷(같은 렌더 코드 사용 가능). **접근: 본인 + run 공개범위 내 타인**(public 누구나 / followers는 팔로워·같은 크루 / private 본인만 — kudos·댓글과 동일 게이트). 범위 밖·트랙 없는 run은 404 (`has_track`으로 사전 판단 — 타인 run 카드도 has_track 보고 지도 진입 결정) |
 | 2탭 피드백 | `PATCH /runs/{run_id}/feedback` | body: `liked`(bool), `tags[]` (허용 태그는 Swagger의 FeedbackTag) |
 
 > **AI 월간 인사이트 응답** (`GET /me/insights/monthly`):
@@ -146,6 +146,8 @@ fetch(`${API_BASE}/api/me/profile`, {
 > - `splits[]`: `{km, sec, elev_gain_m, partial}` — 시안 "페이스 & 고도 분석" 차트에 그대로 바인딩 (partial=마지막 부분 킬로).
 
 > **개인 최고 기록 (PB)** — `GET /me/stats`의 `records` 블록 (프로필 헤더 "최고 페이스", 기록 화면용):
+>
+> ⚠️ **PB·경신 모달은 GPS 검증(verified) run만 자격** — 트랙 없는 수동 기록·부정 의심 run은 집계에서 제외됩니다(오염 방지). **verified run이 하나도 없는 유저는 `records` 각 항목이 null** — 프론트는 null 처리(기존 계약)만 하면 됨. 주/월/전체 `total_distance_km` 등 개인 통계는 수동 기록도 계속 포함.
 >
 > ```jsonc
 > "records": {                     // 각 항목은 자격 run이 없으면 null
@@ -198,7 +200,7 @@ fetch(`${API_BASE}/api/me/profile`, {
 | **초대 코드 (크루장)** | `GET /crews/{id}/invite` (미발급 404 → POST로 발급), `POST /crews/{id}/invite` (생성/**재생성** — 이전 코드 즉시 무효, 유출 대응) | `{code}` — 8자 대문자+숫자 (I/O/0/1 없음). 카톡 등으로 공유 |
 | 코드 미리보기 | **`POST /crews/preview-by-code`** `{code}` (권장) · `GET /crews/preview-by-code?code=` (레거시) | 가입 확정 전 "어느 크루인지" 확인 — `CrewResponse` 반환. **비공개 크루도 조회됨** (코드 = 초대장). 잘못된 코드 404. **⚠️ POST 사용 권장** — GET은 코드가 URL 쿼리스트링 → 서버 access log에 평문으로 남음. 두 경로 동작·응답 동일하니 신규/변경은 POST(body)로 붙일 것 |
 | **코드로 가입** | `POST /crews/join-by-code` body `{code}` | 200 `CrewResponse` (바로 크루 화면 이동). **join_policy·비공개 무관 즉시 가입** — 크루 생성 화면의 "비공개: 초대 링크로만 가입 가능해요"가 이 경로. 대소문자·공백은 서버가 정규화. 이미 멤버/정원 409, 잘못된 코드 404. 승인제에 신청해뒀던 pending은 자동 정리 |
-| 멤버/랭킹 | `GET /crews/{id}/members`, `/crews/{id}/ranking` | 랭킹: 이번 주 KST 거리순, `me` 플래그. **visibility 무관** — 랭킹·챌린지 누적 거리는 `private` run도 포함(크루=활동 공유 원칙 + 거리 은닉 어뷰징 방지). visibility는 run 카드 노출만 제어, 집계 거리엔 영향 없음 |
+| 멤버/랭킹 | `GET /crews/{id}/members`, `/crews/{id}/ranking` | 랭킹: 이번 주 KST 거리순, `me` 플래그. **visibility 무관** — 랭킹·챌린지 누적 거리는 `private` run도 포함(크루=활동 공유 원칙 + 거리 은닉 어뷰징 방지). visibility는 run 카드 노출만 제어, 집계 거리엔 영향 없음. **단 GPS 검증(verified) run만 집계** — 트랙 없는 수동 기록은 랭킹·챌린지 거리에 안 잡힘(UI에 "GPS 기록만 집계" 안내 권장) |
 | **크루 러닝 피드** | `GET /crews/{id}/runs?limit&offset` | 크루원들의 최근 run, `ran_at` 최신순: `[{run_id, user_id, nickname, avatar_url, ran_at, title, distance_km, duration_sec, avg_pace_sec_per_km, route_id, route_summary, comment_count}]`. 크루원만(403). **visibility 적용**: `private`만 제외 — `public`·`followers`는 크루원에게 노출(크루=활동 공유 관계). 개인 메모/피드백은 절대 미포함, `route_summary`는 공개 코스만(비공개면 null). 탈퇴 멤버의 run은 자동 제외 |
 | 챌린지 | `GET /crews/{id}/challenges/current`, `POST /crews/{id}/challenges` | `achieved_km`, `progress_pct`, `is_completed` 실시간 계산. 생성 시 `starts_at`/`ends_at`은 **ISO 8601 + 타임존 필수** (아래 노트) |
 | **공지 목록/상세** | `GET /crews/{id}/announcements?limit&offset`, `GET .../{announcement_id}` | `title`, `body`, `run_at`, `place_name/lat/lng`, `rsvp_open`, `rsvp{going,not_going,maybe}`, `my_rsvp`; 상세엔 `going_members[]` 명단 추가. 크루원만 조회 가능(403). 작성 시 `run_at`/`rsvp_closes_at`은 **ISO 8601 + 타임존 필수** |
@@ -289,7 +291,8 @@ fetch(`${API_BASE}/api/me/profile`, {
 
 - 다음 페이지: `offset += limit`. 응답 길이가 `limit`보다 짧으면 마지막 페이지.
 - 지원: `/feed`, `/routes/bookmarked`, `/users/{id}/followers·following`, `/crews/{id}/announcements`.
-- 일부 목록(`/routes/public`, `/runs`, `/notifications` 등)은 `limit`만 받습니다 — offset을 보내면 무시되므로 Swagger에서 파라미터 확인.
+- 일부 목록(`/routes/public`, `/notifications` 등)은 `limit`만 받습니다 — offset을 보내면 무시되므로 Swagger에서 파라미터 확인.
+- `GET /runs`는 offset 대신 **커서**(`before=<마지막 ran_at>`)를 받습니다 — 기록 목록 행 참조.
 - 주의: 북마크 목록은 비공개 전환된 코스가 숨겨져 한 페이지가 `limit`보다 짧게 올 수 있습니다 — "짧으면 끝" 판정에 예외적으로 걸릴 수 있으니 빈 배열로 끝 판정하는 게 안전합니다.
 
 ## 7. 전체 레퍼런스

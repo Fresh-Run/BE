@@ -83,9 +83,9 @@ async def create_run(req: RunRequest, user_id: str | None = None) -> RunResponse
             is_flagged = False
 
     # PB 경신 감지 — 저장 "전" 스냅샷과 비교해야 자기 자신이 끼지 않는다.
-    # suspect run은 PB 후보가 아니므로 감지 자체를 스킵 (부정 방지).
+    # verified만 PB 후보 (suspect=부정 방지, unverified=트랙 없는 기록 오염 방지).
     new_records: list[NewRecord] = []
-    if user_id and verification != "suspect":
+    if user_id and verification == "verified":
         try:
             prev_rows = await _fetch_runs_range(user_id, None, None)
             eff_req = req if final_distance == req.distance_km else req.model_copy(
@@ -248,7 +248,8 @@ def _compute_records(rows: list[dict]) -> RecordsBlock:
     달성한 run이 유지된다.
     """
     best = RecordsBlock()
-    rows = [r for r in rows if r.get("verification") != "suspect"]  # 부정 의심 제외
+    # verified만 PB 자격 — 트랙 없는 run(차량 이동 등)의 오염 방지 (집계 정합 정책)
+    rows = [r for r in rows if r.get("verification") == "verified"]
     for r in sorted(rows, key=lambda r: r["ran_at"]):
         dist, dur = r["distance_km"], r["duration_sec"]
 
@@ -437,18 +438,18 @@ async def get_run(run_id: str, user_id: str) -> RunResponse | None:
 
 
 async def get_run_track(run_id: str, user_id: str) -> RunTrackResponse | None:
-    """run의 경로(폴리라인) — 본인 소유 + 트랙 존재 시에만 (아니면 None → 404)."""
-    supabase = get_supabase_admin()
-    own = await asyncio.to_thread(
-        lambda: supabase.table("runs")
-        .select("id")
-        .eq("id", run_id)
-        .eq("user_id", user_id)
-        .limit(1)
-        .execute()
-    )
-    if not own.data:
+    """run의 경로(폴리라인) — 공개범위 내에서만 + 트랙 존재 시 (아니면 None → 404).
+
+    궤적은 위치정보라 kudos·run 댓글과 동일한 _can_see_run 게이트를 탄다
+    (본인 항상 / public 누구나 / followers는 팔로우·같은 크루 / private 본인만).
+    """
+    try:
+        owner_id, visibility = await _run_owner(run_id)
+    except RunNotFound:
         return None
+    if not await _can_see_run(owner_id, user_id, visibility):
+        return None
+    supabase = get_supabase_admin()
     res = await asyncio.to_thread(
         lambda: supabase.table("run_tracks")
         .select("points, splits, raw_point_count, kept_point_count")
@@ -1082,14 +1083,14 @@ async def _check_challenge_completion(user_id: str) -> None:
         if not member_ids:
             continue
 
-        # ④ Sum runs within the challenge period (부정 의심 run 제외)
+        # ④ Sum runs within the challenge period (verified만 — 집계 정합 정책)
         runs_res = await asyncio.to_thread(
             lambda: supabase.table("runs")
             .select("distance_km")
             .in_("user_id", member_ids)
             .gte("ran_at", ch_starts_at)
             .lte("ran_at", ch_ends_at)
-            .neq("verification", "suspect")
+            .eq("verification", "verified")
             .execute()
         )
         achieved_km = sum(r["distance_km"] for r in runs_res.data)
@@ -1128,10 +1129,16 @@ async def _check_challenge_completion(user_id: str) -> None:
 
 
 async def list_runs(
-    user_id: str, limit: int = 20, route_id: str | None = None
+    user_id: str,
+    limit: int = 20,
+    route_id: str | None = None,
+    before: str | None = None,
 ) -> list[RunResponse]:
     """Return the caller's logged runs, newest first; optionally filter by route.
 
+    before: 커서(직전 페이지 마지막 run의 ran_at) — 그 시각 "이전" run만.
+    최신순이라 offset처럼 삽입·삭제에 밀리지 않는다 (같은 초 동률은 strict
+    lt로 스킵 허용 — 실사용상 희귀).
     Scoped to `user_id` in app code (service_role bypasses RLS).
     """
     limit = max(1, min(limit, 100))
@@ -1147,6 +1154,8 @@ async def list_runs(
         )
         if route_id is not None:
             q = q.eq("route_id", route_id)
+        if before is not None:
+            q = q.lt("ran_at", before)
         return q.execute()
 
     result = await asyncio.to_thread(_query)

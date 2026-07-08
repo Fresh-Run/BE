@@ -30,6 +30,15 @@ def _keys() -> tuple[str, str]:
 
 ANON_KEY, SERVICE_KEY = _keys()
 
+
+def _track(distance_km: float, pace_s_per_km: int):
+    """직선 GPS 궤적 — 랭킹은 verified run만 집계하므로(집계 정합 정책) 트랙 동봉."""
+    step_m = 22.24
+    n = round(distance_km * 1000 / step_m) + 1
+    t0 = (int(time.time()) - 7200) * 1000
+    return [{"lat": 37.5445 + i * 0.0002, "lng": 127.0374,
+             "t": t0 + i * round(step_m * pace_s_per_km), "acc": 5.0} for i in range(n)]
+
 ADMIN_HEADERS = {
     "apikey": SERVICE_KEY,
     "Authorization": f"Bearer {SERVICE_KEY}",
@@ -205,13 +214,13 @@ def run_tests() -> None:
 
             # ── 6. Log runs: test1=5km, test2=3km ────────────────────────
             step("6. Log runs: test1=5km, test2=3km")
-            r = api(client, "POST", "/runs", tok1, json={"distance_km": 5.0, "duration_sec": 1800})
+            r = api(client, "POST", "/runs", tok1, json={"distance_km": 5.0, "duration_sec": 1800, "gps_track": _track(5.0, 360)})
             if r.status_code != 200:
                 fail("log run test1 5km", f"{r.status_code} {r.text}")
             run_ids.append(r.json()["id"])
             ok("test1: 5 km logged")
 
-            r = api(client, "POST", "/runs", tok2, json={"distance_km": 3.0, "duration_sec": 1200})
+            r = api(client, "POST", "/runs", tok2, json={"distance_km": 3.0, "duration_sec": 1200, "gps_track": _track(3.0, 400)})
             if r.status_code != 200:
                 fail("log run test2 3km", f"{r.status_code} {r.text}")
             run_ids.append(r.json()["id"])
@@ -241,7 +250,7 @@ def run_tests() -> None:
 
             # ── 8. test2 logs 4km more → total 7km → should overtake ─────
             step("8. test2 추가 4km → 합산 7km → 역전 1등 확인")
-            r = api(client, "POST", "/runs", tok2, json={"distance_km": 4.0, "duration_sec": 1500})
+            r = api(client, "POST", "/runs", tok2, json={"distance_km": 4.0, "duration_sec": 1500, "gps_track": _track(4.0, 375)})
             if r.status_code != 200:
                 fail("log run test2 4km", f"{r.status_code} {r.text}")
             run_ids.append(r.json()["id"])

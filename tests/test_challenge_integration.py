@@ -37,6 +37,14 @@ _ADMIN_H = {
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
+def _track(distance_km: float, pace_s_per_km: int):
+    """직선 GPS 궤적 — 챌린지는 verified run만 집계하므로(집계 정합 정책) 트랙 동봉."""
+    step_m = 22.24
+    n = round(distance_km * 1000 / step_m) + 1
+    t0 = (int(time.time()) - 7200) * 1000
+    return [{"lat": 37.5445 + i * 0.0002, "lng": 127.0374,
+             "t": t0 + i * round(step_m * pace_s_per_km), "acc": 5.0} for i in range(n)]
+
 def ok(msg: str) -> None:
     print(f"  ✓ {msg}")
 
@@ -177,7 +185,7 @@ def run() -> None:
             step("7. test1=8km, test2=5km 기록")
             for tok, km in [(tok1, 8.0), (tok2, 5.0)]:
                 r = api(c, "POST", "/runs", tok,
-                        json={"distance_km": km, "duration_sec": int(km * 360)})
+                        json={"distance_km": km, "duration_sec": int(km * 360), "gps_track": _track(km, 360)})
                 if r.status_code != 200:
                     fail(f"log {km}km", r.text[:200])
                 run_ids.append(r.json()["id"])
@@ -199,7 +207,7 @@ def run() -> None:
             # ── 9. test2 추가 10km → 합산 23km → 목표 초과 완료 ─────────
             step("9. test2 추가 10km → 합산 23km → 완료 확인")
             r = api(c, "POST", "/runs", tok2,
-                    json={"distance_km": 10.0, "duration_sec": 3600})
+                    json={"distance_km": 10.0, "duration_sec": 3600, "gps_track": _track(10.0, 360)})
             if r.status_code != 200:
                 fail("log 10km", r.text[:200])
             run_ids.append(r.json()["id"])
