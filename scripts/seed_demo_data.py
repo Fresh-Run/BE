@@ -578,6 +578,28 @@ def main():
         log(f"둘러보기 크루 {len([1 for b in BROWSE])}개 보장 "
             f"(신규 {made['browse_crews']}, 멤버 추가 {made['browse_members']})")
 
+        # ── 10-b. 모집 마감 크루 (둘러보기 include_full 토글 눈검증용) ──────
+        # 정원 3 = owner(demo1) + 멤버 2 → member_count == max_members.
+        # demo1은 premium(생성 한도 없음). 좌표는 성수 실좌표 — 거리순 정렬 겸용.
+        # 멱등: ensure_browse_crew(동명 감지-스킵) + ensure_crew_member(존재 스킵).
+        ouid, otok = users["demo1"]
+        cid, created = ensure_browse_crew(c, otok, ouid, {
+            "name": "성수 새벽 소수정예", "area": "성수동", "sport": "러닝",
+            "level": "중급", "description": "정원 3명이 꽉 찼어요 — 자리 나면 공지할게요!",
+            "is_public": True, "join_policy": "approval", "max_members": 3,
+            "sido": "서울특별시", "sigungu": "성동구",
+            "lat": 37.542, "lng": 127.052, "tags": ["새벽", "친목"]})
+        if created:
+            made["browse_crews"] += 1
+        for mkey in ("demo2", "demo4"):
+            if ensure_crew_member(c, cid, users[mkey][0]):
+                made["browse_members"] += 1
+        mc = api(c, "GET", f"/crews/{cid}", otok).json()["member_count"]
+        if mc != 3:
+            die(f"모집 마감 크루 정원 불일치 — member_count {mc} (기대 3)")
+        log(f"  성수 새벽 소수정예 — 모집 마감 {mc}/3"
+            + ("" if created else " [기존]"))
+
         # ── 11. 공개 코스 피드 확장 (홈 '전체' 탭 = GET /routes/public) ────
         section("11. 공개 코스 피드 (전체 탭 — 좋아요·댓글·복사)")
         # (owner, summary, lat, lng, dist, [좋아요 누를 키], [(댓글키,내용)], [복사 키])
