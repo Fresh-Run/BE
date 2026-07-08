@@ -101,6 +101,43 @@ async def me(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
     return user
 
 
+@router.delete(
+    "/me",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="회원 탈퇴 (계정·전체 데이터 삭제)",
+)
+async def delete_my_account(
+    user: CurrentUser = Depends(get_current_user),
+) -> Response:
+    """계정과 모든 데이터를 즉시 삭제 (docs/ACCOUNT_DELETION_DESIGN.md).
+
+    다른 멤버가 있는 크루를 소유 중이면 409 crew_owner — 프론트는 위임/삭제
+    화면으로 유도. 본인뿐인 소유 크루는 함께 삭제된다.
+    """
+    try:
+        await profile_service.delete_account(user.user_id, email=user.email)
+    except profile_service.DemoAccountError:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "demo_account",
+                "message": "데모 계정은 탈퇴할 수 없어요.",
+            },
+        )
+    except profile_service.CrewOwnerError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "crew_owner",
+                "crew_ids": exc.crew_ids,
+                "message": "운영 중인 크루를 위임하거나 삭제한 후 탈퇴할 수 있어요.",
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise _bad_gateway("Failed to delete account", exc)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.get(
     "/me/profile",
     response_model=ProfileResponse | None,

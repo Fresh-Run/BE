@@ -98,29 +98,25 @@
 - **사용자가 직접 삭제할 수 있는 것**: 알림(개별·전체), 자기 댓글, 좋아요·북마크·
   kudos·팔로우 취소, 크루 탈퇴, (소유자) 크루 삭제 — 크루 삭제 시 공지·RSVP는
   cascade 삭제.
-- **사용자가 삭제할 수 없는 것**: **러닝 기록(`runs`)과 코스(`routes`)는 삭제
-  API가 없다**(수정 `PATCH /runs`만 존재). 따라서 GPS 궤적(`run_tracks`,
-  runs에 cascade)도 사용자가 지울 수단이 없음. → 방침 작성 전 삭제 API 추가
-  여부 결정 필요.
-- **회원 탈퇴 기능 없음** — 백엔드에 계정 삭제 엔드포인트가 없다. 현재 탈퇴는
-  운영자가 Supabase 대시보드/admin API로 `auth.users`를 삭제하는 수동 절차만 가능.
-- **탈퇴(auth.users 삭제) 시 데이터 처리 — 선언 SQL(`db/`) 기준**:
-  - cascade **삭제**: 팔로우, 북마크, kudos, run 댓글, RSVP, 가입 신청(신청자),
-    코치 스크립트, 월간 인사이트, 구독, route_generations(premium_tier 파일 선언).
-  - **보존**(작성자만 NULL 처리): 크루 공지(`author_id set null` — "탈퇴해도 공지
-    보존"이 설계 의도), 챌린지(`created_by set null`), 가입 신청 결정자(`decided_by
-    set null`).
-  - **[검증 불가]**: 초기 커밋 테이블(`profiles`, `runs`, `routes`, `crews`,
-    `notifications`, `preferences`, `route_comments`, `route_likes`)의
-    `auth.users` FK/cascade는 `db/`에 선언이 없다(스키마 드리프트 영역).
-    Supabase SQL Editor에서 아래로 확인 필요:
-    ```sql
-    select conrelid::regclass as "table", confdeltype as "del(c=cascade,n=set null,a=none)",
-           pg_get_constraintdef(oid)
-    from pg_constraint where confrelid = 'auth.users'::regclass order by 1;
-    ```
-    특히 `crews.owner_id`가 cascade면 탈퇴 시 크루가 통째로 사라지고, 아니면
-    고아 크루가 남는다 — 방침과 탈퇴 설계 양쪽에 필요한 사실.
+- **개별 삭제 불가 항목**: **러닝 기록(`runs`)과 코스(`routes`)는 개별 삭제
+  API가 없다**(수정 `PATCH /runs`만 존재). 단 아래 회원 탈퇴가 일괄 삭제를
+  제공하므로 삭제권 자체는 충족. 개별 삭제 UI는 시안에도 없음(범위 제외 —
+  `ACCOUNT_DELETION_DESIGN.md` §0).
+- **회원 탈퇴: `DELETE /me`** (2026-07-08 구현) — 계정과 모든 데이터 **즉시
+  완전 삭제**(유예 없음). 상세 설계·실증은 `ACCOUNT_DELETION_DESIGN.md`.
+  - 다른 멤버가 있는 소유 크루가 있으면 409로 차단(위임/삭제 후 탈퇴),
+    본인뿐인 크루는 함께 삭제. 데모 계정은 403으로 보호.
+  - 아바타(Storage)는 FK가 없어 탈퇴 처리에서 명시 삭제.
+  - 같은 이메일 재가입 가능(새 계정, 이전 데이터 없음).
+- **탈퇴 시 데이터 처리 — 라이브 DB 실증으로 확정** (2026-07-08, 테이블별
+  격리 프로브):
+  - cascade **삭제**: profiles(닉네임·신체정보), preferences(FK 재작성
+    `db/2026-07-08_account_deletion.sql` 적용 후), runs(+GPS 궤적·타인의
+    kudos/런댓글), routes(+타인의 댓글·좋아요·북마크), 크루 멤버십, 팔로우,
+    알림(내가 받은 것 + **내가 유발해 타인이 받은 것**), 코치 스크립트,
+    월간 인사이트, 구독, route_generations.
+  - **보존**: 크루 공지·챌린지(작성자만 NULL 익명화), 가입 신청의 결정자
+    기록(NULL), **타인이 복사해 간 코스**(`copied_from`만 NULL — 실증 SET NULL).
 - **백업 잔존**: 주 1회 pg_dump(public 스키마) → GitHub Actions artifacts
   **90일 롤링**. 삭제된 데이터도 백업에는 최대 90일 잔존. `auth.users`는 백업
   범위 밖.
@@ -128,8 +124,8 @@
 
 ## 7. 미확정 — 방침 확정 전 확인 필요
 
-1. **초기 테이블 8종의 탈퇴 cascade** — 6절 SQL로 실조회 (드리프트 영역이라 선언 파일 없음).
-2. **Sentry 에러 이벤트의 body 첨부 실물** — 실제 이벤트 1건에서 확인, 필요 시 `max_request_body_size` 축소 검토.
+1. ~~초기 테이블 8종의 탈퇴 cascade~~ → **해소** (2026-07-08 실증 확정, §6·`ACCOUNT_DELETION_DESIGN.md` §1).
+2. ~~Sentry body 첨부~~ → **해소** — `max_request_body_size="never"` 적용(2026-07-08). 이제 에러 이벤트에 요청 body 미첨부. 스택 로컬 변수(`include_local_variables`)는 유지 — 방침에는 "오류 진단 데이터가 미국 Sentry로 전송"으로 기술.
 3. **avatars 버킷 public 읽기 정책** — 코드 주석 근거뿐, 대시보드에서 확인.
 4. **Supabase 리전** — 배포 체크리스트 기록(서울)이 근거, 대시보드 재확인 권장.
-5. **정책 결정 필요**: run/route 삭제 API 부재, 회원 탈퇴 API 부재 — 방침에 "삭제 불가"로 쓸 수는 없으므로 베타 전 기능 추가 여부 결정.
+5. ~~회원 탈퇴 API 부재~~ → **해소** (`DELETE /me`, §6). run/route 개별 삭제는 시안에 없어 범위 제외 — 방침에는 "계정 삭제로 일괄 파기"로 기술 가능.

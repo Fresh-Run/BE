@@ -78,7 +78,7 @@
 
 ## 3. 스키마 변경 — preferences FK 재작성 (탈퇴의 전제)
 
-`db/2026-07-09_account_deletion.sql` (승인 후 사용자가 SQL Editor에서 실행):
+`db/2026-07-08_account_deletion.sql` (승인됨 — 사용자가 SQL Editor에서 실행):
 
 ```sql
 -- 계정 삭제 전제: preferences.user_id FK가 NO ACTION이라 auth.users 삭제가

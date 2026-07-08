@@ -229,6 +229,7 @@ fetch(`${API_BASE}/api/me/profile`, {
 | 내 정보 | `GET /me` (auth 확인), `GET /me/profile` | `nickname`, `avatar_url`, `bio`, `tier` + **신체 정보 4종** `birth_year`/`weight_kg`/`height_cm`/`gender` — **본인 조회에만 존재** (다른 유저가 보는 모든 응답에 절대 미포함). 체중은 칼로리 로컬 계산용 |
 | 프로필 생성/수정 | `PATCH /me/profile` | `nickname`(2~20자, 중복 시 409) + 신체 정보 4종 optional — 보낸 것만 갱신. 범위: birth_year 1920~2026, weight 20~300, height 100~250, gender `female`\|`male`\|`undisclosed`(시안: 여성/남성/선택 안 함). `bio`≤500자, `avatar_url`≤500자. 범위·길이 밖 422. **tier는 보내도 무시됨** (관리자/IAP 전용) |
 | **아바타 업로드** | `POST /me/avatar/upload-url` | **3단계 흐름**: ① 이 엔드포인트 호출 → `{upload_url, public_url, max_bytes, allowed_types}` ② 이미지 바이트를 `upload_url`에 **PUT** (Content-Type 필수 — jpeg/png/webp만, 5MB 상한은 Storage가 거부) ③ `public_url`을 `PATCH /me/profile`의 `avatar_url`로 저장 — **CDN 캐시 무효화를 위해 `?v=타임스탬프`를 붙여서**. 경로는 유저당 고정이라 재업로드가 자동 덮어쓰기 (옛 파일 잔여 없음) |
+| **회원 탈퇴 (계정 삭제)** | `DELETE /me` | **204** — 계정·모든 데이터 즉시 삭제(복구 불가, 백업에만 최대 90일 잔존). **프론트 소비 규칙**: ① 호출 전 2단 confirm 모달 필수(로그아웃 모달 패턴, "모든 기록이 영구 삭제됩니다" 명시) ② **409 `{error:"crew_owner", crew_ids, message}`** → "운영 중인 크루" 안내 후 해당 크루의 위임(`PATCH /crews/{id}/transfer`)/삭제 화면으로 유도 — 본인뿐인 크루는 자동 삭제되므로 409 대상 아님 ③ **403 `{error:"demo_account"}`** → 데모 계정 안내 토스트 ④ 204 수신 시 로컬 세션·토큰 폐기 후 온보딩으로. 같은 이메일 재가입 가능(새 계정, 데이터 없음) |
 | 누적 통계 | `GET /me/stats` | `all_time.{total_distance_km,run_count,avg_pace_sec_per_km}` — 프로필 헤더 "최고 페이스"는 같은 응답의 `records.best_pace.value`(sec/km) 사용 |
 | 티어/쿼터 | `GET /me/quota` | premium이면 `ai_generation.unlimited=true`. IAP 구독이 만료된 유저는 **이 호출(또는 아무 프리미엄 게이트) 시점에 자동 강등**되어 free로 옴 |
 | **구독 구매 검증** | `POST /iap/verify` | **프론트: StoreKit 2 구매 완료 직후 받은 `signedTransaction`(JWS)을 `{"jws": "..."}`로 전송** → 서버 검증 후 `{tier: "premium", product_id, expires_at, environment}`. 같은 거래 재전송은 멱등(복원/갱신에 안전), 다른 계정의 거래 재사용은 **409 `transaction_already_used`**. 유효하지 않으면 400(`invalid_transaction`/`transaction_expired`), 서버 미준비 상태는 **503 `iap_not_configured`**(출시 전 현재 상태 — UI에서 결제 버튼 숨김) |
@@ -275,7 +276,7 @@ fetch(`${API_BASE}/api/me/profile`, {
 | **401** | 토큰 없음/만료 | refresh 후 1회 재시도 → 실패 시 로그인 화면 |
 | **403** | 권한 없음 (비크루원 조회, 크루장 아님 등) | 해당 UI 숨김/비활성이 원칙, 받으면 토스트. **`premium_required`**(구조화: `{error, message, feature}`) → 프리미엄 업셀 화면으로 이동. 한도형 게이트(크루 생성 등)는 `limit` 필드가 추가로 옴 — "무료는 N개까지" 안내에 사용 |
 | **404** | 없거나 볼 수 없음 (비공개 코스, 남의 기록도 404) | "존재하지 않음" 처리 — 403과 구분해 존재 여부를 숨기는 의도 |
-| **409** | 상태 충돌 | `nickname taken`(닉네임 중복) → 인라인 에러 표시. **`rsvp_closed`** → 투표 버튼 비활성 + "마감되었습니다" (사전에 `rsvp_open` 플래그로 버튼 상태 결정 가능) |
+| **409** | 상태 충돌 | `nickname taken`(닉네임 중복) → 인라인 에러 표시. **`rsvp_closed`** → 투표 버튼 비활성 + "마감되었습니다" (사전에 `rsvp_open` 플래그로 버튼 상태 결정 가능). **`crew_owner`**(탈퇴 차단, `crew_ids` 포함) → 크루 위임/삭제 유도 (프로필 §"회원 탈퇴" 참조) |
 | **429** | **AI 생성 쿼터 초과** | `detail.{limit,used,remaining,reset_at}` 제공 → "이번 주 3회를 모두 사용했어요, 월요일 리셋" + 프리미엄 업셀 화면. `reset_at`은 KST ISO |
 | **502** | 외부 서비스 장애 (OpenAI/지도/날씨) | "잠시 후 다시 시도" + 재시도 버튼. 코스 생성 실패는 구조화 바디 **`route_generation_failed`** — 서버가 이미 반경 확장까지 재시도한 뒤이므로 즉시 자동 재시도하지 말고 유저 액션(재시도 버튼)으로 |
 | **503** | 날씨 설정 문제: `weather_not_configured` / **`weather_key_inactive`**(키 활성화 대기) | 날씨 위젯만 숨기거나 placeholder — 앱 전체 에러로 띄우지 말 것 |

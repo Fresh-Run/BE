@@ -27,6 +27,12 @@ logger = logging.getLogger(__name__)
 # Postgres unique-violation error code (raised when a nickname is taken).
 _UNIQUE_VIOLATION = "23505"
 
+# 데모 계정 — 시드 규칙상 삭제 금지 (scripts/seed_demo_data.py와 동일 목록).
+_DEMO_EMAILS = frozenset(
+    {"test1@freshrun.com", "test2@freshrun.com"}
+    | {f"demo{i}@freshrun.com" for i in range(1, 6)}
+)
+
 
 class NicknameTaken(Exception):
     """The requested nickname is already used by another profile."""
@@ -34,6 +40,18 @@ class NicknameTaken(Exception):
 
 class ProfileNotFound(Exception):
     """Settings write requires an existing profile row."""
+
+
+class DemoAccountError(Exception):
+    """데모 계정은 탈퇴할 수 없다 (시드 보호)."""
+
+
+class CrewOwnerError(Exception):
+    """다른 멤버가 있는 크루의 소유자는 위임/삭제 후에만 탈퇴할 수 있다."""
+
+    def __init__(self, crew_ids: list[str]):
+        super().__init__("owner of crews that still have members")
+        self.crew_ids = crew_ids
 
 
 async def get_profile(user_id: str) -> ProfileResponse | None:
@@ -230,3 +248,50 @@ async def get_nicknames(user_ids: list[str | None]) -> dict[str, str]:
         .execute()
     )
     return {row["user_id"]: row["nickname"] for row in res.data}
+
+
+async def delete_account(user_id: str, email: str | None) -> None:
+    """회원 탈퇴 — auth.users 삭제가 커밋 지점, public 데이터는 FK cascade로
+    원자적 소멸 (전 테이블 실증: docs/ACCOUNT_DELETION_DESIGN.md §1·§5).
+
+    다른 멤버가 있는 소유 크루가 있으면 CrewOwnerError(위임/삭제 유도),
+    본인뿐인 소유 크루는 자동 삭제. 아바타는 FK가 없어 명시 삭제(best-effort).
+    """
+    from app.services import crew_service  # 순환 import 방지 (crew→profile 역방향)
+
+    if email and email.lower() in _DEMO_EMAILS:
+        raise DemoAccountError()
+
+    supabase = get_supabase_admin()
+
+    owned = await asyncio.to_thread(
+        lambda: supabase.table("crews").select("id").eq("owner_id", user_id).execute()
+    )
+    blocking: list[str] = []
+    solo: list[str] = []
+    for row in owned.data or []:
+        crew_id = row["id"]
+        members = await asyncio.to_thread(
+            lambda cid=crew_id: supabase.table("crew_members")
+            .select("user_id")
+            .eq("crew_id", cid)
+            .neq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+        (blocking if members.data else solo).append(crew_id)
+    if blocking:
+        raise CrewOwnerError(blocking)
+
+    for crew_id in solo:
+        await crew_service.delete_crew(crew_id, caller_id=user_id)
+
+    try:
+        await asyncio.to_thread(
+            lambda: supabase.storage.from_(_AVATAR_BUCKET).remove([user_id])
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("탈퇴 중 아바타 삭제 실패 — 진행 (user=%s)", user_id, exc_info=True)
+
+    await asyncio.to_thread(lambda: supabase.auth.admin.delete_user(user_id))
+    logger.info("계정 삭제 완료 (user=%s)", user_id)
