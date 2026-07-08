@@ -1039,6 +1039,7 @@ class CrewRankingEntry(BaseModel):
         None, description="Display name; null if the member has no profile yet."
     )
     distance_km: float = Field(..., description="Total distance run this week (KST Monday 00:00 onwards).")
+    me: bool = Field(..., description="True면 호출자 본인 행 (본인 하이라이트용).")
 
 
 class CrewUpdate(BaseModel):

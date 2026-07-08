@@ -246,7 +246,13 @@ def run_tests() -> None:
             assert second["rank"] == 2,             f"2등 rank should be 2, got {second['rank']}"
             assert second["distance_km"] == 3.0,   f"2등 distance should be 3.0, got {second['distance_km']}"
             assert second["nickname"] == "테스트러너2", f"2등 nickname mismatch: {second['nickname']}"
-            ok("test1 1등 5km ✓  test2 2등 3km ✓  닉네임 ✓")
+            # me 플래그 — 호출자 본인 행만 True (API_GUIDE 계약)
+            assert first["me"] is True,  f"tok1 호출 → test1 행 me=True: {first}"
+            assert second["me"] is False, f"tok1 호출 → test2 행 me=False: {second}"
+            r = api(client, "GET", f"/crews/{crew_id}/ranking", tok2)
+            m2 = {e["user_id"]: e["me"] for e in r.json()}
+            assert m2[uid2] is True and m2[uid1] is False, f"tok2 호출 me 반전: {m2}"
+            ok("test1 1등 5km ✓  test2 2등 3km ✓  닉네임 ✓  me(양방향) ✓")
 
             # ── 8. test2 logs 4km more → total 7km → should overtake ─────
             step("8. test2 추가 4km → 합산 7km → 역전 1등 확인")

@@ -1063,6 +1063,7 @@ async def get_weekly_ranking(crew_id: str, caller_id: str) -> list[CrewRankingEn
             user_id=uid,
             nickname=nicknames.get(uid),
             distance_km=round(dist, 2),
+            me=(uid == caller_id),
         )
         for rank, uid, dist in ranked
     ]
