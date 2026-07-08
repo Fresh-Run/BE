@@ -267,7 +267,7 @@ fetch(`${API_BASE}/api/me/profile`, {
 
 > **theme/lang 구현 힌트**: 로컬 캐시 + 서버 동기화 권장 — 첫 프레임(로그인 전·오프라인)은 AsyncStorage 캐시로 그리고, 로그인 후 `GET /me/settings` 값으로 갱신하세요.
 >
-> **ai_course/weather는 실제 파이프라인에 반영됩니다** (전 티어 공통, 무료 포함):
+> **ai_course/weather는 실제 파이프라인에 반영됩니다** (전 티어 공통, 무료 포함 — 2026-07-09 티어 결정 ⓐ 확정: 생성 기능이 free 주3회로 열려 있어 설정도 개방, 차등은 쿼터로. 시안의 프리미엄 잠금은 제거됨·설정 UI도 전 티어):
 > - `ai_course` → `POST /routes/generate`가 body에 없는 필드의 기본값으로 사용 (우선순위: body > 설정 > 서버 기본값, §홈 표 참고).
 > - `weather` → `GET /weather`의 `running_index.comment`가 내 기준(`avoid_dust`/`dust_level_pm10`, `avoid_heat`/`heat_temp_c`, `avoid_rain`)을 넘으면 개인화되고 `personalized: true`가 됩니다. 복수 기준 초과 시 미세먼지 > 더위 > 비 순으로 하나만 표시. `score`/`label`은 공용 기준 그대로.
 
