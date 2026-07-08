@@ -34,6 +34,9 @@ if settings.sentry_dsn:
         dsn=settings.sentry_dsn,
         environment=settings.environment,
         traces_sample_rate=0,  # 에러 트래킹만 — APM은 후속
+        # SDK 기본 "medium"은 에러 요청의 JSON body(GPS 궤적·신체정보 포함
+        # 가능)를 US Sentry로 첨부 — 개인정보 축소 (PRIVACY_DATA_MAP §7-2)
+        max_request_body_size="never",
     )
     logging.getLogger(__name__).info("Sentry 활성화 (environment=%s)", settings.environment)
 
