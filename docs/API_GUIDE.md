@@ -199,7 +199,7 @@ fetch(`${API_BASE}/api/me/profile`, {
 | 신청 목록 (크루장) | `GET /crews/{id}/join-requests?limit&offset` | `[{id, user_id, nickname, created_at}]` pending만 최신순. 비크루장 403 |
 | 신청 승인/거절 (크루장) | `POST /crews/{id}/join-requests/{rid}/approve` / `/reject` | 204. 승인 → 신청자에게 `join_approved` 알림 + 멤버 추가. 승인 시 정원 초과면 409(신청은 pending 유지). 이미 결정된 신청은 404 |
 | 탈퇴/강퇴/양도 | `DELETE /crews/{id}/leave`, `DELETE /crews/{id}/members/{target_id}`, `PATCH /crews/{id}/transfer` | |
-| **초대 코드 (크루장)** | `GET /crews/{id}/invite` (미발급 404 → POST로 발급), `POST /crews/{id}/invite` (생성/**재생성** — 이전 코드 즉시 무효, 유출 대응) | `{code}` — 8자 대문자+숫자 (I/O/0/1 없음). 카톡 등으로 공유 |
+| **초대 코드 (크루장)** | `GET /crews/{id}/invite` (미발급 404 → POST로 발급), `POST /crews/{id}/invite` (생성/**재생성** — 이전 코드 즉시 무효, 유출 대응) | `{code}` — 8자 대문자+숫자 (I/O/0/1 없음). 카톡 등으로 공유 (딥링크 포맷은 라우팅 표 아래 참조). **⚠️ 소비 규칙: 재생성하면 구코드가 즉시 무효 = 이미 공유된 초대 링크도 함께 죽는다** — 재생성 버튼에 "기존 초대 링크가 무효화됩니다" 경고를, 무효 링크 수신자에겐 preview 404를 "만료된 초대예요"로 표시 |
 | 코드 미리보기 | **`POST /crews/preview-by-code`** `{code}` (권장) · `GET /crews/preview-by-code?code=` (레거시) | 가입 확정 전 "어느 크루인지" 확인 — `CrewResponse` 반환. **비공개 크루도 조회됨** (코드 = 초대장). 잘못된 코드 404. **⚠️ POST 사용 권장** — GET은 코드가 URL 쿼리스트링 → 서버 access log에 평문으로 남음. 두 경로 동작·응답 동일하니 신규/변경은 POST(body)로 붙일 것 |
 | **코드로 가입** | `POST /crews/join-by-code` body `{code}` | 200 `CrewResponse` (바로 크루 화면 이동). **join_policy·비공개 무관 즉시 가입** — 크루 생성 화면의 "비공개: 초대 링크로만 가입 가능해요"가 이 경로. 대소문자·공백은 서버가 정규화. 이미 멤버/정원 409, 잘못된 코드 404. 승인제에 신청해뒀던 pending은 자동 정리 |
 | 멤버/랭킹 | `GET /crews/{id}/members`, `/crews/{id}/ranking` | 랭킹: 이번 주 KST 거리순, `me` 플래그. **visibility 무관** — 랭킹·챌린지 누적 거리는 `private` run도 포함(크루=활동 공유 원칙 + 거리 은닉 어뷰징 방지). visibility는 run 카드 노출만 제어, 집계 거리엔 영향 없음. **단 GPS 검증(verified) run만 집계** — 트랙 없는 수동 기록은 랭킹·챌린지 거리에 안 잡힘(UI에 "GPS 기록만 집계" 안내 권장) |
@@ -225,6 +225,8 @@ fetch(`${API_BASE}/api/me/profile`, {
 > | **`crew_announcement`** | announcement | 크루 공지 (`/crews/{crew_id}/…`) | **`payload.crew_id`** (target_id는 공지id) + `target_id`(=공지id) |
 >
 > **주의**: `crew_announcement`는 target_id가 공지id라 **crew_id는 `payload`에만** 있다. `payload.crew_id`가 없으면(2026-07-08 이전 발송분) 크루로 못 가니 폴백으로 무시하거나 크루 목록으로 보낸다. 그 외 type은 target_id만으로 라우팅 가능 — payload 불필요.
+>
+> **크루 초대 링크 (위 표와 성격 다름 — 알림이 아니라 유저 공유 링크)**: `freshrun://crew-invite?code=XXXXXXXX` (2026-07-09 확정). 발신은 **클라이언트 공유 시트**(서버는 코드만 제공 — `GET·POST /crews/{id}/invite`), 서버가 이 링크를 발송하는 일은 없다. **수신 앱 처리**: `code` 추출 → `POST /crews/preview-by-code`로 크루 확인 모달 → 유저 확인 후 `POST /crews/join-by-code`.
 
 ### 프로필
 
