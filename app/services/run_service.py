@@ -520,16 +520,19 @@ async def get_run(run_id: str, user_id: str) -> RunResponse | None:
         return None
 
     photo_paths = row.get("photos") or []
-    tracks, kudos, comments, signed = await asyncio.gather(
+    tracks, kudos, comments, signed, mine = await asyncio.gather(
         _track_summaries([row["id"]]),
         _kudos_counts([row["id"]]),
         _comment_counts([row["id"]]),
         _signed_photo_urls(photo_paths),
+        _my_kudos_set([row["id"]], user_id),
     )
     photos = [signed[p] for p in photo_paths if p in signed]
     common = dict(
         has_track=row["id"] in tracks, splits=tracks.get(row["id"]),
         kudos_count=kudos.get(row["id"], 0),
+        # 피드 my_kudos와 동일 계산 (본인 run은 kudos 불가 → 자연히 False)
+        my_kudos=row["id"] in mine,
         comment_count=comments.get(row["id"], 0), photos=photos,
     )
     if is_own:

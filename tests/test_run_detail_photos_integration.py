@@ -185,6 +185,16 @@ def run_tests():
         assert api(c, "GET", f"/runs/{runs['private']}", tok_s).status_code == 404
         ok("타인 photos 접근 ✓ 썸네일 2경로 ✓ private 사진 은닉 ✓")
 
+        step("6b. 상세 my_kudos — 준 사람 true / 안 준 사람 false / 본인 false")
+        assert api(c, "POST", f"/runs/{runs['public']}/kudos", tok_f).status_code == 204
+        d_f = api(c, "GET", f"/runs/{runs['public']}", tok_f).json()
+        d_s = api(c, "GET", f"/runs/{runs['public']}", tok_s).json()
+        d_a = api(c, "GET", f"/runs/{runs['public']}", tok_a).json()
+        assert d_f["my_kudos"] is True and d_f["kudos_count"] == 1, d_f["my_kudos"]
+        assert d_s["my_kudos"] is False and d_s["kudos_count"] == 1
+        assert d_a["my_kudos"] is False, "본인 run은 kudos 불가 → 항상 false (피드 관례)"
+        ok("F true·S false·본인 false + kudos_count 일관 ✓")
+
         step("7. 검증 — prefix 밖 422 / 4장 422 / 제거 시 Storage 소멸")
         r = api(c, "PATCH", f"/runs/{runs['public']}", tok_a,
                 json={"photos": [f"{runs['private']}/1.png"]})
