@@ -107,7 +107,7 @@ fetch(`${API_BASE}/api/me/profile`, {
 > - 응답에도 `title`·`visibility` 포함(저장 확인용).
 | 기록 목록 | `GET /runs?limit&route_id?&before?` | `RunResponse[]` 최신순 — GPS run은 `splits[]`·`has_track`·`verification` 포함. **`kudos_count`**(♥)·**`comment_count`**(💬) 배치 집계(N+1 없음). 본인 목록이라 `my_kudos`는 없음(본인 kudos 불가). **커서 페이지네이션**: 다음 페이지는 `before=<마지막 run의 ran_at 그대로>`(ISO+타임존, naive는 422) — 응답이 `limit`보다 짧으면 끝 |
 | 기록 단건 | `GET /runs/{run_id}` | 본인 것만, 아니면 404. 목록과 동일하게 **`kudos_count`** 포함 |
-| **러닝 경로 (지도)** | `GET /runs/{run_id}/track` | `{polyline[{lat,lng}], server_distance_km, elev_gain_m, point_count_raw/kept}` — 활동 상세 지도용. `polyline`은 코스의 `polyline`과 동일 포맷(같은 렌더 코드 사용 가능). **접근: 본인 + run 공개범위 내 타인**(public 누구나 / followers는 팔로워·같은 크루 / private 본인만 — kudos·댓글과 동일 게이트). 범위 밖·트랙 없는 run은 404 (`has_track`으로 사전 판단 — 타인 run 카드도 has_track 보고 지도 진입 결정) |
+| **러닝 경로 (지도)** | `GET /runs/{run_id}/track` | `{polyline[{lat,lng}], server_distance_km, elev_gain_m, point_count_raw/kept}` — 활동 상세 지도용. `polyline`은 코스의 `polyline`과 동일 포맷(같은 렌더 코드 사용 가능). **접근: 본인 + run 공개범위 내 타인**(public 누구나 / followers는 팔로워·같은 크루 / private 본인만 — kudos·댓글과 동일 게이트). 범위 밖·트랙 없는 run은 404 (`has_track`으로 사전 판단 — 타인 run 카드도 has_track 보고 지도 진입 결정). **러닝 공유 카드(RN 뷰 캡처) 렌더링에도 이 응답 + run 상세 스탯을 사용 — 별도 API 불필요** |
 | 2탭 피드백 | `PATCH /runs/{run_id}/feedback` | body: `liked`(bool), `tags[]` (허용 태그는 Swagger의 FeedbackTag) |
 
 > **AI 월간 인사이트 응답** (`GET /me/insights/monthly`):
