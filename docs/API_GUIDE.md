@@ -175,7 +175,7 @@ fetch(`${API_BASE}/api/me/profile`, {
 | 전체 공개 코스 | `GET /routes/public?sort=newest\|popular&limit` | 동일 shape |
 | 근처 코스 | `GET /routes/nearby?lat&lng&radius_km` | 동일 shape. `radius_km`은 최대 50으로 클램프, `limit` 1~100 클램프 (음수·거대값도 안전) |
 | 코스 검색 | `GET /routes/search?q` | 동일 shape. `limit` 1~100 클램프 |
-| **장소 검색 (경유지 후보)** | `GET /places?keyword&lat&lng&radius_m&limit` | **⚠️ 인증 필수로 전환됨 (프론트 필독)** — 토큰 없이 호출하면 **401**. `keyword`(1~50자), 좌표(한국 bbox), `radius_m`(1~20000), `limit`(1~15) 범위 밖은 422. 경유지 선택 UI에서 쓰면 반드시 Authorization 헤더 포함 |
+| **장소 검색 (경유지·출발지)** | `GET /places?keyword&lat?&lng?&radius_m?&limit` | **⚠️ 인증 필수** — 토큰 없이 401. **용도별 2모드**: ① **경유지 검색** — `lat`+`lng` 포함 → 좌표 기준 **거리순**, `radius_m` 기본 2000·최대 20000(**20km 캡은 카카오 API 자체 제약** — 더 넓게는 ②로) ② **출발지 검색** — 좌표 생략 → **전국 정확도순**. 422 케이스: 한쪽 좌표만 / 좌표 없이 `radius_m` / `keyword` 1~50자 밖 / bbox·캡 밖. **출발지 자동완성 UI는 디바운스 300ms+ 권장**(타이핑마다 호출하면 카카오 쿼터 소모) |
 | 좋아요 토글 | `POST/DELETE /routes/{id}/like` | 204, 멱등 |
 | 댓글 | `GET/POST /routes/{id}/comments`, `DELETE /routes/{id}/comments/{comment_id}` | `content` 1~500자 |
 | 이 코스 달리기(복사) | `POST /routes/{id}/copy` | 내 코스로 복사본 생성 |

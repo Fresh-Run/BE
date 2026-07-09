@@ -2156,25 +2156,37 @@ async def get_weather(
         )
 
 
-@router.get("/places", response_model=list[Place], summary="Search nearby places")
+@router.get("/places", response_model=list[Place], summary="Search places (경유지·출발지)")
 async def search_places(
     keyword: str = Query(..., min_length=1, max_length=50),
-    lat: float = Query(..., ge=33.0, le=39.0),
-    lng: float = Query(..., ge=124.0, le=132.0),
-    radius_m: int = Query(2000, ge=1, le=20000),
+    lat: float | None = Query(None, ge=33.0, le=39.0),
+    lng: float | None = Query(None, ge=124.0, le=132.0),
+    radius_m: int | None = Query(None, ge=1, le=20000),
     limit: int = Query(5, ge=1, le=15),
     user: CurrentUser = Depends(get_current_user),
 ) -> list[Place]:
-    """Search for pitstop candidates (e.g. '편의점') near a coordinate.
+    """Keyword place search — 좌표 유무로 모드가 갈린다.
 
-    인증 필수 (외부 지도 API 키 보호 — 익명 쿼터 남용 방지). 파라미터는
-    한국 bbox·반경·개수 상한으로 클램프.
+    - lat+lng: 좌표 기준 **거리순** (경유지 검색, radius_m 기본 2000 —
+      20km 캡은 카카오 API 자체 제약).
+    - 좌표 생략: **전국 정확도순** (출발지 검색). 이때 radius_m 동반은 422.
+    - 한쪽 좌표만 오면 422 (모호 거부).
+    인증 필수 (외부 지도 API 키 보호 — 익명 쿼터 남용 방지).
     """
+    if (lat is None) != (lng is None):
+        raise HTTPException(
+            status_code=422, detail="lat and lng must be provided together"
+        )
+    if lat is None and radius_m is not None:
+        raise HTTPException(
+            status_code=422,
+            detail="radius_m requires lat/lng (nationwide search has no radius)",
+        )
     try:
         return await map_service.search_places(
             keyword=keyword,
-            near=Coordinate(lat=lat, lng=lng),
-            radius_m=radius_m,
+            near=Coordinate(lat=lat, lng=lng) if lat is not None else None,
+            radius_m=radius_m if radius_m is not None else 2000,
             limit=limit,
         )
     except NotImplementedError as exc:

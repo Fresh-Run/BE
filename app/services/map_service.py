@@ -54,21 +54,23 @@ logger = logging.getLogger(__name__)
 
 async def search_places(
     keyword: str,
-    near: Coordinate,
+    near: Coordinate | None = None,
     radius_m: int = 2000,
     limit: int = 5,
 ) -> list[Place]:
-    """Search for places (e.g. '편의점') near a coordinate.
+    """Search for places (e.g. '편의점') near a coordinate, or nationwide.
 
+    near=None이면 전국 정확도순(출발지 검색) — 카카오가 좌표 없는 keyword
+    검색을 네이티브 지원하며, 그때 distance 정렬·radius는 불가(400)라
+    파라미터를 통째로 뺀다. 좌표가 있으면 현행 거리순 그대로.
     Place (keyword) search always uses Kakao, independent of MAP_PROVIDER
     (which only selects the *routing* provider, e.g. T-map for walking).
-    Returns a normalized list of Places.
     """
     return await _kakao_search_places(keyword, near, radius_m, limit)
 
 
 async def _kakao_search_places(
-    keyword: str, near: Coordinate, radius_m: int, limit: int
+    keyword: str, near: Coordinate | None, radius_m: int, limit: int
 ) -> list[Place]:
     """Kakao Local keyword search. Kakao expects x=lng, y=lat."""
     if not settings.kakao_rest_api_key:
@@ -78,14 +80,12 @@ async def _kakao_search_places(
         )
 
     headers = {"Authorization": f"KakaoAK {settings.kakao_rest_api_key}"}
-    params = {
-        "query": keyword,
-        "x": near.lng,
-        "y": near.lat,
-        "radius": radius_m,
-        "size": limit,
-        "sort": "distance",
-    }
+    params = {"query": keyword, "size": limit}
+    if near is not None:
+        params.update({"x": near.lng, "y": near.lat,
+                       "radius": radius_m, "sort": "distance"})
+    else:
+        params["sort"] = "accuracy"  # 좌표 없이 sort=distance는 카카오 400
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         resp = await client.get(KAKAO_KEYWORD_SEARCH_URL, headers=headers, params=params)
         resp.raise_for_status()
