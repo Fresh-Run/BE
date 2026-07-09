@@ -293,5 +293,24 @@ async def delete_account(user_id: str, email: str | None) -> None:
     except Exception:  # noqa: BLE001
         logger.warning("탈퇴 중 아바타 삭제 실패 — 진행 (user=%s)", user_id, exc_info=True)
 
+    # 러닝 사진도 Storage에 FK가 없어 명시 삭제 (best-effort — 아바타와 동일 축).
+    # runs.photos 컬럼이 정확한 경로 목록이라 prefix 리스팅 불필요.
+    try:
+        rows = await asyncio.to_thread(
+            lambda: supabase.table("runs")
+            .select("photos")
+            .eq("user_id", user_id)
+            .neq("photos", "{}")
+            .execute()
+        )
+        paths = [p for r in rows.data for p in (r.get("photos") or [])]
+        if paths:
+            await asyncio.to_thread(
+                lambda: supabase.storage.from_("run-photos").remove(paths)
+            )
+    except Exception:  # noqa: BLE001
+        logger.warning("탈퇴 중 러닝 사진 삭제 실패 — 진행 (user=%s)", user_id,
+                       exc_info=True)
+
     await asyncio.to_thread(lambda: supabase.auth.admin.delete_user(user_id))
     logger.info("계정 삭제 완료 (user=%s)", user_id)

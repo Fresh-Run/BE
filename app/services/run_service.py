@@ -20,6 +20,7 @@ from app.models.schemas import (
     RecordEntry,
     RecordsBlock,
     RunCommentResponse,
+    RunPhotoUploadUrlResponse,
     RunRequest,
     RunResponse,
     RunSplit,
@@ -413,28 +414,143 @@ async def _track_summaries(run_ids: list[str]) -> dict[str, list[RunSplit]]:
         return {}
 
 
+# ── 러닝 사진 (run-photos private 버킷 — 읽기는 서명 URL로만) ─────────────────
+
+_PHOTO_BUCKET = "run-photos"
+_PHOTO_MAX_BYTES = 5 * 1024 * 1024
+_PHOTO_TYPES = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}
+_PHOTO_URL_TTL_S = 3600  # 서명 URL 만료 — 가시성 게이트 재평가 주기 겸용
+
+
+class PhotoPathInvalid(Exception):
+    """photos 경로가 이 run의 prefix 밖 (남의 run 사진 참조 차단) — 422."""
+
+
+async def _signed_photo_urls(paths: list[str]) -> dict[str, str]:
+    """{경로: 서명 URL(1h)} — 배치 1콜. best-effort: 실패 시 빈 dict (표시 생략)."""
+    if not paths:
+        return {}
+    try:
+        supabase = get_supabase_admin()
+        res = await asyncio.to_thread(
+            lambda: supabase.storage.from_(_PHOTO_BUCKET)
+            .create_signed_urls(paths, _PHOTO_URL_TTL_S)
+        )
+        out: dict[str, str] = {}
+        for path, item in zip(paths, res):
+            url = item.get("signedURL") or item.get("signed_url") or item.get("signedUrl")
+            if url and not item.get("error"):
+                out[path] = url
+        return out
+    except Exception:  # noqa: BLE001 — 사진은 부가 정보, 조회를 막지 않는다
+        logger.warning("사진 서명 URL 발급 실패 — 사진 없이 응답", exc_info=True)
+        return {}
+
+
+async def create_run_photo_upload_url(
+    run_id: str, user_id: str, slot: int, content_type: str
+) -> RunPhotoUploadUrlResponse | None:
+    """사진 서명 업로드 URL (avatar 3-step 동형) — 소유자만 (아니면 None → 404).
+
+    경로는 {run_id}/{slot}.{ext} 고정. 같은 슬롯의 다른 확장자 잔재를 지워
+    교체가 파일을 남기지 않게 한다 (아바타 잔존 사례 방지).
+    """
+    supabase = get_supabase_admin()
+    own = await asyncio.to_thread(
+        lambda: supabase.table("runs")
+        .select("id")
+        .eq("id", run_id)
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+    if not own.data:
+        return None
+    ext = _PHOTO_TYPES[content_type]
+    path = f"{run_id}/{slot}.{ext}"
+
+    def _issue() -> dict:
+        storage = supabase.storage.from_(_PHOTO_BUCKET)
+        try:  # 슬롯 교체 시 이전 확장자 파일 제거 — 없어도 무해
+            storage.remove([f"{run_id}/{slot}.{e}" for e in _PHOTO_TYPES.values()])
+        except Exception:  # noqa: BLE001
+            pass
+        return storage.create_signed_upload_url(path)
+
+    res = await asyncio.to_thread(_issue)
+    upload_url = res.get("signed_url") or res.get("signedUrl") or res.get("signedURL")
+    if not upload_url:
+        raise RuntimeError("Storage did not return a signed upload URL.")
+    return RunPhotoUploadUrlResponse(
+        upload_url=upload_url, path=path,
+        max_bytes=_PHOTO_MAX_BYTES, allowed_types=list(_PHOTO_TYPES),
+    )
+
+
+# 타인이 보는 run 상세의 화이트리스트 — 여기 없는 필드는 기본값(미노출).
+# notes(개인 메모)·feedback류·is_flagged/distance_km_reported(부정 판정 내부)·
+# verification(suspect 낙인)·visibility는 의도적으로 제외 (설계 §1).
+_PUBLIC_DETAIL_FIELDS = (
+    "id", "created_at", "user_id", "ran_at", "distance_km",
+    "duration_sec", "avg_pace_sec_per_km", "title",
+)
+
+
 async def get_run(run_id: str, user_id: str) -> RunResponse | None:
-    """Return one run, or None if it doesn't exist or isn't the caller's."""
+    """Return one run — 본인은 전체, 타인은 공개범위 내에서 정제된 필드만.
+
+    게이트는 track·kudos·댓글과 동일(_can_see_run). 차단·부재 모두 None(404 은닉).
+    """
     supabase = get_supabase_admin()
     res = await asyncio.to_thread(
         lambda: supabase.table("runs")
         .select("*")
         .eq("id", run_id)
-        .eq("user_id", user_id)
         .limit(1)
         .execute()
     )
     if not res.data:
         return None
     row = res.data[0]
-    tracks, kudos, comments = await asyncio.gather(
+    owner_id = row["user_id"]
+    is_own = owner_id == user_id
+    if not is_own and not await _can_see_run(
+        owner_id, user_id, row.get("visibility") or "followers"
+    ):
+        return None
+
+    photo_paths = row.get("photos") or []
+    tracks, kudos, comments, signed = await asyncio.gather(
         _track_summaries([row["id"]]),
         _kudos_counts([row["id"]]),
         _comment_counts([row["id"]]),
+        _signed_photo_urls(photo_paths),
     )
-    return RunResponse(**row, has_track=row["id"] in tracks,
-                       splits=tracks.get(row["id"]), kudos_count=kudos.get(row["id"], 0),
-                       comment_count=comments.get(row["id"], 0))
+    photos = [signed[p] for p in photo_paths if p in signed]
+    common = dict(
+        has_track=row["id"] in tracks, splits=tracks.get(row["id"]),
+        kudos_count=kudos.get(row["id"], 0),
+        comment_count=comments.get(row["id"], 0), photos=photos,
+    )
+    if is_own:
+        return RunResponse(**{k: v for k, v in row.items() if k != "photos"}, **common)
+
+    # 타인: 화이트리스트 + route_id는 연결 코스가 public일 때만 (프로브 차단)
+    public_route_id = None
+    if row.get("route_id"):
+        pub = await asyncio.to_thread(
+            lambda: supabase.table("routes")
+            .select("id")
+            .eq("id", row["route_id"])
+            .eq("is_public", True)
+            .limit(1)
+            .execute()
+        )
+        public_route_id = row["route_id"] if pub.data else None
+    return RunResponse(
+        **{k: row[k] for k in _PUBLIC_DETAIL_FIELDS},
+        route_id=public_route_id, visibility=None, **common,
+    )
 
 
 async def get_run_track(run_id: str, user_id: str) -> RunTrackResponse | None:
@@ -872,7 +988,7 @@ async def list_activity_feed(
     runs_res = await asyncio.to_thread(
         lambda: supabase.table("runs")
         .select("id, user_id, ran_at, distance_km, duration_sec, "
-                "avg_pace_sec_per_km, route_id, title")
+                "avg_pace_sec_per_km, route_id, title, photos")
         .in_("user_id", audience)
         # private run은 본인 것만 (팔로우 대상의 private는 활동 피드에서 제외)
         .or_(f"visibility.neq.private,user_id.eq.{user_id}")
@@ -900,12 +1016,14 @@ async def list_activity_feed(
         )
         return {row["id"]: row["summary"] for row in r.data}
 
-    briefs, summaries, kudos_counts, my_kudos, comment_counts = await asyncio.gather(
+    firsts = {r["id"]: (r.get("photos") or [None])[0] for r in rows}
+    briefs, summaries, kudos_counts, my_kudos, comment_counts, signed = await asyncio.gather(
         profile_service.get_profile_briefs([r["user_id"] for r in rows]),
         _public_route_summaries(),
         _kudos_counts(run_ids),
         _my_kudos_set(run_ids, user_id),
         _comment_counts(run_ids),
+        _signed_photo_urls([p for p in firsts.values() if p]),
     )
     return [
         ActivityFeedItem(
@@ -924,6 +1042,7 @@ async def list_activity_feed(
             is_mine=(row["user_id"] == user_id),
             kudos_count=kudos_counts.get(row["id"], 0),
             my_kudos=row["id"] in my_kudos,
+            photo_thumb=signed.get(firsts.get(row["id"])),
         )
         for row in rows
     ]
@@ -958,7 +1077,7 @@ async def list_user_runs(
     runs_res = await asyncio.to_thread(
         lambda: supabase.table("runs")
         .select("id, user_id, ran_at, distance_km, duration_sec, "
-                "avg_pace_sec_per_km, route_id, title, visibility")
+                "avg_pace_sec_per_km, route_id, title, visibility, photos")
         .eq("user_id", target_id)
         .in_("visibility", allowed)
         .order("ran_at", desc=True)
@@ -984,12 +1103,14 @@ async def list_user_runs(
         )
         return {row["id"]: row["summary"] for row in r.data}
 
-    brief, summaries, kudos_counts, my_kudos, comment_counts = await asyncio.gather(
+    firsts = {r["id"]: (r.get("photos") or [None])[0] for r in rows}
+    brief, summaries, kudos_counts, my_kudos, comment_counts, signed = await asyncio.gather(
         profile_service.get_profile_briefs([target_id]),
         _public_route_summaries(),
         _kudos_counts(run_ids),
         _my_kudos_set(run_ids, caller_id),
         _comment_counts(run_ids),
+        _signed_photo_urls([p for p in firsts.values() if p]),
     )
     is_own = caller_id == target_id
     return [
@@ -1011,6 +1132,7 @@ async def list_user_runs(
             my_kudos=row["id"] in my_kudos,
             # 본인 프로필에서만 visibility 뱃지 렌더 (타인 프로필엔 노출 불필요)
             visibility=row.get("visibility") if is_own else None,
+            photo_thumb=signed.get(firsts.get(row["id"])),
         )
         for row in rows
     ]
@@ -1161,16 +1283,21 @@ async def list_runs(
     result = await asyncio.to_thread(_query)
     run_ids = [row["id"] for row in result.data]
     # 배치 집계로 kudos·댓글 수 (활동 피드와 동일 방식, N+1 방지)
-    tracks, kudos, comments = await asyncio.gather(
+    # 썸네일: 행마다 첫 사진만, 서명 URL은 배치 1콜 (목록 정책 — 설계 §2-E)
+    firsts = [(row["photos"] or [None])[0] for row in result.data]
+    tracks, kudos, comments, signed = await asyncio.gather(
         _track_summaries(run_ids),
         _kudos_counts(run_ids),
         _comment_counts(run_ids),
+        _signed_photo_urls([p for p in firsts if p]),
     )
     return [
-        RunResponse(**row, has_track=row["id"] in tracks,
+        RunResponse(**{k: v for k, v in row.items() if k != "photos"},
+                    has_track=row["id"] in tracks,
                     splits=tracks.get(row["id"]), kudos_count=kudos.get(row["id"], 0),
-                    comment_count=comments.get(row["id"], 0))
-        for row in result.data
+                    comment_count=comments.get(row["id"], 0),
+                    photo_thumb=signed.get(first) if first else None)
+        for row, first in zip(result.data, firsts)
     ]
 
 
@@ -1204,18 +1331,38 @@ async def set_feedback(
 
     updated = result.data[0]
     logger.info("Saved feedback for run (id=%s, liked=%s).", run_id, liked)
-    return RunResponse(**updated)
+    # photos 컬럼은 raw 경로 — 응답 계약은 서명 URL이라 여기선 제외
+    return RunResponse(**{k: v for k, v in updated.items() if k != "photos"})
 
 
 async def update_run(
     run_id: str, user_id: str, fields: dict
 ) -> RunResponse | None:
-    """저장 화면 편집: 본인 run의 title/visibility/notes만 수정 (보낸 것만).
+    """저장 화면 편집: 본인 run의 title/visibility/notes/photos만 (보낸 것만).
 
     거리·시간·검증값은 불변. user_id로 스코프해 남의 run은 0행(None→404).
     빈 patch면 조회만 해서 현재 상태 반환. splits/has_track도 채워 반환.
+    photos: {run_id}/ prefix 밖 경로는 PhotoPathInvalid(→422), 배열에서
+    빠진 기존 경로는 Storage에서 best-effort 삭제 (교체·삭제 연동).
     """
     supabase = get_supabase_admin()
+    removed_paths: list[str] = []
+    if "photos" in fields:
+        new_photos = fields["photos"]
+        if any(not p.startswith(f"{run_id}/") for p in new_photos):
+            raise PhotoPathInvalid()
+        cur = await asyncio.to_thread(
+            lambda: supabase.table("runs")
+            .select("photos")
+            .eq("id", run_id)
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+        if not cur.data:
+            return None
+        removed_paths = [p for p in (cur.data[0].get("photos") or [])
+                         if p not in new_photos]
     if fields:
         result = await asyncio.to_thread(
             lambda: supabase.table("runs")
@@ -1227,5 +1374,13 @@ async def update_run(
         if not result.data:
             return None
         logger.info("Updated run (id=%s, fields=%s).", run_id, list(fields))
+        if removed_paths:  # 커밋 후 정리 — 실패해도 다음 교체/탈퇴가 회수 (best-effort)
+            try:
+                await asyncio.to_thread(
+                    lambda: supabase.storage.from_(_PHOTO_BUCKET).remove(removed_paths)
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning("사진 Storage 정리 실패 — 진행 (run=%s)", run_id,
+                               exc_info=True)
     # 편집 후(또는 빈 patch) 최신 상태를 splits까지 채워 반환
     return await get_run(run_id, user_id)

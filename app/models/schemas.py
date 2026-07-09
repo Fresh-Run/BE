@@ -836,13 +836,34 @@ class RunRequest(BaseModel):
 
 
 class RunUpdate(BaseModel):
-    """저장 후 편집 (제목·공개 범위·메모). 보낸 필드만 수정, 거리·시간은 불변."""
+    """저장 후 편집 (제목·공개 범위·메모·사진). 보낸 필드만 수정, 거리·시간은 불변."""
 
     model_config = {"extra": "ignore"}
 
     title: Optional[str] = Field(None, max_length=60)
     visibility: Optional[Literal["public", "followers", "private"]] = None
     notes: Optional[str] = Field(None, max_length=2000)
+    photos: Optional[list[str]] = Field(
+        None, max_length=3,
+        description="사진 경로 배열 (업로드 3-step의 path 그대로, ≤3). "
+        "빠진 기존 경로는 Storage에서 삭제됨. []로 전체 삭제.",
+    )
+
+
+class RunPhotoUploadUrlRequest(BaseModel):
+    """POST /runs/{id}/photos/upload-url — 슬롯별 서명 업로드 URL 발급."""
+
+    slot: int = Field(..., ge=1, le=3, description="사진 슬롯 (1~3).")
+    content_type: Literal["image/jpeg", "image/png", "image/webp"]
+
+
+class RunPhotoUploadUrlResponse(BaseModel):
+    """서명 업로드 URL — avatar 3-step과 동형 (run-photos private 버킷)."""
+
+    upload_url: str
+    path: str = Field(..., description="업로드 후 PATCH /runs/{id}의 photos에 넣을 경로.")
+    max_bytes: int
+    allowed_types: list[str]
 
 
 class RunResponse(BaseModel):
@@ -858,7 +879,9 @@ class RunResponse(BaseModel):
     avg_pace_sec_per_km: Optional[int] = None
     notes: Optional[str] = None
     title: Optional[str] = None
-    visibility: str = Field("public", description="public/followers/private.")
+    visibility: Optional[str] = Field(
+        "public", description="public/followers/private. 타인이 보는 상세에선 null."
+    )
     # 완료 화면 비교 rows (POST /runs 응답에서만 — 최근 30일 평균 대비)
     recent_avg_pace_sec_per_km: Optional[int] = Field(
         None, description="최근 30일 평균 페이스 (이번 run 제외). 히스토리 없으면 null.",
@@ -895,6 +918,13 @@ class RunResponse(BaseModel):
         0, description="이 run이 받은 kudos 수 (기록 카드 ♥ 표시용). 본인 목록이라 my_kudos는 없음."
     )
     comment_count: int = Field(0, description="이 run이 받은 댓글 수 (카드 💬 표시용).")
+    photos: list[str] = Field(
+        default_factory=list,
+        description="사진 서명 URL(만료 1h) — 상세(GET /runs/{id})에서만 채움, 목록은 photo_thumb.",
+    )
+    photo_thumb: Optional[str] = Field(
+        None, description="첫 사진 서명 URL(만료 1h) — 목록 카드 썸네일용."
+    )
 
 
 class RunTrackResponse(BaseModel):
@@ -1108,6 +1138,9 @@ class CrewRunItem(BaseModel):
     duration_sec: int
     avg_pace_sec_per_km: Optional[int] = None
     route_id: Optional[str] = None
+    photo_thumb: Optional[str] = Field(
+        None, description="첫 사진 서명 URL(만료 1h) — 카드 썸네일. 없으면 null."
+    )
     route_summary: Optional[str] = Field(
         None, description="연결된 코스 요약 — 공개 코스일 때만, 비공개면 null."
     )

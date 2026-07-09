@@ -1,7 +1,7 @@
 # RUN_DETAIL_AND_PHOTOS_DESIGN — run 상세 개방 + 러닝 사진 (설계)
 
-> 2026-07-09. 상태: **결정 완료(§1-C verification 타인 제외 · §2-A 방식 B ·
-> §2-E 목록 첫 장만), 설계 승인 대기.** 승인 후 SQL → 구현.
+> 2026-07-09. 상태: **구현 완료·배포됨** (§1-C verification 타인 제외 ·
+> §2-A 방식 B · §2-E 목록 첫 장만. SQL 적용됨 — db/2026-07-09_run_photos.sql).
 
 ## 1. run 상세/트랙 가시성 (②)
 

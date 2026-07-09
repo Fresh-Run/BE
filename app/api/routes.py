@@ -54,6 +54,8 @@ from app.models.schemas import (
     RsvpRequest,
     RouteRequest,
     RouteResponse,
+    RunPhotoUploadUrlRequest,
+    RunPhotoUploadUrlResponse,
     RunRequest,
     RunUpdate,
     RunResponse,
@@ -866,15 +868,50 @@ async def update_run(
     req: RunUpdate,
     user: CurrentUser = Depends(get_current_user),
 ) -> RunResponse:
-    """본인 run의 title/visibility/notes만 수정 (보낸 필드만). 404 if 없음/남의 것."""
+    """본인 run의 title/visibility/notes/photos 수정 (보낸 필드만). 404 if 없음/남의 것.
+
+    photos는 업로드 3-step의 path 배열(≤3) — 빠진 기존 경로는 Storage에서
+    삭제됨. 이 run의 prefix 밖 경로는 422.
+    """
     fields = req.model_dump(exclude_none=True)
     try:
         run = await run_service.update_run(run_id, user_id=user.user_id, fields=fields)
+    except run_service.PhotoPathInvalid:
+        raise HTTPException(
+            status_code=422,
+            detail="photos paths must belong to this run ({run_id}/... only)",
+        )
     except Exception as exc:  # noqa: BLE001
         raise _bad_gateway("Failed to update run", exc)
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
     return run
+
+
+@router.post(
+    "/runs/{run_id}/photos/upload-url",
+    response_model=RunPhotoUploadUrlResponse,
+    summary="러닝 사진 업로드 URL 발급 (소유자, 슬롯 1~3)",
+)
+async def create_run_photo_upload_url(
+    run_id: str,
+    req: RunPhotoUploadUrlRequest,
+    user: CurrentUser = Depends(get_current_user),
+) -> RunPhotoUploadUrlResponse:
+    """3-step 흐름의 1단계 (avatar와 동형) — ① 발급 ② 이미지 PUT(5MB·타입은
+    Storage가 강제) ③ PATCH /runs/{id}의 photos에 응답의 path 추가.
+
+    ⚠️ 업로드 전 클라이언트에서 재인코딩으로 EXIF(GPS 좌표) 제거 필수 — 계약.
+    """
+    try:
+        res = await run_service.create_run_photo_upload_url(
+            run_id, user_id=user.user_id, slot=req.slot, content_type=req.content_type
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise _bad_gateway("Failed to create photo upload url", exc)
+    if res is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return res
 
 
 @router.patch(
@@ -964,13 +1001,15 @@ async def list_runs(
 @router.get(
     "/runs/{run_id}",
     response_model=RunResponse,
-    summary="러닝 기록 단건 조회 (본인 것만)",
+    summary="러닝 기록 단건 조회 (본인 전체 / 타인은 공개범위 내 정제 필드)",
 )
 async def get_run(
     run_id: str,
     user: CurrentUser = Depends(get_current_user),
 ) -> RunResponse:
-    """Return one of the caller's runs; 404 if missing or not theirs."""
+    """본인은 전체 필드, 타인은 run 공개범위 게이트(track·kudos와 동일) 통과 시
+    정제된 필드만(notes·feedback·verification 등 미노출 — API_GUIDE 참조).
+    404 if 없음/범위 밖 (존재 은닉)."""
     try:
         run = await run_service.get_run(run_id, user_id=user.user_id)
     except Exception as exc:  # noqa: BLE001

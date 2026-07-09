@@ -738,7 +738,7 @@ async def list_crew_runs(
     runs_res = await asyncio.to_thread(
         lambda: supabase.table("runs")
         .select("id, user_id, ran_at, distance_km, duration_sec, "
-                "avg_pace_sec_per_km, route_id, title")
+                "avg_pace_sec_per_km, route_id, title, photos")
         .in_("user_id", member_ids)
         # 크루 피드는 private만 제외 (public·followers는 크루원에게 노출 — 기존 동작 보존)
         .neq("visibility", "private")
@@ -766,11 +766,16 @@ async def list_crew_runs(
         )
         return {r["id"]: r["summary"] for r in res.data}
 
-    from app.services.run_service import _comment_counts  # local: 순환 import 회피
-    briefs, summaries, comment_counts = await asyncio.gather(
+    from app.services.run_service import (  # local: 순환 import 회피
+        _comment_counts,
+        _signed_photo_urls,
+    )
+    firsts = {r["id"]: (r.get("photos") or [None])[0] for r in rows}
+    briefs, summaries, comment_counts, signed = await asyncio.gather(
         profile_service.get_profile_briefs([r["user_id"] for r in rows]),
         _public_route_summaries(),
         _comment_counts([r["id"] for r in rows]),
+        _signed_photo_urls([p for p in firsts.values() if p]),
     )
     return [
         CrewRunItem(
@@ -786,6 +791,7 @@ async def list_crew_runs(
             route_id=row.get("route_id"),
             route_summary=summaries.get(row.get("route_id")),
             comment_count=comment_counts.get(row["id"], 0),
+            photo_thumb=signed.get(firsts.get(row["id"])),
         )
         for row in rows
     ]
