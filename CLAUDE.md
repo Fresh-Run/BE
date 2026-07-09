@@ -53,8 +53,9 @@
   direct(`db.*`)는 IPv6, transaction pooler(6543)는 pg_dump 불가.
 - **Gemini**: thinking 기본 ON → 구조화 호출(function calling)은
   `reasoning_effort="none"` 필수. 자연어 생성물(코치·인사이트)은 thinking 유지.
-  선불 크레딧 소진 시 429 RESOURCE_EXHAUSTED → 서버는 502로 변환, Sentry에
-  캡처됨(체인에 RateLimitError).
+  선불 크레딧 소진 **또는 프로젝트 spend cap 초과**(잔액 있어도 발생) 시 동일한
+  429 RESOURCE_EXHAUSTED → 서버는 502로 변환, Sentry에 캡처됨(체인에
+  RateLimitError). 확인처: https://ai.studio/spend (실사례 2026-07-09).
 - **httpx INFO 로그가 요청 URL 전체**(쿼리스트링의 키 포함)를 기록 — 로그 레벨
   유지, 민감값은 쿼리스트링 금지(POST body).
 - **uvicorn은 git pull로 코드가 안 바뀐다** — 수정 후 반드시 재시작. 테스트

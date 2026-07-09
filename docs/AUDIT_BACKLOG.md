@@ -38,3 +38,9 @@
     - ② `_bad_gateway` 경로에 전송층 에러 한정 1회 재시도.
   - **발동 트리거**: Sentry에서 이 패턴 주 3회+ 관측 또는 베타 테스터 불만 → 카드 ① 우선 검토.
   - **참고**: 정확한 예외 클래스는 로그 버퍼 소실로 미확정(`httpx.ReadError` 추정) — Sentry 이벤트 상세의 chained exception에서 확인 가능.
+
+- **Gemini spend cap 초과 → 코스 생성·코치 신규 전 유저 502** (2026-07-09, 해소됨)
+  - **발생**: AI Studio 프로젝트 월간 spend cap 초과 → `POST /routes/generate` 연속 502 `route_generation_failed` (~수 시간, 프론트 리포트로 인지). 크레딧 소진과 **동일한 429 RESOURCE_EXHAUSTED**라 잔액이 있어도 발생 — CLAUDE.md 함정 항목 보강함.
+  - **규명**: fly logs 링버퍼 소실 전 원본 예외 확보 + Sentry 체인(RateLimitError)으로 즉시 판정. 최소 body 실호출 재현 → cap 상향 후 스모크 200 확인.
+  - **조치**: 코드 수정 없음(429→502 변환·'실패는 무료' 쿼터 보존 전부 설계대로 동작). **cap을 ₩5,000으로 현실화**(결제 액션). 재발 시 확인처: https://ai.studio/spend
+  - **출시 전 검토**: Sentry `include_local_variables=False` 검토 — 이번 이벤트의 스택 지역변수에 req 좌표·유저 이메일 노출 관찰됨 (request body 차단과 별개 축).
