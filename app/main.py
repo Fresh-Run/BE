@@ -37,6 +37,9 @@ if settings.sentry_dsn:
         # SDK 기본 "medium"은 에러 요청의 JSON body(GPS 궤적·신체정보 포함
         # 가능)를 US Sentry로 첨부 — 개인정보 축소 (PRIVACY_DATA_MAP §7-2)
         max_request_body_size="never",
+        # 스택 지역변수에 req 좌표·유저 이메일 노출 관찰(운영 관측 07-09) —
+        # App Privacy "충돌 데이터 신원 미연결" 신고와 일치시키기 위해 차단
+        include_local_variables=False,
     )
     logging.getLogger(__name__).info("Sentry 활성화 (environment=%s)", settings.environment)
 

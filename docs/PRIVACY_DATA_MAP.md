@@ -72,10 +72,11 @@
   `traces_sample_rate=0`(에러만), `send_default_pii` 미설정=False:
   - **전송 안 됨**: 사용자 id·이메일·IP·쿠키(Authorization/Cookie 헤더는 SDK 기본 필터).
   - **전송됨**: 에러 스택·요청 URL/메서드/일반 헤더·environment 태그.
-  - **요청 body는 미첨부** — `max_request_body_size="never"` 적용(2026-07-08,
-    §7-2 해소). 스택 로컬 변수(`include_local_variables=True`)는 유지 —
-    지역변수에 좌표·이메일 노출 관찰됨(출시 전 False 검토, AUDIT_BACKLOG).
-    방침에는 "오류 진단 데이터가 미국 Sentry로 전송"으로 기술.
+  - **요청 body 미첨부**(`max_request_body_size="never"`, 07-08) + **스택
+    지역변수 미포함**(`include_local_variables=False`, 07-11 — 대조 검증 완료).
+    이벤트에 남는 것: 에러 스택(코드 위치만)·URL·메서드·일반 헤더·environment.
+    App Privacy "충돌 데이터, 신원 미연결" 신고와 정합 — 방침에는 "오류 진단
+    데이터(개인 식별·요청 내용 미포함)가 미국 Sentry로 전송"으로 기술 가능.
 
 ## 5. 제3자 제공 / 처리위탁
 

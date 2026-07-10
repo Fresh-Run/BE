@@ -52,7 +52,9 @@
   - **발생**: AI Studio 프로젝트 월간 spend cap 초과 → `POST /routes/generate` 연속 502 `route_generation_failed` (~수 시간, 프론트 리포트로 인지). 크레딧 소진과 **동일한 429 RESOURCE_EXHAUSTED**라 잔액이 있어도 발생 — CLAUDE.md 함정 항목 보강함.
   - **규명**: fly logs 링버퍼 소실 전 원본 예외 확보 + Sentry 체인(RateLimitError)으로 즉시 판정. 최소 body 실호출 재현 → cap 상향 후 스모크 200 확인.
   - **조치**: 코드 수정 없음(429→502 변환·'실패는 무료' 쿼터 보존 전부 설계대로 동작). **cap을 ₩5,000으로 현실화**(결제 액션). 재발 시 확인처: https://ai.studio/spend
-  - **출시 전 검토**: Sentry `include_local_variables=False` 검토 — 이번 이벤트의 스택 지역변수에 req 좌표·유저 이메일 노출 관찰됨 (request body 차단과 별개 축).
+  - ~~출시 전 검토: Sentry `include_local_variables=False`~~ → **해소**
+    (2026-07-11 적용 — App Privacy "충돌 데이터 신원 미연결" 정합. before_send
+    가로채기 대조 검증: True에서 지역변수·이메일 값 노출, False에서 전부 부재).
 
 ## 기능 백로그 (트리거 대기)
 
