@@ -805,6 +805,11 @@ class RunRequest(BaseModel):
     )
     # 저장 화면의 '메모' = notes (개인 메모 — 피드·크루·공개 프로필에 절대 미노출)
     notes: Optional[str] = Field(None, max_length=2000, description="개인 메모 (본인만).")
+    area: Optional[str] = Field(
+        None, max_length=50,
+        description="지역명 (예: '성수동') — 프론트가 Kakao SDK 역지오코딩으로 "
+        "변환해 전송, 서버는 저장·서빙만 (크루 area와 동일 분업).",
+    )
     title: Optional[str] = Field(
         None, max_length=60,
         description="러닝 제목 (예: '야간 러닝'). 프론트가 시간대 기본값 생성해 보냄. optional.",
@@ -843,6 +848,7 @@ class RunUpdate(BaseModel):
     title: Optional[str] = Field(None, max_length=60)
     visibility: Optional[Literal["public", "followers", "private"]] = None
     notes: Optional[str] = Field(None, max_length=2000)
+    area: Optional[str] = Field(None, max_length=50, description="지역명 (예: '성수동').")
     photos: Optional[list[str]] = Field(
         None, max_length=3,
         description="사진 경로 배열 (업로드 3-step의 path 그대로, ≤3). "
@@ -879,6 +885,9 @@ class RunResponse(BaseModel):
     avg_pace_sec_per_km: Optional[int] = None
     notes: Optional[str] = None
     title: Optional[str] = None
+    area: Optional[str] = Field(
+        None, description="지역명 (프론트 역지오코딩 저장값). 과거 run은 null — 라인 숨김."
+    )
     visibility: Optional[str] = Field(
         "public", description="public/followers/private. 타인이 보는 상세에선 null."
     )
@@ -1084,8 +1093,23 @@ class CrewMemberResponse(BaseModel):
     nickname: Optional[str] = Field(
         None, description="Display name; null if the member has no profile yet."
     )
-    role: str = Field(..., description='"owner" or "member".')
+    role: str = Field(..., description='"owner" / "admin"(운영진) / "member".')
     joined_at: str = Field(..., description="When the user joined the crew (ISO 8601).")
+
+
+class CrewRoleUpdate(BaseModel):
+    """PATCH /crews/{id}/members/{user_id}/role — owner 전용, admin↔member."""
+
+    role: Literal["admin", "member"] = Field(
+        ..., description="owner로의 변경은 불가 — 위임은 PATCH /crews/{id}/transfer."
+    )
+
+
+class CrewRoleResponse(BaseModel):
+    """role 전환 결과."""
+
+    user_id: str
+    role: str
 
 
 class CrewRankingEntry(BaseModel):
@@ -1143,6 +1167,7 @@ class CrewRunItem(BaseModel):
     duration_sec: int
     avg_pace_sec_per_km: Optional[int] = None
     route_id: Optional[str] = None
+    area: Optional[str] = Field(None, description="지역명 (카드 지역 라인 — null이면 숨김).")
     photo_thumb: Optional[str] = Field(
         None, description="첫 사진 서명 URL(만료 1h) — 카드 썸네일. 없으면 null."
     )

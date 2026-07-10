@@ -42,6 +42,7 @@
 | 코스 출발지 좌표 | `routes.start_lat/start_lng` | AI 코스 생성 시 | **자택·직장 추정 가능성 있는 좌표.** 공개 코스(`is_public`)면 타인에게 노출 |
 | 코스 경로·경유지 | `routes.polyline/waypoints` (jsonb) | 코스 생성 시 | 경유지에 장소명·주소 포함 가능(Kakao 검색 결과) |
 | 러닝 일시 | `runs.ran_at` | 기록 저장 시 | 시간대 패턴 분석에 사용(월간 인사이트) |
+| 러닝 지역명 (2026-07-11~) | `runs.area` (예: "성수동") | 기록 저장 시(선택) — 프론트가 좌표를 역지오코딩해 전송 | 동 단위 거친 해상도. run `visibility` 게이트 뒤에서만 노출(카드·상세) |
 | 크루 활동 지역 | `crews.lat/lng/sido/sigungu/area` | 크루 생성·수정 | 역지오코딩은 **프론트가 Kakao Local SDK로 클라이언트 측 수행** 후 결과만 전송 |
 | 공지 집결지 | `crew_announcements.place_name/place_lat/place_lng` | 공지 작성 시 | 크루원에게 노출 |
 

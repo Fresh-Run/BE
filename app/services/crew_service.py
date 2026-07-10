@@ -100,6 +100,10 @@ class AlreadyOwner(CrewError):
     """Transfer target is already the owner (no-op)."""
 
 
+class RoleTargetIsOwner(CrewError):
+    """owner의 role은 이 API로 못 바꾼다 (위임은 transfer 경유) — 422."""
+
+
 # --- Helpers -----------------------------------------------------------------
 
 
@@ -212,12 +216,39 @@ async def ensure_member(crew_id: str, user_id: str) -> None:
 async def ensure_owner(crew_id: str, caller_id: str, columns: str = "owner_id") -> dict:
     """Guard: crew must exist and caller must be the owner. Returns the crew row.
 
-    If a manager/운영진 role is added later, widen the check here only.
+    위임·삭제·role 변경 등 owner 전용 액션에만 사용 — 운영진에게 열린 액션은
+    ensure_manager를 쓴다 (분류표: CREW_ADMIN_AND_RUN_AREA_DESIGN §3).
     """
     crew = await _crew_row(crew_id, columns)
     if crew["owner_id"] != caller_id:
         raise NotOwner()
     return crew
+
+
+async def _member_role(crew_id: str, user_id: str) -> str | None:
+    """crew_members.role, 비멤버면 None."""
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("crew_members")
+        .select("role")
+        .eq("crew_id", crew_id)
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+    return res.data[0]["role"] if res.data else None
+
+
+async def ensure_manager(crew_id: str, caller_id: str) -> None:
+    """Guard: owner 또는 admin(운영진). 아니면 NotOwner(기존 403 계약 유지).
+
+    admin role v1 — 공지 CRUD·챌린지 생성·member 강퇴에 사용.
+    """
+    crew = await _crew_row(crew_id)
+    if crew["owner_id"] == caller_id:
+        return
+    if await _member_role(crew_id, caller_id) != "admin":
+        raise NotOwner()
 
 
 async def _cleanup_member_rsvps(crew_id: str, user_id: str) -> None:
@@ -738,7 +769,7 @@ async def list_crew_runs(
     runs_res = await asyncio.to_thread(
         lambda: supabase.table("runs")
         .select("id, user_id, ran_at, distance_km, duration_sec, "
-                "avg_pace_sec_per_km, route_id, title, photos")
+                "avg_pace_sec_per_km, route_id, title, area, photos")
         .in_("user_id", member_ids)
         # 크루 피드는 private만 제외 (public·followers는 크루원에게 노출 — 기존 동작 보존)
         .neq("visibility", "private")
@@ -785,6 +816,7 @@ async def list_crew_runs(
             avatar_url=briefs.get(row["user_id"], {}).get("avatar_url"),
             ran_at=row["ran_at"],
             title=row.get("title"),
+            area=row.get("area"),
             distance_km=row["distance_km"],
             duration_sec=row["duration_sec"],
             avg_pace_sec_per_km=row.get("avg_pace_sec_per_km"),
@@ -978,7 +1010,7 @@ async def list_members(crew_id: str, caller_id: str) -> list[CrewMemberResponse]
             raise CrewNotFound()  # don't reveal the crew exists
 
     # 4. Sort: owner first, then by joined_at ASC (oldest members first).
-    members.sort(key=lambda r: (0 if r["role"] == "owner" else 1, r["joined_at"]))
+    members.sort(key=lambda r: ({"owner": 0, "admin": 1}.get(r["role"], 2), r["joined_at"]))
 
     # 5. Batch nickname lookup — one IN query, no N+1.
     nicknames = await profile_service.get_nicknames([m["user_id"] for m in members])
@@ -1087,7 +1119,7 @@ async def create_challenge(
     supabase = get_supabase_admin()
 
     # 1. Confirm crew exists and caller is owner.
-    await ensure_owner(crew_id, caller_id)
+    await ensure_manager(crew_id, caller_id)
 
     # 2. Guard: reject if any non-ended challenge already exists.
     now_utc = datetime.now(timezone.utc).isoformat()
@@ -1230,11 +1262,16 @@ async def kick_member(crew_id: str, caller_id: str, target_id: str) -> None:
         OwnerCannotKickSelf — owner tried to kick themselves.
         NotAMember        — target is not currently a member.
     """
-    await ensure_owner(crew_id, caller_id)
+    await ensure_manager(crew_id, caller_id)
     if target_id == caller_id:
         raise OwnerCannotKickSelf()
-    if not await _is_member(crew_id, target_id):
+    target_role = await _member_role(crew_id, target_id)
+    if target_role is None:
         raise NotAMember()
+    # admin은 member만 강퇴 가능 (admin·owner 강퇴 불가 — owner는 무제한 유지)
+    crew = await _crew_row(crew_id)
+    if crew["owner_id"] != caller_id and target_role != "member":
+        raise NotOwner()
 
     supabase = get_supabase_admin()
     await asyncio.to_thread(
@@ -1246,6 +1283,32 @@ async def kick_member(crew_id: str, caller_id: str, target_id: str) -> None:
     )
     await _cleanup_member_rsvps(crew_id, target_id)
     logger.info("User %s kicked from crew %s by owner %s.", target_id, crew_id, caller_id)
+
+
+async def set_member_role(
+    crew_id: str, caller_id: str, target_id: str, role: str
+) -> dict:
+    """멤버 role 전환 (owner 전용): admin↔member 양방향·멱등.
+
+    owner의 role은 불변(RoleTargetIsOwner → 422) — 위임은 transfer 경유.
+    비멤버 target은 NotAMember(→404 은닉). 반환: {user_id, role}.
+    """
+    crew = await ensure_owner(crew_id, caller_id)
+    if target_id == crew["owner_id"]:
+        raise RoleTargetIsOwner()
+    if await _member_role(crew_id, target_id) is None:
+        raise NotAMember()
+
+    supabase = get_supabase_admin()
+    await asyncio.to_thread(
+        lambda: supabase.table("crew_members")
+        .update({"role": role})
+        .eq("crew_id", crew_id)
+        .eq("user_id", target_id)
+        .execute()
+    )
+    logger.info("Crew %s: %s role → %s (by owner).", crew_id, target_id, role)
+    return {"user_id": target_id, "role": role}
 
 
 async def delete_crew(crew_id: str, caller_id: str) -> None:

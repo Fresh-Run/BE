@@ -27,6 +27,8 @@ from app.models.schemas import (
     CrewCreate,
     CrewMemberResponse,
     CrewRankingEntry,
+    CrewRoleResponse,
+    CrewRoleUpdate,
     CrewResponse,
     CrewRunItem,
     CrewUpdate,
@@ -1452,20 +1454,23 @@ async def list_crew_members(
 @router.delete(
     "/crews/{crew_id}/members/{target_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    summary="Kick a member (owner only)",
+    summary="Kick a member (owner·admin — admin은 member만)",
 )
 async def kick_member(
     crew_id: str,
     target_id: str,
     user: CurrentUser = Depends(get_current_user),
 ) -> None:
-    """Owner-only: remove a member. Owner cannot kick themselves (400)."""
+    """owner·admin: remove a member. admin은 member만 강퇴 가능(admin·owner
+    대상은 403). Owner cannot kick themselves (400)."""
     try:
         await crew_service.kick_member(crew_id, caller_id=user.user_id, target_id=target_id)
     except crew_service.CrewNotFound:
         raise HTTPException(status_code=404, detail="Crew not found")
     except crew_service.NotOwner:
-        raise HTTPException(status_code=403, detail="Only the owner can kick members")
+        raise HTTPException(
+            status_code=403, detail="Only the owner or an admin can kick members"
+        )
     except crew_service.OwnerCannotKickSelf:
         raise HTTPException(
             status_code=400,
@@ -1475,6 +1480,38 @@ async def kick_member(
         raise HTTPException(status_code=404, detail="User is not a member of this crew")
     except Exception as exc:  # noqa: BLE001
         raise _bad_gateway("Failed to kick member", exc)
+
+
+@router.patch(
+    "/crews/{crew_id}/members/{target_id}/role",
+    response_model=CrewRoleResponse,
+    summary="멤버 role 전환 (owner 전용, admin↔member)",
+)
+async def set_member_role(
+    crew_id: str,
+    target_id: str,
+    req: CrewRoleUpdate,
+    user: CurrentUser = Depends(get_current_user),
+) -> CrewRoleResponse:
+    """owner 전용·멱등. owner의 role은 불변(422) — 위임은 PATCH /crews/{id}/transfer."""
+    try:
+        res = await crew_service.set_member_role(
+            crew_id, caller_id=user.user_id, target_id=target_id, role=req.role
+        )
+    except crew_service.CrewNotFound:
+        raise HTTPException(status_code=404, detail="Crew not found")
+    except crew_service.NotOwner:
+        raise HTTPException(status_code=403, detail="Only the owner can change roles")
+    except crew_service.RoleTargetIsOwner:
+        raise HTTPException(
+            status_code=422,
+            detail="Owner role cannot be changed here; use PATCH /crews/{id}/transfer",
+        )
+    except crew_service.NotAMember:
+        raise HTTPException(status_code=404, detail="User is not a member of this crew")
+    except Exception as exc:  # noqa: BLE001
+        raise _bad_gateway("Failed to change member role", exc)
+    return CrewRoleResponse(**res)
 
 
 @router.get(

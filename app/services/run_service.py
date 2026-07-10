@@ -115,6 +115,7 @@ async def create_run(req: RunRequest, user_id: str | None = None) -> RunResponse
         "avg_pace_sec_per_km": req.avg_pace_sec_per_km,
         "notes": req.notes,
         "title": req.title,
+        "area": req.area,
         "visibility": req.visibility,
         "verification": verification,
         "distance_km_reported": reported,
@@ -150,6 +151,7 @@ async def create_run(req: RunRequest, user_id: str | None = None) -> RunResponse
                     "splits": [s.model_dump() for s in splits_out],
                     "raw_point_count": processed.point_count_raw,
                     "kept_point_count": processed.point_count_kept,
+                    "server_distance_km": round(processed.server_distance_km, 2),
                     "max_speed_kmh": processed.max_speed_kmh,
                     "avg_accuracy_m": processed.avg_accuracy_m,
                 }).execute()
@@ -492,7 +494,7 @@ async def create_run_photo_upload_url(
 # verification(suspect 낙인)·visibility는 의도적으로 제외 (설계 §1).
 _PUBLIC_DETAIL_FIELDS = (
     "id", "created_at", "user_id", "ran_at", "distance_km",
-    "duration_sec", "avg_pace_sec_per_km", "title",
+    "duration_sec", "avg_pace_sec_per_km", "title", "area",
 )
 
 
@@ -571,7 +573,7 @@ async def get_run_track(run_id: str, user_id: str) -> RunTrackResponse | None:
     supabase = get_supabase_admin()
     res = await asyncio.to_thread(
         lambda: supabase.table("run_tracks")
-        .select("points, splits, raw_point_count, kept_point_count")
+        .select("points, splits, raw_point_count, kept_point_count, server_distance_km")
         .eq("run_id", run_id)
         .limit(1)
         .execute()
@@ -582,7 +584,11 @@ async def get_run_track(run_id: str, user_id: str) -> RunTrackResponse | None:
     # server_distance/elev는 컬럼이 없어 splits에서 파생:
     # 총거리 = partial 랩의 km(=총거리) 또는 정수 랩 수, 상승 = 랩 상승 합.
     splits = row.get("splits") or []
-    if splits and splits[-1].get("partial"):
+    if row.get("server_distance_km") is not None:
+        # 저장된 정확값 (2026-07-11~). 구 행은 아래 splits 파생 폴백 —
+        # 0.2km 미만은 splits가 비어 0.0이 되는 결함이 있었음 (조사 §1).
+        dist = float(row["server_distance_km"])
+    elif splits and splits[-1].get("partial"):
         dist = float(splits[-1]["km"])
     else:
         dist = float(len(splits))
@@ -991,7 +997,7 @@ async def list_activity_feed(
     runs_res = await asyncio.to_thread(
         lambda: supabase.table("runs")
         .select("id, user_id, ran_at, distance_km, duration_sec, "
-                "avg_pace_sec_per_km, route_id, title, photos")
+                "avg_pace_sec_per_km, route_id, title, area, photos")
         .in_("user_id", audience)
         # private run은 본인 것만 (팔로우 대상의 private는 활동 피드에서 제외)
         .or_(f"visibility.neq.private,user_id.eq.{user_id}")
@@ -1036,6 +1042,7 @@ async def list_activity_feed(
             avatar_url=briefs.get(row["user_id"], {}).get("avatar_url"),
             ran_at=row["ran_at"],
             title=row.get("title"),
+            area=row.get("area"),
             distance_km=row["distance_km"],
             duration_sec=row["duration_sec"],
             avg_pace_sec_per_km=row.get("avg_pace_sec_per_km"),
@@ -1080,7 +1087,7 @@ async def list_user_runs(
     runs_res = await asyncio.to_thread(
         lambda: supabase.table("runs")
         .select("id, user_id, ran_at, distance_km, duration_sec, "
-                "avg_pace_sec_per_km, route_id, title, visibility, photos")
+                "avg_pace_sec_per_km, route_id, title, area, visibility, photos")
         .eq("user_id", target_id)
         .in_("visibility", allowed)
         .order("ran_at", desc=True)
@@ -1124,6 +1131,7 @@ async def list_user_runs(
             avatar_url=brief.get(target_id, {}).get("avatar_url"),
             ran_at=row["ran_at"],
             title=row.get("title"),
+            area=row.get("area"),
             distance_km=row["distance_km"],
             duration_sec=row["duration_sec"],
             avg_pace_sec_per_km=row.get("avg_pace_sec_per_km"),

@@ -1,6 +1,6 @@
 """Crew announcements + attendance RSVP.
 
-Permissions reuse crew_service.ensure_member / ensure_owner (owner-only
+Permissions reuse crew_service.ensure_member / ensure_manager (owner·admin
 writes today; widen there when a manager role lands). Tallies and rosters
 always reflect current members only — departing members' votes are removed
 via remove_member_rsvps (called from leave/kick).
@@ -170,7 +170,7 @@ async def create_announcement(
     crew_id: str, caller_id: str, req: AnnouncementCreate
 ) -> AnnouncementResponse:
     """Create an announcement (owner only) and notify all members once."""
-    await crew_service.ensure_owner(crew_id, caller_id)
+    await crew_service.ensure_manager(crew_id, caller_id)
 
     record = {
         "crew_id": crew_id,
@@ -275,7 +275,7 @@ async def update_announcement(
     crew_id: str, caller_id: str, announcement_id: str, req: AnnouncementUpdate
 ) -> AnnouncementResponse:
     """Partial update (owner only). Deliberately sends no notification."""
-    await crew_service.ensure_owner(crew_id, caller_id)
+    await crew_service.ensure_manager(crew_id, caller_id)
     row = await _get_announcement(crew_id, announcement_id)
 
     data = req.model_dump(exclude_unset=True)
@@ -312,7 +312,7 @@ async def delete_announcement(
     crew_id: str, caller_id: str, announcement_id: str
 ) -> None:
     """Delete an announcement (owner only). RSVPs go via ON DELETE CASCADE."""
-    await crew_service.ensure_owner(crew_id, caller_id)
+    await crew_service.ensure_manager(crew_id, caller_id)
     await _get_announcement(crew_id, announcement_id)  # 404 if missing
 
     supabase = get_supabase_admin()
