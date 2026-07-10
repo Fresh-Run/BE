@@ -72,13 +72,10 @@
   `traces_sample_rate=0`(에러만), `send_default_pii` 미설정=False:
   - **전송 안 됨**: 사용자 id·이메일·IP·쿠키(Authorization/Cookie 헤더는 SDK 기본 필터).
   - **전송됨**: 에러 스택·요청 URL/메서드/일반 헤더·environment 태그.
-  - **전송될 수 있음**: SDK 기본값 `max_request_body_size=medium`으로 **에러 발생
-    요청의 JSON body(≈10KB 이하)가 이벤트에 첨부될 수 있음**(예: 기록 저장 실패
-    시 GPS 포인트 원본이 body에 포함) + `include_local_variables=True`로 스택
-    로컬 변수 값 포함 가능. → 방침에 "오류 진단 목적으로 요청 데이터 일부가
-    미국 소재 Sentry에 전송될 수 있음"으로 기술 필요. [검증 권장: 실제 이벤트에서
-    body 첨부 여부 확인, 또는 `max_request_body_size="never"` 검토(코드 변경이라
-    이번 범위 밖)]
+  - **요청 body는 미첨부** — `max_request_body_size="never"` 적용(2026-07-08,
+    §7-2 해소). 스택 로컬 변수(`include_local_variables=True`)는 유지 —
+    지역변수에 좌표·이메일 노출 관찰됨(출시 전 False 검토, AUDIT_BACKLOG).
+    방침에는 "오류 진단 데이터가 미국 Sentry로 전송"으로 기술.
 
 ## 5. 제3자 제공 / 처리위탁
 
