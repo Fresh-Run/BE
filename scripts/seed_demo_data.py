@@ -179,8 +179,23 @@ def get_or_create_user(c, email) -> tuple[str, str]:
 
 
 def ensure_profile(c, tok, nickname, bio, avatar_seed):
-    """프로필이 없을 때만 생성 — 기존 프로필(실계정 커스텀)은 건드리지 않음."""
-    if api(c, "GET", "/me/profile", tok).json() is not None:
+    """프로필이 없을 때만 생성 — 기존 프로필(실계정 커스텀)은 건드리지 않음.
+
+    예외 1건: avatar_url이 **null이면 시드 아바타만 재부여** — 검증 스크립트가
+    데모 아바타를 지워도 재실행으로 복구되게(멱등 보수 2026-07-12). non-null
+    (수동 변경 포함)은 절대 안 덮고, 닉네임·bio도 건드리지 않는다.
+    """
+    cur = api(c, "GET", "/me/profile", tok).json()
+    if cur is not None:
+        if cur.get("avatar_url") is None:
+            r = api(c, "PATCH", "/me/profile", tok, json={
+                "nickname": cur["nickname"],  # PATCH 계약상 필수 — 현재값 그대로
+                "avatar_url": f"https://api.dicebear.com/9.x/thumbs/png?seed={avatar_seed}",
+            })
+            if r.status_code != 200:
+                die(f"아바타 재부여 실패 {cur['nickname']}", r.text)
+            made["avatar_refills"] = made.get("avatar_refills", 0) + 1
+            log(f"  아바타 재부여: {cur['nickname']}")
         return
     body = {"nickname": nickname, "bio": bio,
             "avatar_url": f"https://api.dicebear.com/9.x/thumbs/png?seed={avatar_seed}"}
