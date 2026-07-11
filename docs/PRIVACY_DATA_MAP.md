@@ -11,7 +11,7 @@
 |---|---|---|---|
 | 이메일, 비밀번호(해시), 가입·로그인 시각 | `auth.users` (Supabase Auth 관리) | 회원가입/로그인 | 앱은 Supabase Auth를 직접 호출(백엔드 미경유). **주간 백업 범위 밖**(pg_dump는 public 스키마만) |
 | 닉네임(unique), 자기소개(bio) | `profiles.nickname/bio` | 프로필 작성·수정 | 닉네임은 공개 노출(랭킹·댓글·피드) |
-| 프로필 사진 | Supabase Storage `avatars` 버킷, 경로=`{user_id}` 고정 | 업로드 시 | **public 버킷 — URL을 알면 누구나 읽기 가능**(코드 주석 근거, 대시보드 정책 [검증 불가]). 재업로드가 덮어써서 이전 파일은 남지 않음. 5MB, jpeg/png/webp 제한 |
+| 프로필 사진 | Supabase Storage `avatars` 버킷, 경로=`{user_id}` 고정 | 업로드 시 | **public 버킷 — URL을 알면 누구나 읽기 가능**(코드 주석 근거, 대시보드 정책 [검증 불가]). 재업로드가 덮어써서 이전 파일은 남지 않음. 명시 null로 삭제 가능(Storage 포함). 5MB, jpeg/png/webp 제한. **EXIF(GPS 포함)는 클라이언트 재인코딩으로 제거 후 업로드가 계약**(러닝 사진과 동일 — public 버킷이라 잔여 리스크가 더 커서 특히 중요, 서버 사후 스캔 검토는 출시 전 항목 공유) |
 | **러닝 사진** (≤3장/run, 2026-07-09~) | Storage `run-photos` **private 버킷**, 경로=`{run_id}/{slot}` | run 저장 후 업로드(선택) | **비공개 버킷 — 읽기는 run 공개범위 게이트 통과 시 발급되는 서명 URL(만료 1h)로만**(비공개 러닝 사진 URL 유출 불가 구조). **EXIF(GPS 좌표 포함)는 클라이언트 재인코딩으로 제거 후 업로드가 계약** — 서버는 원본 EXIF를 저장하지 않음(잔여 리스크: 클라 구현 누락 — 출시 전 서버 사후 스캔 검토). run에서 사진 제거·교체 시 즉시 삭제, **회원 탈퇴 시 전량 삭제**(§6, 실증 테스트 검증) |
 | 신체 정보: 출생연도·체중·키·성별 | `profiles.birth_year/weight_kg/height_cm/gender` | 프로필 편집(선택 입력) | **본인 조회(`GET /me/profile`)에만 노출** — 타인이 보는 모든 응답에 미포함(테스트로 이중 검증된 표준). 체중은 칼로리 클라이언트 계산용 |
 | 구독 등급 | `profiles.tier` | 구독 변경 시 | free/premium |
