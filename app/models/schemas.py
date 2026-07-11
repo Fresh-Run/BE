@@ -96,7 +96,10 @@ class ProfileUpdate(BaseModel):
     """Input to create/update the caller's profile. user_id comes from the token."""
 
     nickname: str = Field(..., min_length=2, max_length=20, description="Display name.")
-    avatar_url: Optional[str] = Field(None, max_length=500, description="Avatar image URL.")
+    # 명시 null = 아바타 삭제 (PATCH 명시 null 시맨틱의 선례 필드 — API_GUIDE).
+    # ""는 422 (min_length — normalize 금지, null과 혼동 차단).
+    avatar_url: Optional[str] = Field(None, min_length=1, max_length=500,
+                                      description="Avatar image URL. 명시 null=삭제.")
     bio: Optional[str] = Field(None, max_length=500, description="Short bio.")
     # 신체 정보 (전부 선택 — 보낸 것만 갱신, null 해제는 v1 미지원)
     birth_year: Optional[int] = Field(None, ge=1920, le=2026)

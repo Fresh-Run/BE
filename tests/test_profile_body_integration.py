@@ -222,6 +222,24 @@ def run():
             assert up.status_code == 200, "재업로드(덮어쓰기 경로) 성공해야 함"
             ok("허용 외 MIME 거부 ✓ 고정 경로 재업로드 ✓")
 
+            step("6b. 아바타 삭제 시맨틱 — 명시 null / 생략 유지 / \"\" 422 / 멱등")
+            nick = f"신체u1-{ts % 100000}"
+            r = api(c, "PATCH", "/me/profile", tok1, json={"nickname": nick})
+            assert r.json()["avatar_url"] == avatar_url, "필드 생략은 유지"
+            r = api(c, "PATCH", "/me/profile", tok1,
+                    json={"nickname": nick, "avatar_url": ""})
+            assert r.status_code == 422, f'""는 422, got {r.status_code}'
+            r = api(c, "PATCH", "/me/profile", tok1,
+                    json={"nickname": nick, "avatar_url": None})
+            assert r.status_code == 200 and r.json()["avatar_url"] is None, r.text[:200]
+            time.sleep(1)
+            assert c.get(u["public_url"]).status_code != 200, "Storage 파일도 소멸해야"
+            r = api(c, "PATCH", "/me/profile", tok1,
+                    json={"nickname": nick, "avatar_url": None})
+            assert r.status_code == 200 and r.json()["avatar_url"] is None, "멱등"
+            avatar_uploaded = False  # 이미 정리됨
+            ok('명시 null 삭제+Storage 소멸 ✓ 생략 유지 ✓ "" 422 ✓ 멱등 ✓')
+
             step("7. 기존 프로필 회귀 (닉네임 중복 409)")
             r = api(c, "PATCH", "/me/profile", tok2,
                     json={"nickname": f"신체u1-{ts % 100000}"})

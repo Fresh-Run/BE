@@ -80,8 +80,13 @@ async def upsert_profile(user_id: str, req: ProfileUpdate) -> ProfileResponse:
         "nickname": req.nickname,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
+    # 명시 null(avatar_url 키를 보냈는데 값이 null) = 삭제 — 미전송과 구분은
+    # model_fields_set으로 (PATCH 명시 null 시맨틱 선례, 다른 필드 확대는 수요 시)
+    avatar_delete = "avatar_url" in req.model_fields_set and req.avatar_url is None
     if req.avatar_url is not None:
         record["avatar_url"] = req.avatar_url
+    elif avatar_delete:
+        record["avatar_url"] = None
     if req.bio is not None:
         record["bio"] = req.bio
     # 신체 정보 4종 — 본인 전용(ProfileResponse에만 노출), 보낸 것만 갱신
@@ -99,6 +104,15 @@ async def upsert_profile(user_id: str, req: ProfileUpdate) -> ProfileResponse:
         if exc.code == _UNIQUE_VIOLATION:
             raise NicknameTaken() from exc
         raise
+
+    if avatar_delete:  # Storage 파일도 정리 — best-effort (run 사진 교체와 동일 패턴)
+        try:
+            await asyncio.to_thread(
+                lambda: supabase.storage.from_(_AVATAR_BUCKET).remove([user_id])
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("아바타 삭제 중 Storage 정리 실패 — 진행 (user=%s)",
+                           user_id, exc_info=True)
 
     logger.info("Upserted profile for user %s.", user_id)
     return ProfileResponse(**res.data[0])
