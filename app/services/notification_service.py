@@ -6,7 +6,7 @@ import logging
 
 from app.core.supabase_client import get_supabase_admin
 from app.models.schemas import NotificationResponse
-from app.services import profile_service
+from app.services import profile_service, push_service
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +46,15 @@ async def create_notification(
     await asyncio.to_thread(
         lambda: supabase.table("notifications").insert(record).execute()
     )
+
+    # 원격 푸시 — fire-and-forget (요청 경로가 Expo 왕복을 기다리지 않음,
+    # 실패는 태스크 내부에서 전부 삼킴). 인앱 알림은 위에서 이미 저장됨.
+    try:
+        asyncio.create_task(push_service.send_for_notification(
+            recipient_id, actor_id, type, target_id, target_type, payload
+        ))
+    except Exception:  # noqa: BLE001 — 태스크 생성 실패조차 본 요청을 못 막음
+        logger.warning("푸시 태스크 생성 실패 — 무시", exc_info=True)
 
 
 async def list_notifications(user_id: str, limit: int = 20) -> list[NotificationResponse]:

@@ -56,8 +56,18 @@ def api(c, method, path, tok, **kw):
     return c.request(method, f"{BASE}{path}",
                      headers={"Authorization": f"Bearer {tok}"}, **kw)
 
+def _track(distance_km: float, pace_s_per_km: int = 360):
+    """직선 GPS 궤적 — 챌린지는 verified run만 집계(집계 정합 정책)라 트랙 동봉."""
+    import time as _t
+    step_m = 22.24
+    n = round(distance_km * 1000 / step_m) + 1
+    t0 = (int(_t.time()) - 7200) * 1000
+    return [{"lat": 37.5445 + i * 0.0002, "lng": 127.0374,
+             "t": t0 + i * round(step_m * pace_s_per_km), "acc": 5.0} for i in range(n)]
+
 def log_run(c, tok, distance_km):
-    r = api(c, "POST", "/runs", tok, json={"distance_km": distance_km, "duration_sec": 1800})
+    r = api(c, "POST", "/runs", tok, json={"distance_km": distance_km, "duration_sec": 1800,
+                                           "gps_track": _track(distance_km)})
     assert r.status_code == 200, f"POST /runs → 200 이어야 함, got {r.status_code}: {r.text[:200]}"
     return r.json()["id"]
 

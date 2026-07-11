@@ -718,6 +718,22 @@ class MonthlyInsightResponse(BaseModel):
     ai: Optional[InsightAi] = None
 
 
+class PushTokenRequest(BaseModel):
+    """POST/DELETE /me/push-token — Expo 기기 토큰 등록/해제."""
+
+    token: str = Field(..., max_length=200, description="Expo push token.")
+    platform: Literal["ios", "android"] = Field(
+        "ios", description="등록 시 사용 (해제 시 무시)."
+    )
+
+    @field_validator("token")
+    @classmethod
+    def _expo_format(cls, v: str) -> str:
+        if not (v.startswith("ExponentPushToken[") and v.endswith("]")):
+            raise ValueError("token must look like ExponentPushToken[...]")
+        return v
+
+
 class NotificationResponse(BaseModel):
     """One notification row returned to the caller."""
 

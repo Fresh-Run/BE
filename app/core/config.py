@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     # 계정 생성 후 fly secrets set SENTRY_DSN=... 만 하면 켜진다.
     sentry_dsn: str = ""
 
+    # Expo Push (원격 알림) — URL은 테스트 mock 치환용, 토큰은 EAS 푸시 보안
+    # 활성화 시에만 필요 (기본 미사용)
+    expo_push_url: str = "https://exp.host/--/api/v2/push/send"
+    expo_access_token: str = ""
+
     # OpenAI (or any OpenAI-compatible endpoint, e.g. Google Gemini)
     openai_api_key: str = ""
     openai_model: str = "gpt-4o"

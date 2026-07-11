@@ -130,6 +130,10 @@ def run_tests():
                    json={"content": "B의 댓글"}).status_code in (200, 201)
         assert api(c, "POST", f"/runs/{run_a}/kudos", tok_b).status_code in (200, 201, 204)
         assert api(c, "POST", f"/users/{b_uid}/follow", tok_a).status_code == 204
+        # 푸시 토큰 등록 (탈퇴 cascade 검증용)
+        assert api(c, "POST", "/me/push-token", tok_a,
+                   json={"token": f"ExponentPushToken[del-{TS}]",
+                         "platform": "ios"}).status_code == 204
         # 아바타 업로드 (public URL 200 확인)
         r = api(c, "POST", "/me/avatar/upload-url", tok_a)
         assert r.status_code == 200, r.text[:200]
@@ -190,6 +194,7 @@ def run_tests():
             ("follows", "follows", {"or": f"(follower_id.eq.{a_uid},following_id.eq.{a_uid})"}),
             ("notifications", "notifications", {"or": f"(user_id.eq.{a_uid},actor_id.eq.{a_uid})"}),
             ("crew_members", "crew_members", {"user_id": f"eq.{a_uid}"}),
+            ("push_tokens", "push_tokens", {"user_id": f"eq.{a_uid}"}),
             ("crews(1인 크루 자동삭제)", "crews", {"id": f"eq.{solo_crew}"}),
         ]:
             n = rest_count(c, table, params)

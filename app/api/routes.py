@@ -49,6 +49,7 @@ from app.models.schemas import (
     Place,
     ProfileResponse,
     ProfileUpdate,
+    PushTokenRequest,
     PublicProfileResponse,
     PublicRouteResponse,
     PublishRequest,
@@ -79,6 +80,7 @@ from app.services import (
     map_service,
     notification_service,
     profile_service,
+    push_service,
     quota_service,
     route_service,
     run_service,
@@ -1569,6 +1571,40 @@ async def join_crew(
     if isinstance(result, JoinRequestResponse):
         response.status_code = status.HTTP_202_ACCEPTED
     return result
+
+
+@router.post(
+    "/me/push-token",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Expo 푸시 토큰 등록/갱신 (멱등)",
+)
+async def register_push_token(
+    req: PushTokenRequest,
+    user: CurrentUser = Depends(get_current_user),
+) -> None:
+    """로그인 후·토큰 갱신 시 호출 — upsert 멱등. 같은 기기에 다른 계정이
+    로그인하면 소유가 자동 이전된다(전 주인 오발송 차단)."""
+    try:
+        await push_service.register_token(user.user_id, req.token, req.platform)
+    except Exception as exc:  # noqa: BLE001
+        raise _bad_gateway("Failed to register push token", exc)
+
+
+@router.delete(
+    "/me/push-token",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Expo 푸시 토큰 해제 (로그아웃 시, 멱등)",
+)
+async def delete_push_token(
+    req: PushTokenRequest,
+    user: CurrentUser = Depends(get_current_user),
+) -> None:
+    """본인 소유 행만 삭제 (남의 토큰 해제 불가). body로 받는 이유: 토큰이
+    쿼리스트링에 실리면 access log에 남는다."""
+    try:
+        await push_service.delete_token(user.user_id, req.token)
+    except Exception as exc:  # noqa: BLE001
+        raise _bad_gateway("Failed to delete push token", exc)
 
 
 @router.post(
