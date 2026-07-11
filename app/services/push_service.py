@@ -20,6 +20,7 @@ from app.services import profile_service
 logger = logging.getLogger(__name__)
 
 _TIMEOUT = 10.0
+_MAX_TOKENS_PER_USER = 10  # 감사 M-B: 초과 등록 시 오래된 것 정리 + 발송도 최근 10대만
 
 # type별 본문 템플릿 — {nickname} 치환. 제목은 앱명 고정.
 _TITLE = "FreshRun"
@@ -48,7 +49,11 @@ _TEMPLATES: dict[str, dict[str, str]] = {
 
 
 async def register_token(user_id: str, token: str, platform: str) -> None:
-    """토큰 등록/갱신 — upsert 멱등. PK=token이라 기기 주인 교체 시 자동 이전."""
+    """토큰 등록/갱신 — upsert 멱등. PK=token이라 기기 주인 교체 시 자동 이전.
+
+    유저당 최근 10대 초과분은 정리 — 행 폭탄 + Expo 100개 한도 초과로 본인
+    푸시가 전멸하는 축 차단 (감사 M-B).
+    """
     from datetime import datetime, timezone
 
     supabase = get_supabase_admin()
@@ -60,6 +65,16 @@ async def register_token(user_id: str, token: str, platform: str) -> None:
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }).execute()
     )
+    rows = await asyncio.to_thread(
+        lambda: supabase.table("push_tokens")
+        .select("token")
+        .eq("user_id", user_id)
+        .order("updated_at", desc=True)
+        .execute()
+    )
+    stale = [r["token"] for r in rows.data[_MAX_TOKENS_PER_USER:]]
+    if stale:
+        await _drop_tokens(stale)
 
 
 async def delete_token(user_id: str, token: str) -> None:
@@ -96,6 +111,8 @@ async def send_for_notification(
             lambda: supabase.table("push_tokens")
             .select("token")
             .eq("user_id", recipient_id)
+            .order("updated_at", desc=True)
+            .limit(_MAX_TOKENS_PER_USER)  # 최근 기기만 — Expo 100개 한도 방어
             .execute()
         )
         tokens = [r["token"] for r in rows.data]

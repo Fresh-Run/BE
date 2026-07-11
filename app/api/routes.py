@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import datetime
 from typing import Literal
 
@@ -985,6 +986,9 @@ async def list_runs(
     타임존)을 그대로 보내면 그 이전 run들이 온다. 응답이 limit보다 짧으면 끝.
     """
     if before is not None:
+        # 감사 M-A: '+'를 URL 인코딩 안 한 흔한 실수는 공백으로 도착 —
+        # tz 오프셋 위치의 공백만 '+'로 복원 (다른 공백 사용처는 그대로 422)
+        before = re.sub(r" (\d{2}:?\d{2})$", r"+\1", before)
         try:
             parsed = datetime.fromisoformat(before)
         except ValueError:
@@ -1476,7 +1480,7 @@ async def kick_member(
     except crew_service.OwnerCannotKickSelf:
         raise HTTPException(
             status_code=400,
-            detail="Owner cannot kick themselves; use leave, transfer, or delete instead.",
+            detail="Cannot kick yourself — use leave (owner: transfer or delete) instead.",
         )
     except crew_service.NotAMember:
         raise HTTPException(status_code=404, detail="User is not a member of this crew")

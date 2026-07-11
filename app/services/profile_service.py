@@ -294,19 +294,25 @@ async def delete_account(user_id: str, email: str | None) -> None:
         logger.warning("탈퇴 중 아바타 삭제 실패 — 진행 (user=%s)", user_id, exc_info=True)
 
     # 러닝 사진도 Storage에 FK가 없어 명시 삭제 (best-effort — 아바타와 동일 축).
-    # runs.photos 컬럼이 정확한 경로 목록이라 prefix 리스팅 불필요.
+    # 감사 L-1: 업로드 후 PATCH 전 이탈한 고아 파일은 runs.photos에 없으므로,
+    # run별 slot×ext 전조합(9경로)을 무조건 remove — 리스팅 없이 고아까지 커버
+    # (없는 경로 remove는 무해).
     try:
         rows = await asyncio.to_thread(
             lambda: supabase.table("runs")
-            .select("photos")
+            .select("id, photos")
             .eq("user_id", user_id)
-            .neq("photos", "{}")
             .execute()
         )
-        paths = [p for r in rows.data for p in (r.get("photos") or [])]
+        paths: set[str] = set()
+        for r in rows.data:
+            paths.update(r.get("photos") or [])
+            for slot in (1, 2, 3):
+                for ext in ("jpg", "png", "webp"):
+                    paths.add(f"{r['id']}/{slot}.{ext}")
         if paths:
             await asyncio.to_thread(
-                lambda: supabase.storage.from_("run-photos").remove(paths)
+                lambda: supabase.storage.from_("run-photos").remove(sorted(paths))
             )
     except Exception:  # noqa: BLE001
         logger.warning("탈퇴 중 러닝 사진 삭제 실패 — 진행 (user=%s)", user_id,

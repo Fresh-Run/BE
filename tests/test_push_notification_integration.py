@@ -142,6 +142,17 @@ def run_tests():
         assert len(token_rows(c, TOK1)) == 1, "남의 토큰 삭제는 no-op"
         ok("멱등 ✓ 소유 이전 ✓ 422 ✓ 타인 해제 no-op ✓")
 
+        # 감사 M-B: 유저당 10대 초과 등록 → 오래된 것 정리
+        for i in range(12):
+            assert api(c, "POST", "/me/push-token", toks["cc"],
+                       json={"token": f"ExponentPushToken[cap-{TS}-{i}]",
+                             "platform": "ios"}).status_code == 204
+        cnt = c.get(f"{_SB}/rest/v1/push_tokens", headers={**_ADM, "Prefer": "count=exact"},
+                    params={"user_id": f"eq.{uids['cc']}", "select": "token", "limit": 1}
+                    ).headers.get("content-range", "?").split("/")[-1]
+        assert cnt == "10", f"유저당 토큰 상한 10 유지: {cnt}"
+        ok("12개 등록 → 10개 유지 (상한 정리) ✓")
+
         step("2. mock Expo 서버로 발송 훅 검증 (uvicorn 8001)")
         env = {**os.environ, "EXPO_PUSH_URL": mock_url}
         proc = subprocess.Popen(

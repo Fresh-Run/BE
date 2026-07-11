@@ -867,9 +867,16 @@ class RunUpdate(BaseModel):
     area: Optional[str] = Field(None, max_length=50, description="지역명 (예: '성수동').")
     photos: Optional[list[str]] = Field(
         None, max_length=3,
-        description="사진 경로 배열 (업로드 3-step의 path 그대로, ≤3). "
+        description="사진 경로 배열 (업로드 3-step의 path 그대로, ≤3, 중복 불가). "
         "빠진 기존 경로는 Storage에서 삭제됨. []로 전체 삭제.",
     )
+
+    @field_validator("photos")
+    @classmethod
+    def _photos_unique(cls, v: Optional[list[str]]) -> Optional[list[str]]:
+        if v is not None and len(v) != len(set(v)):
+            raise ValueError("photos must not contain duplicate paths")
+        return v
 
 
 class RunPhotoUploadUrlRequest(BaseModel):

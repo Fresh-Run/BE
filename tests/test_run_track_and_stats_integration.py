@@ -169,6 +169,10 @@ def run_tests():
         r = api(c, "GET", "/runs?before=2026-07-08T10:00:00", tok_a)
         assert r.status_code == 422, f"naive before는 422, got {r.status_code}"
         assert "timezone" in r.text, "422에 timezone 안내 필요"
+        # 감사 M-A: '+' 미인코딩(공백 도착) 관용 — tz 위치 공백을 '+'로 복원
+        r = c.get(f"{BASE}/runs?limit=1&before=2026-07-10T10:00:00+00:00",
+                  headers={"Authorization": f"Bearer {tok_a}"})
+        assert r.status_code == 200, f"raw '+' 관용 처리: {r.status_code}"
         ok("2건씩 순회 = 전체 4건 일치 + naive 422(timezone 안내)")
 
         step("4. 개인 집계 — records는 verified만, totals는 전부")

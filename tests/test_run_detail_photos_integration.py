@@ -202,6 +202,9 @@ def run_tests():
         r = api(c, "PATCH", f"/runs/{runs['public']}", tok_a,
                 json={"photos": [f"{runs['public']}/{i}.jpg" for i in range(1, 5)]})
         assert r.status_code == 422, f"4장은 422, got {r.status_code}"
+        r = api(c, "PATCH", f"/runs/{runs['public']}", tok_a,
+                json={"photos": [paths[0], paths[0]]})
+        assert r.status_code == 422, f"중복 경로는 422 (감사 L-5), got {r.status_code}"
         r = api(c, "PATCH", f"/runs/{runs['public']}", tok_a, json={"photos": [paths[0]]})
         assert r.status_code == 200 and len(r.json()["photos"]) == 1
         time.sleep(1)
@@ -209,7 +212,12 @@ def run_tests():
         assert "2.jpg" not in names and "1.jpg" in names, f"제거분 소멸/유지분 잔존: {names}"
         ok("prefix 422 ✓ 상한 422 ✓ 교체 시 객체 정리 ✓")
 
-        step("8. 계정 삭제 연동 — run-photos prefix 정리")
+        step("8. 계정 삭제 연동 — run-photos prefix 정리 (고아 파일 포함, 감사 L-1)")
+        # 고아 시나리오: 업로드만 하고 PATCH 안 함 → runs.photos에 없는 파일
+        r = api(c, "POST", f"/runs/{runs['public']}/photos/upload-url", tok_a,
+                json={"slot": 3, "content_type": "image/webp"})
+        assert c.put(r.json()["upload_url"], content=b"orphan-bytes",
+                     headers={"Content-Type": "image/webp"}).status_code == 200
         assert api(c, "DELETE", "/me", tok_a).status_code == 204
         time.sleep(1)
         left = storage_list(c, runs["public"]) + storage_list(c, runs["private"])

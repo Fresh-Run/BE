@@ -23,6 +23,8 @@
   - **M3 AI쿼터** — `reserve_ai_generation`(user advisory lock, Gemini 전에 슬롯 예약) + `release_ai_generation`(실패 시 회수, '실패는 무료' 보존). 옛 check/record 게이트 제거.
   - 검증: 실동시(asyncio.gather) 불변식 — 정원 초과 0(동시 5→admit 1·409 4), free 소유 1(동시 2→성공 1·403 1), 주간 count==limit(동시 3→성공 1·429 2). M3는 Gemini mock 불필요(예약이 호출 전 단계).
 
+- **배치6 (감사 2차, 2026-07-11)**: M-A 커서 '+' 미인코딩 관용(tz 위치 공백 복원 + 가이드 인코딩 명시), M-B push_tokens 유저당 10대 상한(등록 시 정리 + 발송 시 최근 10대 — Expo 100개 한도 방어), L-1 탈퇴 시 run-photos 고아 파일 정리(slot×ext 9조합 무조건 remove), L-4 admin self-kick 문구 중립화, L-5 photos 중복 경로 422. H 0건 — 신규 기능 × 가시성 게이트 우회 미발견.
+
 ## 잔여 (선택 — μs급, 저위험)
 
 - **L8 RSVP 마감 창** — `rsvp` 제출의 read→`_rsvp_open`(시간)→upsert 사이 μs wall-clock 경쟁. count 레이스가 아니라 **시간 경계**라 advisory/FOR UPDATE로 안 닫힘 — DB측 `now()` 조건부 upsert RPC가 필요(별도 기법). 마감 순간 정확히 투표하는 극단 엣지라 실질 무해, 필요 시점에 `rsvp_if_open` RPC로 처리 가능.
@@ -59,4 +61,6 @@
 ## 기능 백로그 (트리거 대기)
 
 - **인앱 개인 초대** — `crew_invited` 알림 type 추가(CHECK 제약 drop→재생성 필수) + `POST /crews/{id}/invitations` 발송 엔드포인트, 수신자는 기존 preview→join 흐름 재사용. 규모 ~반나절. **트리거: 프론트 초대 화면 착수 시** (2026-07-09 커버리지 조사에서 식별 — 링크 공유형 초대는 백엔드 완비, 이것만 공백).
+- **알림 중복 억제 (감사 2차 L-2)** — 팔로우/kudos 토글 반복이 알림+푸시를 매번 재발송(기존 인앱 축의 푸시 증폭). 최근 N시간 내 동일 (actor, recipient, type) 억제안. **트리거: 베타 중 테스터 불만 시 승격.**
+- **Expo 배치 발송 최적화 (감사 2차 L-6)** — 공지·챌린지 완료 시 크루원 N명 = 푸시 태스크 N개·Expo N요청. 100/요청 배치로 묶기. 트리거: 크루 규모 성장 시.
 - **러닝 공유 카드 (프론트 주도)** — 시안 외 신규 확정(2026-07-09, 결정: 지연 — 유저 공유 = 0원 마케팅 채널, 스트라바 Share Activity 참고). RN 뷰 캡처 방식, **백엔드 갭 0**(`GET /runs/{id}/track` 폴리라인 + 러닝 스탯으로 충족). 웹 랜딩(링크 공유용)은 베타 범위 밖. **트리거: 프론트 착수.**
