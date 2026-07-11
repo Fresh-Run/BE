@@ -939,6 +939,10 @@ class RunResponse(BaseModel):
     photo_thumb: Optional[str] = Field(
         None, description="첫 사진 서명 URL(만료 1h) — 목록 카드 썸네일용."
     )
+    polyline_thumb: Optional[list[Coordinate]] = Field(
+        None, description="카드 지도용 축약 폴리라인(≤36pt, 좌표 5자리). "
+        "트랙 없는 run은 null — 지도 자리 숨김/일러스트 폴백."
+    )
 
 
 class RunTrackResponse(BaseModel):
@@ -1170,6 +1174,9 @@ class CrewRunItem(BaseModel):
     area: Optional[str] = Field(None, description="지역명 (카드 지역 라인 — null이면 숨김).")
     photo_thumb: Optional[str] = Field(
         None, description="첫 사진 서명 URL(만료 1h) — 카드 썸네일. 없으면 null."
+    )
+    polyline_thumb: Optional[list[Coordinate]] = Field(
+        None, description="카드 지도용 축약 폴리라인(≤36pt). 트랙 없으면 null."
     )
     route_summary: Optional[str] = Field(
         None, description="연결된 코스 요약 — 공개 코스일 때만, 비공개면 null."

@@ -799,14 +799,16 @@ async def list_crew_runs(
 
     from app.services.run_service import (  # local: 순환 import 회피
         _comment_counts,
+        _polyline_thumbs,
         _signed_photo_urls,
     )
     firsts = {r["id"]: (r.get("photos") or [None])[0] for r in rows}
-    briefs, summaries, comment_counts, signed = await asyncio.gather(
+    briefs, summaries, comment_counts, signed, thumbs = await asyncio.gather(
         profile_service.get_profile_briefs([r["user_id"] for r in rows]),
         _public_route_summaries(),
         _comment_counts([r["id"] for r in rows]),
         _signed_photo_urls([p for p in firsts.values() if p]),
+        _polyline_thumbs([r["id"] for r in rows]),
     )
     return [
         CrewRunItem(
@@ -824,6 +826,7 @@ async def list_crew_runs(
             route_summary=summaries.get(row.get("route_id")),
             comment_count=comment_counts.get(row["id"], 0),
             photo_thumb=signed.get(firsts.get(row["id"])),
+            polyline_thumb=thumbs.get(row["id"]),
         )
         for row in rows
     ]

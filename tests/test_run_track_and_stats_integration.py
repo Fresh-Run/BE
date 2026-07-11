@@ -157,6 +157,15 @@ def run_tests():
             f"4건 기대(중복 없이), got {len(listed)} (uniq {len(set(listed))})"
         all_ids = {v for v in runs.values()}
         assert set(listed) == all_ids, "커서 순회가 전체와 불일치 (누락)"
+        # polyline_thumb: 트랙 run은 Coordinate 배열(≤36pt), 무트랙 run은 null
+        full = api(c, "GET", "/runs?limit=10", tok_a).json()
+        by = {r["id"]: r for r in full}
+        pt = by[runs["public"]]["polyline_thumb"]
+        assert pt and 2 <= len(pt) <= 36 and "lat" in pt[0], f"트랙 run thumb: {pt and pt[:1]}"
+        assert by[runs["no_track"]]["polyline_thumb"] is None, "무트랙 run은 null"
+        prof = api(c, "GET", f"/users/{users['a']}/runs", tok_f).json()
+        pub_card = next(x for x in prof if x["run_id"] == runs["public"])
+        assert pub_card["polyline_thumb"], "공개 프로필 카드에도 thumb"
         r = api(c, "GET", "/runs?before=2026-07-08T10:00:00", tok_a)
         assert r.status_code == 422, f"naive before는 422, got {r.status_code}"
         assert "timezone" in r.text, "422에 timezone 안내 필요"

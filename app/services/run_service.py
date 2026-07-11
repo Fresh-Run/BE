@@ -152,6 +152,7 @@ async def create_run(req: RunRequest, user_id: str | None = None) -> RunResponse
                     "raw_point_count": processed.point_count_raw,
                     "kept_point_count": processed.point_count_kept,
                     "server_distance_km": round(processed.server_distance_km, 2),
+                    "polyline_thumb": track_service.make_polyline_thumb(processed.polyline),
                     "max_speed_kmh": processed.max_speed_kmh,
                     "avg_accuracy_m": processed.avg_accuracy_m,
                 }).execute()
@@ -498,6 +499,28 @@ _PUBLIC_DETAIL_FIELDS = (
 )
 
 
+async def _polyline_thumbs(run_ids: list[str]) -> dict[str, list]:
+    """{run_id: polyline_thumb} — 트랙 있는 run만, 배치 1쿼리 (카드 지도용).
+
+    Best-effort: 실패 시 빈 dict (thumb null로 표시될 뿐, 조회는 성공).
+    """
+    if not run_ids:
+        return {}
+    try:
+        supabase = get_supabase_admin()
+        res = await asyncio.to_thread(
+            lambda: supabase.table("run_tracks")
+            .select("run_id, polyline_thumb")
+            .in_("run_id", run_ids)
+            .execute()
+        )
+        return {r["run_id"]: r["polyline_thumb"] for r in res.data
+                if r.get("polyline_thumb")}
+    except Exception:  # noqa: BLE001
+        logger.warning("polyline_thumb 조회 실패 — thumb 없이 응답", exc_info=True)
+        return {}
+
+
 async def get_run(run_id: str, user_id: str) -> RunResponse | None:
     """Return one run — 본인은 전체, 타인은 공개범위 내에서 정제된 필드만.
 
@@ -522,12 +545,13 @@ async def get_run(run_id: str, user_id: str) -> RunResponse | None:
         return None
 
     photo_paths = row.get("photos") or []
-    tracks, kudos, comments, signed, mine = await asyncio.gather(
+    tracks, kudos, comments, signed, mine, thumbs = await asyncio.gather(
         _track_summaries([row["id"]]),
         _kudos_counts([row["id"]]),
         _comment_counts([row["id"]]),
         _signed_photo_urls(photo_paths),
         _my_kudos_set([row["id"]], user_id),
+        _polyline_thumbs([row["id"]]),
     )
     photos = [signed[p] for p in photo_paths if p in signed]
     common = dict(
@@ -536,6 +560,7 @@ async def get_run(run_id: str, user_id: str) -> RunResponse | None:
         # 피드 my_kudos와 동일 계산 (본인 run은 kudos 불가 → 자연히 False)
         my_kudos=row["id"] in mine,
         comment_count=comments.get(row["id"], 0), photos=photos,
+        polyline_thumb=thumbs.get(row["id"]),
     )
     if is_own:
         return RunResponse(**{k: v for k, v in row.items() if k != "photos"}, **common)
@@ -1026,13 +1051,14 @@ async def list_activity_feed(
         return {row["id"]: row["summary"] for row in r.data}
 
     firsts = {r["id"]: (r.get("photos") or [None])[0] for r in rows}
-    briefs, summaries, kudos_counts, my_kudos, comment_counts, signed = await asyncio.gather(
+    briefs, summaries, kudos_counts, my_kudos, comment_counts, signed, thumbs = await asyncio.gather(
         profile_service.get_profile_briefs([r["user_id"] for r in rows]),
         _public_route_summaries(),
         _kudos_counts(run_ids),
         _my_kudos_set(run_ids, user_id),
         _comment_counts(run_ids),
         _signed_photo_urls([p for p in firsts.values() if p]),
+        _polyline_thumbs(run_ids),
     )
     return [
         ActivityFeedItem(
@@ -1053,6 +1079,7 @@ async def list_activity_feed(
             kudos_count=kudos_counts.get(row["id"], 0),
             my_kudos=row["id"] in my_kudos,
             photo_thumb=signed.get(firsts.get(row["id"])),
+            polyline_thumb=thumbs.get(row["id"]),
         )
         for row in rows
     ]
@@ -1114,13 +1141,14 @@ async def list_user_runs(
         return {row["id"]: row["summary"] for row in r.data}
 
     firsts = {r["id"]: (r.get("photos") or [None])[0] for r in rows}
-    brief, summaries, kudos_counts, my_kudos, comment_counts, signed = await asyncio.gather(
+    brief, summaries, kudos_counts, my_kudos, comment_counts, signed, thumbs = await asyncio.gather(
         profile_service.get_profile_briefs([target_id]),
         _public_route_summaries(),
         _kudos_counts(run_ids),
         _my_kudos_set(run_ids, caller_id),
         _comment_counts(run_ids),
         _signed_photo_urls([p for p in firsts.values() if p]),
+        _polyline_thumbs(run_ids),
     )
     is_own = caller_id == target_id
     return [
@@ -1144,6 +1172,7 @@ async def list_user_runs(
             # 본인 프로필에서만 visibility 뱃지 렌더 (타인 프로필엔 노출 불필요)
             visibility=row.get("visibility") if is_own else None,
             photo_thumb=signed.get(firsts.get(row["id"])),
+            polyline_thumb=thumbs.get(row["id"]),
         )
         for row in rows
     ]
@@ -1296,18 +1325,20 @@ async def list_runs(
     # 배치 집계로 kudos·댓글 수 (활동 피드와 동일 방식, N+1 방지)
     # 썸네일: 행마다 첫 사진만, 서명 URL은 배치 1콜 (목록 정책 — 설계 §2-E)
     firsts = [(row["photos"] or [None])[0] for row in result.data]
-    tracks, kudos, comments, signed = await asyncio.gather(
+    tracks, kudos, comments, signed, thumbs = await asyncio.gather(
         _track_summaries(run_ids),
         _kudos_counts(run_ids),
         _comment_counts(run_ids),
         _signed_photo_urls([p for p in firsts if p]),
+        _polyline_thumbs(run_ids),
     )
     return [
         RunResponse(**{k: v for k, v in row.items() if k != "photos"},
                     has_track=row["id"] in tracks,
                     splits=tracks.get(row["id"]), kudos_count=kudos.get(row["id"], 0),
                     comment_count=comments.get(row["id"], 0),
-                    photo_thumb=signed.get(first) if first else None)
+                    photo_thumb=signed.get(first) if first else None,
+                    polyline_thumb=thumbs.get(row["id"]))
         for row, first in zip(result.data, firsts)
     ]
 

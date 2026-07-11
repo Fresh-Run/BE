@@ -319,3 +319,28 @@ def classify(processed: ProcessedTrack | None, app_distance_km: float) -> str:
     if mismatch > DISTANCE_MISMATCH_RATIO:
         return "adjusted"
     return "verified"
+
+
+# ── 카드 지도용 축약 폴리라인 (~30pt) ────────────────────────────────────────
+
+THUMB_EPSILON_M = 25.0   # 실측: 실트랙 85pt → 33pt (설계 목표 ~30)
+THUMB_MAX_POINTS = 36
+
+
+def make_polyline_thumb(polyline: list[dict]) -> list[dict]:
+    """저장 폴리라인을 카드 지도용으로 재단순화 — 상한 보장 + 좌표 5자리(~1m).
+
+    eps 25m → 초과 시 50m → 그래도 초과 시 균등 추출 30pt. 목록은 고빈도
+    경로라 저장 시 1회 계산해 run_tracks.polyline_thumb에 박제한다(전송량
+    상한 고정 — 조회 시 재계산안은 트랙 길이 비례 전송이라 기각, 설계 문서).
+    """
+    pts = [TrackPoint(lat=p["lat"], lng=p["lng"], t_ms=0) for p in polyline]
+    if len(pts) > THUMB_MAX_POINTS:
+        out = _dp_simplify(pts, THUMB_EPSILON_M)
+        if len(out) > THUMB_MAX_POINTS:
+            out = _dp_simplify(pts, THUMB_EPSILON_M * 2)
+        if len(out) > THUMB_MAX_POINTS:
+            step = (len(out) - 1) / 29
+            out = [out[round(i * step)] for i in range(30)]
+        pts = out
+    return [{"lat": round(p.lat, 5), "lng": round(p.lng, 5)} for p in pts]
