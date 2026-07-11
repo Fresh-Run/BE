@@ -557,6 +557,9 @@ class PublicRouteResponse(BaseModel):
     owner_nickname: Optional[str] = Field(
         None, description="Owner's nickname; null if they have no profile yet."
     )
+    owner_avatar_url: Optional[str] = Field(
+        None, description="코스 주인 아바타 (없으면 null → 이니셜 폴백)."
+    )
     copy_count: int = Field(0, description="Number of times this route has been copied ('이 코스 달리기').")
     like_count: int = Field(0, description="Number of likes on this route.")
     is_liked: bool = Field(False, description="True if the caller has liked this route.")

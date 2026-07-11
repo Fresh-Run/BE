@@ -109,6 +109,17 @@ def run_tests():
         assert mby[uids["a"]]["avatar_url"] == AVATAR and mby[uids["b"]]["avatar_url"] is None
         ok("랭킹·멤버 목록 A=값 · B=null ✓")
 
+        step("2b. 공개 코스 — owner_avatar_url (no-op 재발 방지)")
+        route_row = {"summary": f"avf-route-{TS}", "target_distance_km": 3.0,
+                     "total_distance_km": 3.0, "estimated_duration_min": 20,
+                     "waypoints": [], "polyline": [], "start_lat": 37.5,
+                     "start_lng": 127.0, "is_public": True, "user_id": uids["a"]}
+        c.post(f"{_SB}/rest/v1/routes", headers=_ADM, json=route_row)
+        pub = api(c, "GET", "/routes/public?sort=newest&limit=20", tok_b).json()
+        mine_route = next(x for x in pub if x["summary"] == f"avf-route-{TS}")
+        assert mine_route["owner_avatar_url"] == AVATAR, mine_route.get("owner_avatar_url")
+        ok("공개 코스 owner_avatar_url ✓")
+
         step("3. 알림 — actor_avatar_url")
         assert api(c, "POST", f"/users/{uids['b']}/follow", tok_a).status_code == 204
         notifs = api(c, "GET", "/notifications", tok_b).json()
