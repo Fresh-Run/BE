@@ -926,9 +926,13 @@ async def list_run_comments(
     rows = res.data
     if not rows:
         return []
-    nicknames = await profile_service.get_nicknames([r["user_id"] for r in rows])
+    briefs = await profile_service.get_profile_briefs([r["user_id"] for r in rows])
     return [
-        RunCommentResponse(**row, nickname=nicknames.get(row["user_id"]))
+        RunCommentResponse(
+            **row,
+            nickname=briefs.get(row["user_id"], {}).get("nickname"),
+            avatar_url=briefs.get(row["user_id"], {}).get("avatar_url"),
+        )
         for row in rows
     ]
 
@@ -964,8 +968,9 @@ async def create_run_comment(
     except Exception:  # noqa: BLE001 - 알림 실패가 댓글 작성을 막지 않음
         logger.warning("run_commented 알림 생성 실패", exc_info=True)
 
-    nick = (await profile_service.get_nicknames([caller_id])).get(caller_id)
-    return RunCommentResponse(**row, nickname=nick)
+    brief = (await profile_service.get_profile_briefs([caller_id])).get(caller_id)
+    return RunCommentResponse(**row, nickname=brief.get("nickname") if brief else None,
+                              avatar_url=brief.get("avatar_url") if brief else None)
 
 
 async def delete_run_comment(run_id: str, comment_id: str, caller_id: str) -> None:

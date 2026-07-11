@@ -618,14 +618,15 @@ async def _to_public_responses(
         _like_counts(route_ids),
         _liked_by_me(route_ids, user_id),
         _comment_counts(route_ids),
-        profile_service.get_nicknames([r.get("user_id") for r in rows]),
+        profile_service.get_profile_briefs([r.get("user_id") for r in rows]),
     )
     return [
         PublicRouteResponse(
             **row,
             owner_id=row.get("user_id"),
             is_mine=(row.get("user_id") == user_id),
-            owner_nickname=nicknames.get(row.get("user_id")),
+            owner_nickname=nicknames.get(row.get("user_id"), {}).get("nickname"),
+            owner_avatar_url=nicknames.get(row.get("user_id"), {}).get("avatar_url"),
             copy_count=copy_counts.get(row["id"], 0),
             like_count=like_counts.get(row["id"], 0),
             is_liked=row["id"] in liked_set,
@@ -713,7 +714,7 @@ async def list_public_routes(
         _like_counts(route_ids),
         _liked_by_me(route_ids, user_id),
         _comment_counts(route_ids),
-        profile_service.get_nicknames([r.get("user_id") for r in rows]),
+        profile_service.get_profile_briefs([r.get("user_id") for r in rows]),
     )
 
     if sort == "popular":
@@ -724,7 +725,8 @@ async def list_public_routes(
             **row,
             owner_id=row.get("user_id"),
             is_mine=(row.get("user_id") == user_id),
-            owner_nickname=nicknames.get(row.get("user_id")),
+            owner_nickname=nicknames.get(row.get("user_id"), {}).get("nickname"),
+            owner_avatar_url=nicknames.get(row.get("user_id"), {}).get("avatar_url"),
             copy_count=copy_counts.get(row["id"], 0),
             like_count=like_counts.get(row["id"], 0),
             is_liked=row["id"] in liked_set,
@@ -792,7 +794,7 @@ async def search_nearby_routes(
         _like_counts(route_ids),
         _liked_by_me(route_ids, user_id),
         _comment_counts(route_ids),
-        profile_service.get_nicknames([r.get("user_id") for r in rows]),
+        profile_service.get_profile_briefs([r.get("user_id") for r in rows]),
     )
 
     if sort_by == "popular":
@@ -805,7 +807,8 @@ async def search_nearby_routes(
             **row,
             owner_id=row.get("user_id"),
             is_mine=(row.get("user_id") == user_id),
-            owner_nickname=nicknames.get(row.get("user_id")),
+            owner_nickname=nicknames.get(row.get("user_id"), {}).get("nickname"),
+            owner_avatar_url=nicknames.get(row.get("user_id"), {}).get("avatar_url"),
             copy_count=copy_counts.get(row["id"], 0),
             like_count=like_counts.get(row["id"], 0),
             is_liked=row["id"] in liked_set,
@@ -854,7 +857,7 @@ async def search_public_routes(
         _like_counts(route_ids),
         _liked_by_me(route_ids, user_id),
         _comment_counts(route_ids),
-        profile_service.get_nicknames([r.get("user_id") for r in rows]),
+        profile_service.get_profile_briefs([r.get("user_id") for r in rows]),
     )
 
     return [
@@ -862,7 +865,8 @@ async def search_public_routes(
             **row,
             owner_id=row.get("user_id"),
             is_mine=(row.get("user_id") == user_id),
-            owner_nickname=nicknames.get(row.get("user_id")),
+            owner_nickname=nicknames.get(row.get("user_id"), {}).get("nickname"),
+            owner_avatar_url=nicknames.get(row.get("user_id"), {}).get("avatar_url"),
             copy_count=copy_counts.get(row["id"], 0),
             like_count=like_counts.get(row["id"], 0),
             is_liked=row["id"] in liked_set,
@@ -957,7 +961,7 @@ async def create_comment(route_id: str, user_id: str, content: str) -> CommentRe
         .execute()
     )
     row = out.data[0]
-    nicknames = await profile_service.get_nicknames([user_id])
+    nicknames = await profile_service.get_profile_briefs([user_id])
 
     if route_owner:
         try:
@@ -971,7 +975,9 @@ async def create_comment(route_id: str, user_id: str, content: str) -> CommentRe
         except Exception:
             logger.warning("route_commented 알림 생성 실패", exc_info=True)
 
-    return CommentResponse(**row, nickname=nicknames.get(user_id))
+    brief = nicknames.get(user_id) or {}
+    return CommentResponse(**row, nickname=brief.get("nickname"),
+                           avatar_url=brief.get("avatar_url"))
 
 
 async def list_comments(route_id: str, limit: int = 50) -> list[CommentResponse]:
@@ -1003,8 +1009,11 @@ async def list_comments(route_id: str, limit: int = 50) -> list[CommentResponse]
     if not rows:
         return []
 
-    nicknames = await profile_service.get_nicknames([r["user_id"] for r in rows])
-    return [CommentResponse(**row, nickname=nicknames.get(row["user_id"])) for row in rows]
+    briefs = await profile_service.get_profile_briefs([r["user_id"] for r in rows])
+    return [CommentResponse(**row,
+                            nickname=briefs.get(row["user_id"], {}).get("nickname"),
+                            avatar_url=briefs.get(row["user_id"], {}).get("avatar_url"))
+            for row in rows]
 
 
 async def delete_comment(route_id: str, comment_id: str, caller_id: str) -> None:

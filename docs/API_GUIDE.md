@@ -204,7 +204,7 @@ fetch(`${API_BASE}/api/me/profile`, {
 | **초대 코드 (크루장)** | `GET /crews/{id}/invite` (미발급 404 → POST로 발급), `POST /crews/{id}/invite` (생성/**재생성** — 이전 코드 즉시 무효, 유출 대응) | `{code}` — 8자 대문자+숫자 (I/O/0/1 없음). 카톡 등으로 공유 (딥링크 포맷은 라우팅 표 아래 참조). **⚠️ 소비 규칙: 재생성하면 구코드가 즉시 무효 = 이미 공유된 초대 링크도 함께 죽는다** — 재생성 버튼에 "기존 초대 링크가 무효화됩니다" 경고를, 무효 링크 수신자에겐 preview 404를 "만료된 초대예요"로 표시 |
 | 코드 미리보기 | **`POST /crews/preview-by-code`** `{code}` (권장) · `GET /crews/preview-by-code?code=` (레거시) | 가입 확정 전 "어느 크루인지" 확인 — `CrewResponse` 반환. **비공개 크루도 조회됨** (코드 = 초대장). 잘못된 코드 404. **⚠️ POST 사용 권장** — GET은 코드가 URL 쿼리스트링 → 서버 access log에 평문으로 남음. 두 경로 동작·응답 동일하니 신규/변경은 POST(body)로 붙일 것 |
 | **코드로 가입** | `POST /crews/join-by-code` body `{code}` | 200 `CrewResponse` (바로 크루 화면 이동). **join_policy·비공개 무관 즉시 가입** — 크루 생성 화면의 "비공개: 초대 링크로만 가입 가능해요"가 이 경로. 대소문자·공백은 서버가 정규화. 이미 멤버/정원 409, 잘못된 코드 404. 승인제에 신청해뒀던 pending은 자동 정리 |
-| 멤버/랭킹 | `GET /crews/{id}/members`, `/crews/{id}/ranking` | 랭킹: 이번 주 KST 거리순, `me` 플래그. **visibility 무관** — 랭킹·챌린지 누적 거리는 `private` run도 포함(크루=활동 공유 원칙 + 거리 은닉 어뷰징 방지). visibility는 run 카드 노출만 제어, 집계 거리엔 영향 없음. **단 GPS 검증(verified) run만 집계** — 트랙 없는 수동 기록은 랭킹·챌린지 거리에 안 잡힘(UI에 "GPS 기록만 집계" 안내 권장) |
+| 멤버/랭킹 | `GET /crews/{id}/members`, `/crews/{id}/ranking` | 둘 다 **`avatar_url`**(없으면 null → 이니셜 폴백) 포함. 랭킹: 이번 주 KST 거리순, `me` 플래그. **visibility 무관** — 랭킹·챌린지 누적 거리는 `private` run도 포함(크루=활동 공유 원칙 + 거리 은닉 어뷰징 방지). visibility는 run 카드 노출만 제어, 집계 거리엔 영향 없음. **단 GPS 검증(verified) run만 집계** — 트랙 없는 수동 기록은 랭킹·챌린지 거리에 안 잡힘(UI에 "GPS 기록만 집계" 안내 권장) |
 | **크루 러닝 피드** | `GET /crews/{id}/runs?limit&offset` | 크루원들의 최근 run, `ran_at` 최신순: `[{run_id, user_id, nickname, avatar_url, ran_at, title, distance_km, duration_sec, avg_pace_sec_per_km, route_id, route_summary, comment_count}]`. 크루원만(403). **visibility 적용**: `private`만 제외 — `public`·`followers`는 크루원에게 노출(크루=활동 공유 관계). 개인 메모/피드백은 절대 미포함, `route_summary`는 공개 코스만(비공개면 null). 탈퇴 멤버의 run은 자동 제외 |
 | 챌린지 | `GET /crews/{id}/challenges/current`, `POST /crews/{id}/challenges` | 생성은 **크루장·운영진(admin)**. `achieved_km`, `progress_pct`, `is_completed` 실시간 계산. 생성 시 `starts_at`/`ends_at`은 **ISO 8601 + 타임존 필수** (아래 노트) |
 | **공지 목록/상세** | `GET /crews/{id}/announcements?limit&offset`, `GET .../{announcement_id}` | `title`, `body`, `run_at`, `place_name/lat/lng`, `rsvp_open`, `rsvp{going,not_going,maybe}`, `my_rsvp`; 상세엔 `going_members[]` 명단 추가. 크루원만 조회 가능(403). 작성 시 `run_at`/`rsvp_closes_at`은 **ISO 8601 + 타임존 필수** |
@@ -213,7 +213,7 @@ fetch(`${API_BASE}/api/me/profile`, {
 | 공지 작성/수정/삭제 | `POST/PATCH/DELETE /crews/{id}/announcements...` | **크루장·운영진(admin)**. 작성 시 크루원 전체 알림, 수정은 알림 없음 |
 | **참석 투표** | `PUT /crews/{id}/announcements/{aid}/rsvp` | body: `{"status": "going"\|"not_going"\|"maybe"}` → 204. 재투표=덮어쓰기 |
 | **원격 푸시 (Expo)** | `POST /me/push-token` body `{token, platform}` / `DELETE /me/push-token` body `{token}` | **앱 계약**: ① 로그인 후 `expo-notifications` 권한 요청 → `getExpoPushTokenAsync()` → POST(앱 시작마다 호출해도 **멱등**, 토큰 갱신 리스너에서도 재호출) ② 로그아웃 시 DELETE(실패해도 로그아웃 진행 — 서버가 죽은 토큰 자동 정리) ③ **푸시 탭 시 `data`의 `type/target_id/target_type/payload`로 아래 딥링크 라우팅 표 재사용**(인앱 탭 핸들러 공유). 형식 밖 토큰 422. 발송은 알림 생성 시 자동(본문은 닉네임+행위만 — 콘텐츠 내용 미포함), per-type 끄기는 v2(현재는 OS 알림 설정) |
-| 알림 | `GET /notifications`, `GET /notifications/unread-count`, `PATCH /notifications/read-all`, `PATCH /notifications/{id}/read`, **`DELETE /notifications/{id}`**(스와이프 삭제 — 본인 것만, 없음/남의 것 404, 성공 204), **`DELETE /notifications`**(모두 지우기 — 멱등, 0건이어도 204) | 각 항목: `type`·`actor_nickname`·`target_id`·`target_type`·**`payload`**(딥링크 보조 jsonb, 없으면 null). **탭 시 목적지·사용 필드는 아래 "딥링크 라우팅 표"를 그대로 따를 것** |
+| 알림 | `GET /notifications`, `GET /notifications/unread-count`, `PATCH /notifications/read-all`, `PATCH /notifications/{id}/read`, **`DELETE /notifications/{id}`**(스와이프 삭제 — 본인 것만, 없음/남의 것 404, 성공 204), **`DELETE /notifications`**(모두 지우기 — 멱등, 0건이어도 204) | 각 항목: `type`·`actor_nickname`·**`actor_avatar_url`**(null=이니셜 폴백)·`target_id`·`target_type`·**`payload`**(딥링크 보조 jsonb, 없으면 null). **탭 시 목적지·사용 필드는 아래 "딥링크 라우팅 표"를 그대로 따를 것** |
 
 > **알림 딥링크 라우팅 표** — 알림 탭 시 이 표대로 화면을 특정한다. **`target_type`으로 분기**하고 표의 "사용 필드"로 id를 얻는다. (대부분 `target_id`면 충분, `crew_announcement`만 `payload.crew_id` 필요.)
 >
@@ -275,6 +275,8 @@ fetch(`${API_BASE}/api/me/profile`, {
 > **ai_course/weather는 실제 파이프라인에 반영됩니다** (전 티어 공통, 무료 포함 — 2026-07-09 티어 결정 ⓐ 확정: 생성 기능이 free 주3회로 열려 있어 설정도 개방, 차등은 쿼터로. 시안의 프리미엄 잠금은 제거됨·설정 UI도 전 티어):
 > - `ai_course` → `POST /routes/generate`가 body에 없는 필드의 기본값으로 사용 (우선순위: body > 설정 > 서버 기본값, §홈 표 참고).
 > - `weather` → `GET /weather`의 `running_index.comment`가 내 기준(`avoid_dust`/`dust_level_pm10`, `avoid_heat`/`heat_temp_c`, `avoid_rain`)을 넘으면 개인화되고 `personalized: true`가 됩니다. 복수 기준 초과 시 미세먼지 > 더위 > 비 순으로 하나만 표시. `score`/`label`은 공용 기준 그대로.
+
+> **아바타 필드 일람 (2026-07-11 additive)**: `PublicRouteResponse.owner_avatar_url` · run/route 댓글 `avatar_url` · 크루 멤버/랭킹 `avatar_url` · 알림 `actor_avatar_url` · 공지 `author_avatar_url` — 전부 **없으면 null → 이니셜 폴백**(기존 관례). 탈퇴 작성자가 남긴 공지는 `author_nickname`과 함께 avatar도 null.
 
 ## 5. 에러 규약
 

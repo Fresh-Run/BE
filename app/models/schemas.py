@@ -744,6 +744,9 @@ class NotificationResponse(BaseModel):
     type: str
     actor_id: str
     actor_nickname: Optional[str] = None
+    actor_avatar_url: Optional[str] = Field(
+        None, description="행위자 아바타 (없으면 null → 이니셜 폴백)."
+    )
     target_id: str
     target_type: str
     payload: Optional[dict] = Field(
@@ -764,6 +767,9 @@ class CommentResponse(BaseModel):
     route_id: str
     user_id: str
     nickname: Optional[str] = None
+    avatar_url: Optional[str] = Field(
+        None, description="작성자 아바타 (없으면 null → 이니셜 폴백)."
+    )
     content: str
     created_at: str
 
@@ -775,6 +781,9 @@ class RunCommentResponse(BaseModel):
     run_id: str
     user_id: str
     nickname: Optional[str] = None
+    avatar_url: Optional[str] = Field(
+        None, description="작성자 아바타 (없으면 null → 이니셜 폴백)."
+    )
     content: str
     created_at: str
 
@@ -1124,6 +1133,9 @@ class CrewMemberResponse(BaseModel):
         None, description="Display name; null if the member has no profile yet."
     )
     role: str = Field(..., description='"owner" / "admin"(운영진) / "member".')
+    avatar_url: Optional[str] = Field(
+        None, description="멤버 아바타 (없으면 null → 이니셜 폴백)."
+    )
     joined_at: str = Field(..., description="When the user joined the crew (ISO 8601).")
 
 
@@ -1151,6 +1163,9 @@ class CrewRankingEntry(BaseModel):
         None, description="Display name; null if the member has no profile yet."
     )
     distance_km: float = Field(..., description="Total distance run this week (KST Monday 00:00 onwards).")
+    avatar_url: Optional[str] = Field(
+        None, description="멤버 아바타 (없으면 null → 이니셜 폴백)."
+    )
     me: bool = Field(..., description="True면 호출자 본인 행 (본인 하이라이트용).")
 
 
@@ -1362,6 +1377,9 @@ class AnnouncementResponse(BaseModel):
     crew_id: str
     author_id: Optional[str] = Field(None, description="작성자. 탈퇴 시 null.")
     author_nickname: Optional[str] = None
+    author_avatar_url: Optional[str] = Field(
+        None, description="작성자 아바타 (탈퇴 작성자·미설정은 null → 이니셜 폴백)."
+    )
     title: str
     body: str
     run_at: Optional[str] = None

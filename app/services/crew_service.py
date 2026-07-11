@@ -1016,12 +1016,13 @@ async def list_members(crew_id: str, caller_id: str) -> list[CrewMemberResponse]
     members.sort(key=lambda r: ({"owner": 0, "admin": 1}.get(r["role"], 2), r["joined_at"]))
 
     # 5. Batch nickname lookup — one IN query, no N+1.
-    nicknames = await profile_service.get_nicknames([m["user_id"] for m in members])
+    briefs = await profile_service.get_profile_briefs([m["user_id"] for m in members])
 
     return [
         CrewMemberResponse(
             user_id=m["user_id"],
-            nickname=nicknames.get(m["user_id"]),
+            nickname=briefs.get(m["user_id"], {}).get("nickname"),
+            avatar_url=briefs.get(m["user_id"], {}).get("avatar_url"),
             role=m["role"],
             joined_at=m["joined_at"],
         )
@@ -1096,13 +1097,14 @@ async def get_weekly_ranking(crew_id: str, caller_id: str) -> list[CrewRankingEn
         ranked.append((current_rank, uid, dist))
 
     # 7. Batch nickname lookup.
-    nicknames = await profile_service.get_nicknames([uid for _, uid, _ in ranked])
+    briefs = await profile_service.get_profile_briefs([uid for _, uid, _ in ranked])
 
     return [
         CrewRankingEntry(
             rank=rank,
             user_id=uid,
-            nickname=nicknames.get(uid),
+            nickname=briefs.get(uid, {}).get("nickname"),
+            avatar_url=briefs.get(uid, {}).get("avatar_url"),
             distance_km=round(dist, 2),
             me=(uid == caller_id),
         )

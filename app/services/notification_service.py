@@ -73,9 +73,13 @@ async def list_notifications(user_id: str, limit: int = 20) -> list[Notification
     if not rows:
         return []
 
-    nicknames = await profile_service.get_nicknames(list({r["actor_id"] for r in rows}))
+    briefs = await profile_service.get_profile_briefs(list({r["actor_id"] for r in rows}))
     return [
-        NotificationResponse(**row, actor_nickname=nicknames.get(row["actor_id"]))
+        NotificationResponse(
+            **row,
+            actor_nickname=briefs.get(row["actor_id"], {}).get("nickname"),
+            actor_avatar_url=briefs.get(row["actor_id"], {}).get("avatar_url"),
+        )
         for row in rows
     ]
 

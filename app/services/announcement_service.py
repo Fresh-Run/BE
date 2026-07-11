@@ -130,11 +130,13 @@ def _to_response(
     row: dict,
     tally: RsvpTally,
     my_rsvp: str | None,
-    author_nickname: str | None,
+    author_brief: dict | None,
 ) -> AnnouncementResponse:
+    author_brief = author_brief or {}
     return AnnouncementResponse(
         **row,
-        author_nickname=author_nickname,
+        author_nickname=author_brief.get("nickname"),
+        author_avatar_url=author_brief.get("avatar_url"),
         rsvp_open=_rsvp_open(row),
         rsvp=tally,
         my_rsvp=my_rsvp,
@@ -190,8 +192,8 @@ async def create_announcement(
 
     await _notify_members(crew_id, caller_id, row["id"])
 
-    nicknames = await profile_service.get_nicknames([caller_id])
-    return _to_response(row, RsvpTally(), None, nicknames.get(caller_id))
+    briefs = await profile_service.get_profile_briefs([caller_id])
+    return _to_response(row, RsvpTally(), None, briefs.get(caller_id))
 
 
 async def list_announcements(
@@ -219,7 +221,7 @@ async def list_announcements(
     tallies, mine, nicknames = await asyncio.gather(
         _tallies(ann_ids, crew_id),
         _my_rsvps(ann_ids, caller_id),
-        profile_service.get_nicknames([r.get("author_id") for r in rows]),
+        profile_service.get_profile_briefs([r.get("author_id") for r in rows]),
     )
     return [
         _to_response(
@@ -251,7 +253,7 @@ async def get_announcement(
         ),
         _tallies([announcement_id], crew_id),
         _my_rsvps([announcement_id], caller_id),
-        profile_service.get_nicknames([row.get("author_id")]),
+        profile_service.get_profile_briefs([row.get("author_id")]),
     )
     going_ids = [r["user_id"] for r in going_res.data]
     going_nicknames = await profile_service.get_nicknames(going_ids)
@@ -298,7 +300,7 @@ async def update_announcement(
     tallies, mine, nicknames = await asyncio.gather(
         _tallies([announcement_id], crew_id),
         _my_rsvps([announcement_id], caller_id),
-        profile_service.get_nicknames([row.get("author_id")]),
+        profile_service.get_profile_briefs([row.get("author_id")]),
     )
     return _to_response(
         row,
