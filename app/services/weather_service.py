@@ -286,7 +286,9 @@ async def _fetch_current(
 async def _fetch_uv(
     client: httpx.AsyncClient, lat: float, lng: float, key: str
 ) -> float | None:
-    """UV index; best-effort — any failure returns None (타일 숨김).
+    """UV index — 오늘 최고(solar-noon 최대, /2.5/uvi 시맨틱 — '현재' 아님).
+
+    Best-effort — any failure returns None (타일 숨김).
 
     /data/2.5/uvi는 공식 deprecated지만 무료 키로 동작 확인(2026-07-09 실검증).
     One Call 3.0(uvi 포함)은 별도 구독이라 보류 — 이 엔드포인트가 끊기면
@@ -342,6 +344,17 @@ async def get_weather(lat: float, lng: float) -> WeatherResponse:
 
     main = current.get("main", {})
     weather0 = (current.get("weather") or [{}])[0]
+    # 주/야: icon suffix(d/n)가 1차 — OpenWeather가 sunrise/sunset에서 파생한
+    # 값이라 동치(실확인: 23:55 KST에 "03n" = dt·일몰 비교와 일치). icon 결손
+    # 시 sys 비교 폴백, 둘 다 없으면 낮. raw icon은 노출하지 않는다(아이콘
+    # 체계 종속 방지 — 프론트는 is_day로 자체 셋 분기).
+    icon = weather0.get("icon") or ""
+    if icon:
+        is_day = not icon.endswith("n")
+    else:
+        sys_d = current.get("sys") or {}
+        sr, ss, dt = sys_d.get("sunrise"), sys_d.get("sunset"), current.get("dt")
+        is_day = bool(sr and ss and dt and sr < dt < ss) if sr else True
     pm25_v = air.get("pm2_5") if air else None
     pm10_v = air.get("pm10") if air else None
     feels = float(main.get("feels_like", main.get("temp", 15.0)))
@@ -364,6 +377,7 @@ async def get_weather(lat: float, lng: float) -> WeatherResponse:
         if pm10_v is not None else None,
         uv=UvReading(value=round(uv_v, 1), grade=_uv_grade(uv_v))
         if uv_v is not None else None,
+        is_day=is_day,
         running_index=_running_index(feels, code, wind, pm25_v, pm10_v, humidity),
         fetched_at=datetime.now(timezone.utc).isoformat(),
     )

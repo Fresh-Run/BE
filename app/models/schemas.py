@@ -293,7 +293,14 @@ class WeatherResponse(BaseModel):
     rain_1h_mm: Optional[float] = Field(None, description="최근 1시간 강수량(mm).")
     pm25: Optional[PmReading] = Field(None, description="미세먼지 API 실패 시 null.")
     pm10: Optional[PmReading] = None
-    uv: Optional[UvReading] = Field(None, description="자외선 API 실패 시 null (타일 숨김).")
+    uv: Optional[UvReading] = Field(
+        None, description="오늘 최고 자외선(solar-noon 최대 — /2.5/uvi 시맨틱, "
+        "'현재'가 아님). API 실패 시 null (타일 숨김)."
+    )
+    is_day: bool = Field(
+        True, description="일출~일몰 사이 여부 — 프론트 자체 아이콘 셋의 주/야 "
+        "분기용 (10분 격자 캐시라 경계에서 최대 10분 지연)."
+    )
     running_index: RunningIndex
     fetched_at: str = Field(..., description="원본 데이터 조회 시각 (캐시 공유됨).")
 

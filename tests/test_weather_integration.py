@@ -140,8 +140,10 @@ WEATHER_JSON = {
     "name": "성수동",
     "main": {"temp": 21.3, "feels_like": 20.8, "humidity": 55},
     "wind": {"speed": 2.1},
-    "weather": [{"id": 800, "main": "Clear", "description": "맑음"}],
+    "weather": [{"id": 800, "main": "Clear", "description": "맑음", "icon": "01d"}],
 }
+NIGHT_JSON = {**WEATHER_JSON,
+              "weather": [{"id": 800, "main": "Clear", "description": "맑음", "icon": "01n"}]}
 AIR_JSON = {"list": [{"components": {"pm2_5": 12.0, "pm10": 28.0}}]}
 UVI_JSON = {"value": 6.23}
 
@@ -164,6 +166,8 @@ class MockOW(BaseHTTPRequestHandler):
             MockOW.counts["weather"] += 1
             if lat == 11.0:
                 self._send(401, {"cod": 401, "message": "Invalid API key"})
+            elif lat == 14.0:
+                self._send(200, NIGHT_JSON)
             else:
                 self._send(200, WEATHER_JSON)
         elif parsed.path == "/data/2.5/air_pollution":
@@ -228,6 +232,7 @@ def phase2(c, tok):
         assert d["running_index"]["score"] == 100
         assert d["running_index"]["label"] == "최고"
         assert d["uv"] == {"value": 6.2, "grade": "높음"}, d.get("uv")
+        assert d["is_day"] is True, "icon 01d → 낮"
         assert d["fetched_at"]
         ok("전체 필드 파싱 ✓ PM 등급 ✓ UV 6.2 높음 ✓ 러닝지수 100 ✓")
 
@@ -270,6 +275,11 @@ def phase2(c, tok):
         assert d["uv"] is None and d["pm25"] is not None
         assert d["running_index"]["score"] == 100
         ok("uv만 null ✓ 나머지 정상 ✓")
+
+        step("2-7. is_day — 밤 아이콘(01n) → false")
+        r = w(14.0, 127.0)
+        assert r.status_code == 200 and r.json()["is_day"] is False, r.json().get("is_day")
+        ok("밤 케이스 false ✓ (낮은 2-1에서 검증)")
 
     finally:
         proc.terminate()
