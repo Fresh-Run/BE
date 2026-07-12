@@ -74,6 +74,16 @@ _TEMPLATES: dict[str, dict[str, str]] = {
                             "en": "Crew challenge completed! 🎉"},
 }
 
+# M-11 (감사 3차): 로드 시 정합 강제 — 템플릿 있는 type(=실제 발송)은 반드시
+# 카테고리 매핑이 있어야 한다. 없으면 send_for_notification에서 category=None →
+# master만으로 발송돼 사용자의 카테고리 토글을 무시하는 우회가 생긴다(fail-closed).
+# 신규 발송 type 추가 시 _CATEGORY 매핑을 빠뜨리면 여기서 즉시 ImportError.
+_missing_category = set(_TEMPLATES) - set(_CATEGORY)
+assert not _missing_category, (
+    f"_TEMPLATES에 있으나 _CATEGORY 매핑 누락: {sorted(_missing_category)} "
+    "— 카테고리 없이 발송되면 토글 우회. _CATEGORY에 추가하세요."
+)
+
 
 async def register_token(user_id: str, token: str, platform: str) -> None:
     """토큰 등록/갱신 — upsert 멱등. PK=token이라 기기 주인 교체 시 자동 이전.

@@ -57,6 +57,12 @@ create table if not exists public.crew_message_reactions (
   created_at timestamptz not null default now(),
   primary key (message_id, user_id, emoji)   -- 유저당 이모지당 1회(멱등 토글)
 );
+-- 탈퇴 시맨틱(감사 3차 M-10 명문화): 메시지는 sender_id set null로 **익명 존속**
+-- (공지 패턴)이지만, 반응은 user_id **cascade로 소멸**(비대칭). 의도된 설계 —
+-- 카운트는 항상 라이브 파생(_reactions_for)이라 소멸분이 정확히 감소 반영(고아·
+-- inflated 카운트 없음), my_reactions도 무영향. "누가 반응했나"가 익명 존속할
+-- 이유는 없다고 판단(메시지 본문과 달리 반응은 신원 자체가 정보). soft-delete된
+-- 메시지엔 **신규 반응 불가**(M-9, react가 404) — 기존 반응·맥락은 유지.
 
 -- 안읽은수: 마지막 읽은 시점 저장 방식 (카운터 대비 §아래)
 create table if not exists public.crew_read_state (

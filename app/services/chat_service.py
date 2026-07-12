@@ -120,7 +120,7 @@ async def _get_message(crew_id: str, message_id: str) -> dict:
     supabase = get_supabase_admin()
     res = await asyncio.to_thread(
         lambda: supabase.table("crew_messages")
-        .select("id, sender_id, type")
+        .select("id, sender_id, type, content")
         .eq("id", message_id)
         .eq("crew_id", crew_id)
         .limit(1)
@@ -154,7 +154,11 @@ async def delete_message(crew_id: str, caller_id: str, message_id: str) -> None:
 async def react(crew_id: str, caller_id: str, message_id: str, emoji: str) -> None:
     """이모지 반응 추가 (멱등 — PK 충돌 무시). 크루원만·메시지 존재 확인."""
     await crew_service.ensure_member(crew_id, caller_id)
-    await _get_message(crew_id, message_id)  # 404 은닉
+    msg = await _get_message(crew_id, message_id)  # 404 은닉
+    # M-9: soft-deleted 메시지(content null인 text)엔 새 반응 불가 — 404 은닉.
+    # 기존 반응·맥락은 유지(delete_message가 반응은 안 지움)지만 신규는 막는다.
+    if msg["type"] == "text" and msg.get("content") is None:
+        raise MessageNotFound()
     supabase = get_supabase_admin()
     try:
         await asyncio.to_thread(

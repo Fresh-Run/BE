@@ -118,9 +118,12 @@ async def upsert_profile(user_id: str, req: ProfileUpdate) -> ProfileResponse:
         record["follow_approval"] = req.follow_approval
 
     try:
-        if is_new:   # 최초 생성 — nickname 보장됨(위 분기), insert
+        if is_new:   # 최초 생성 — nickname 보장됨(위 분기). M-12: upsert(on_conflict=
+            # user_id)로 첫 PATCH 동시 2건 레이스를 흡수(패자가 PK 23505로 오도성
+            # 409/502 나던 것을 update로 수렴). nickname 중복(23505)은 여전히 잡힘.
             res = await asyncio.to_thread(
-                lambda: supabase.table("profiles").insert(record).execute()
+                lambda: supabase.table("profiles")
+                .upsert(record, on_conflict="user_id").execute()
             )
         else:        # 갱신 — 보낸 필드만 update(생략된 nickname 보존)
             res = await asyncio.to_thread(
@@ -131,6 +134,11 @@ async def upsert_profile(user_id: str, req: ProfileUpdate) -> ProfileResponse:
         if exc.code == _UNIQUE_VIOLATION:
             raise NicknameTaken() from exc
         raise
+
+    # M-12: 갱신 분기에서 존재검사~update 사이에 행이 사라지면(탈퇴 레이스) update가
+    # 0행 → res.data[] → IndexError(502) 대신 명시적 ProfileNotFound(404).
+    if not res.data:
+        raise ProfileNotFound()
 
     if avatar_delete:  # Storage 파일도 정리 — best-effort (run 사진 교체와 동일 패턴)
         try:

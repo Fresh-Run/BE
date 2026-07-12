@@ -205,6 +205,8 @@ async def update_my_profile(
         raise HTTPException(status_code=422, detail="nickname is required to create a profile")
     except profile_service.NicknameTaken:
         raise HTTPException(status_code=409, detail="Nickname already taken")
+    except profile_service.ProfileNotFound:  # M-12: 갱신 중 행 소멸(탈퇴 레이스)
+        raise HTTPException(status_code=404, detail="Profile not found")
     except Exception as exc:  # noqa: BLE001
         raise _bad_gateway("Failed to update profile", exc)
 
