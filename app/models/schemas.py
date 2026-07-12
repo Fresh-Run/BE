@@ -97,6 +97,10 @@ class ProfileResponse(BaseModel):
 class ProfileUpdate(BaseModel):
     """Input to create/update the caller's profile. user_id comes from the token."""
 
+    # 오타/미지 키는 422 — visibility·follow_approval 같은 보안 필드가 오타로
+    # silent swallow(200)되던 갭 봉쇄(감사 3차 M-7). settings 모델들과 정합.
+    model_config = ConfigDict(extra="forbid")
+
     # 부분 PATCH 시맨틱: 생략=유지(아바타 "생략=유지" 선례와 정합). 최초 생성
     # 시엔 필수 — upsert_profile이 프로필 유무로 분기해 강제(없으면 422).
     # 명시 null은 거부(닉네임은 삭제 개념 없음 — 아래 validator), ""는 min_length=2로 422.
@@ -976,7 +980,8 @@ class RunRequest(BaseModel):
 class RunUpdate(BaseModel):
     """저장 후 편집 (제목·공개 범위·메모·사진). 보낸 필드만 수정, 거리·시간은 불변."""
 
-    model_config = {"extra": "ignore"}
+    # 오타/미지 키 422 — visibility(프라이버시) silent swallow 봉쇄(감사 3차 M-7).
+    model_config = ConfigDict(extra="forbid")
 
     title: Optional[str] = Field(None, max_length=60)
     visibility: Optional[Literal["public", "followers", "private"]] = None

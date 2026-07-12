@@ -191,7 +191,7 @@ def run_tests():
         assert r.status_code in (200, 201), r.text[:200]
         crew = r.json()["id"]
         r = api(c, "POST", f"/crews/{crew}/challenges", tok_a, json={
-            "title": "집계 챌린지", "goal_km": 1000,
+            "title": "집계 챌린지", "goal_km": 100,  # 시안 상한(le=100); 랭킹 합만 검증이라 목표값 무관
             "starts_at": iso_hours_ago(24), "ends_at": iso_hours_ago(-24)})
         assert r.status_code in (200, 201), r.text[:250]
         rank = api(c, "GET", f"/crews/{crew}/ranking", tok_a).json()

@@ -201,6 +201,10 @@ can_see_run(viewer, owner, run_vis):
   에선 profile visibility 무시(추천) vs 엄격 적용.
 - **B. 검색에서 비공개 계정 route**: is_public route라도 owner 비공개면 검색
   제외(추천) vs route 공개면 노출.
+  **확장(2026-07-13, 감사 3차 M-4)**: 결정 B는 검색뿐 아니라 **둘러보기 피드
+  (`GET /routes/public` newest·popular)** 에도 적용 — `visible_owners`로 차단·
+  비공개 계정 owner의 공개 코스를 제외(검색과 동형). 이전엔 검색만 필터해
+  둘러보기로 누출되던 갭을 봉쇄. owner 없는 코스(user_id null)는 유지.
 - **C. 채팅 내 차단 필터**: v3는 소셜·프로필만, 채팅 메시지 차단 숨김은 v3.5로
   분리(추천) vs v3에 포함.
 - **D. auto_publish OFF 시맨틱**: 미지정 run을 private 저장(추천) vs

@@ -2042,6 +2042,8 @@ async def update_crew(
         raise HTTPException(status_code=404, detail="Crew not found")
     except crew_service.NotOwner:
         raise HTTPException(status_code=403, detail="Only the owner can update the crew")
+    except crew_service.InvalidCrewImageUrl:
+        raise HTTPException(status_code=422, detail="cover_url/icon_url must point to this crew's crew-images path")
     except Exception as exc:  # noqa: BLE001
         raise _bad_gateway("Failed to update crew", exc)
 

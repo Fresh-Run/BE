@@ -106,6 +106,10 @@ class RoleTargetIsOwner(CrewError):
     """owner의 role은 이 API로 못 바꾼다 (위임은 transfer 경유) — 422."""
 
 
+class InvalidCrewImageUrl(CrewError):
+    """cover_url/icon_url이 크루 자체 버킷 경로가 아님 (외부 URL 주입 차단) — 422."""
+
+
 # --- Helpers -----------------------------------------------------------------
 
 
@@ -1301,6 +1305,15 @@ async def update_crew(crew_id: str, caller_id: str, req: CrewUpdate) -> CrewResp
         if field in req.model_fields_set and getattr(req, field) is None:
             data[field] = None
             image_deletes.append(kind)
+        elif data.get(field) is not None:
+            # M-5: 외부 URL 주입 차단 — 값은 반드시 이 크루의 crew-images 경로여야
+            # 한다({crew_id}/{kind}). 업로드 3-step이 준 public_url + 캐시버스터
+            # (?v=..)만 허용. 그 외(임의 외부 URL·타 크루 경로)는 422.
+            expected = (f"{settings.supabase_url}/storage/v1/object/public/"
+                        f"{_CREW_IMAGE_BUCKET}/{crew_id}/{kind}")
+            val = data[field]
+            if not (val == expected or val.startswith(expected + "?")):
+                raise InvalidCrewImageUrl(field)
     if not data:
         # Nothing to change — return current state.
         counts = await _member_counts([crew_id])

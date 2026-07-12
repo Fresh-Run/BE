@@ -717,6 +717,13 @@ async def list_public_routes(
 
     if not rows:
         return []
+    # 결정 B(둘러보기로 확장): 차단·비공개 계정 owner의 코스는 둘러보기 피드에서도
+    # 제외(검색과 동형). 'popular' 정렬/limit 및 enrichment보다 앞 — owner 없는
+    # 코스(user_id None)는 유지. (newest는 DB limit 후 필터라 소폭 under-fill 가능.)
+    visible = await profile_service.visible_owners(user_id, [r.get("user_id") for r in rows])
+    rows = [r for r in rows if r.get("user_id") in visible or r.get("user_id") is None]
+    if not rows:
+        return []
 
     route_ids = [r["id"] for r in rows]
     copy_counts, like_counts, liked_set, comment_counts, nicknames = await asyncio.gather(
