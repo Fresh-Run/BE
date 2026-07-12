@@ -76,6 +76,7 @@ from app.models.schemas import (
     StatsResponse,
     StoredRoute,
     TransferRequest,
+    UserSearchItem,
     UserSettings,
     WeatherResponse,
 )
@@ -338,6 +339,26 @@ async def iap_notifications(request: Request, body: dict) -> dict:
 # --- Users: public profiles & follows ----------------------------------------
 # NOTE: any future fixed path (e.g. /users/search) must be declared BEFORE
 # these /users/{user_id}/... routes.
+
+
+@router.get(
+    "/users/search",
+    response_model=list[UserSearchItem],
+    summary="유저 검색 (닉네임 부분 일치 — 통합 검색 화면)",
+)
+async def search_users(
+    q: str = Query(..., min_length=2, max_length=20,
+                   description="닉네임 부분 일치(대소문자 무관). 최소 2자(전 유저 열거 방지)."),
+    limit: int = Query(20, ge=1, le=50),
+    user: CurrentUser = Depends(get_current_user),
+) -> list[UserSearchItem]:
+    """닉네임 contains 검색. 차단 상대 제외·본인 제외·잠금 계정은 bio null로 포함.
+    q<2자는 422. 프론트: 잠금 계정도 결과에 뜨고 프로필 진입 시 🔒."""
+    try:
+        rows = await profile_service.search_users(user.user_id, q, limit=limit)
+        return [UserSearchItem(**r) for r in rows]
+    except Exception as exc:  # noqa: BLE001
+        raise _bad_gateway("User search failed", exc)
 
 
 @router.get(

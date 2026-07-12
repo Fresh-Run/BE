@@ -435,6 +435,78 @@ async def can_see_user(owner_id: str, viewer_id: str) -> bool:
     return await _follows_or_crewmate(viewer_id, owner_id)
 
 
+async def blocked_ids_batch(viewer_id: str, owner_ids: list[str]) -> set[str]:
+    """viewer와 **양방향 차단 관계**인 owner_id 집합 (배치, viewer 자신은 제외).
+
+    visible_owners·유저 검색이 공용하는 단일 소스 — 차단 관계면 결과에서 제거.
+    """
+    ids = list({o for o in owner_ids if o and o != viewer_id})
+    if not ids:
+        return set()
+    supabase = get_supabase_admin()
+    blk = await asyncio.to_thread(
+        lambda: supabase.table("blocks").select("blocker_id, blocked_id")
+        .or_(f"and(blocker_id.eq.{viewer_id},blocked_id.in.({','.join(ids)})),"
+             f"and(blocked_id.eq.{viewer_id},blocker_id.in.({','.join(ids)}))")
+        .execute()
+    )
+    return ({r["blocked_id"] for r in blk.data}
+            | {r["blocker_id"] for r in blk.data}) - {viewer_id}
+
+
+_USER_SEARCH_LIMIT_MAX = 50
+
+
+async def search_users(viewer_id: str, q: str, limit: int = 20) -> list[dict]:
+    """닉네임 부분 일치(ILIKE, 대소문자 무관) 유저 검색 — 통합 검색 화면용.
+
+    프라이버시 합성(이 기능의 본체):
+      ① 양방향 차단 관계는 결과에서 제외(blocked_ids_batch — 코스 검색/둘러보기
+         M-4와 동일 단일 소스).
+      ② 본인 제외 — 검색 대상은 타인(팔로우/프로필 진입점).
+      ③ 잠금(볼 수 없는 private/followers) 계정은 **결과에 포함하되 bio=null** —
+         닉네임·아바타만(공개 프로필 잠금 응답과 동일 최소 정보). 시안 "검색→
+         프로필→🔒" 흐름 전제: 검색에서 숨기면 비공개 유저를 못 찾아 팔로우
+         요청 자체가 불가. followers 계정도 동일(볼 수 없으면 bio null).
+      ④ 승인제 계정은 정상 노출(팔로우 요청의 진입점 — visibility와 독립).
+    q는 라우트에서 min_length=2 강제(1자 전 유저 열거 방지). limit 캡.
+
+    성능: profiles.nickname ILIKE '%q%' — 현 규모(수십 유저)엔 seq scan로 충분.
+    수천~만 유저 도달 시 pg_trgm GIN 인덱스(부분일치) 또는 prefix 검색+btree로
+    전환 트리거. 지금은 오버엔지니어링 경계 — 인덱스 미생성, 트리거만 기록.
+    """
+    safe = q.strip().replace(",", "").replace("*", "")  # 코스 검색과 동일 정화
+    if not safe:
+        return []
+    limit = max(1, min(limit, _USER_SEARCH_LIMIT_MAX))
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("profiles")
+        .select("user_id, nickname, avatar_url, bio")
+        .ilike("nickname", f"%{safe}%")
+        .neq("user_id", viewer_id)
+        .limit(limit)
+        .execute()
+    )
+    rows = res.data
+    if not rows:
+        return []
+    ids = [r["user_id"] for r in rows]
+    blocked, visible = await asyncio.gather(
+        blocked_ids_batch(viewer_id, ids),
+        visible_owners(viewer_id, ids),
+    )
+    return [
+        {
+            "user_id": r["user_id"],
+            "nickname": r["nickname"],
+            "avatar_url": r["avatar_url"],
+            "bio": r.get("bio") if r["user_id"] in visible else None,  # 잠금이면 null
+        }
+        for r in rows if r["user_id"] not in blocked
+    ]
+
+
 async def visible_owners(viewer_id: str, owner_ids: list[str]) -> set[str]:
     """{viewer가 볼 수 있는 owner_id} — 배치(목록·검색용, N+1 방지).
 
@@ -444,15 +516,9 @@ async def visible_owners(viewer_id: str, owner_ids: list[str]) -> set[str]:
     if not ids:
         return set()
     supabase = get_supabase_admin()
-    # 차단 양방향 제외 (v3): viewer가 차단했거나 viewer를 차단한 owner
-    blk = await asyncio.to_thread(
-        lambda: supabase.table("blocks").select("blocker_id, blocked_id")
-        .or_(f"and(blocker_id.eq.{viewer_id},blocked_id.in.({','.join(ids)})),"
-             f"and(blocked_id.eq.{viewer_id},blocker_id.in.({','.join(ids)}))")
-        .execute()
-    )
-    blocked_ids = {r["blocked_id"] for r in blk.data} | {r["blocker_id"] for r in blk.data}
-    ids = [o for o in ids if o not in blocked_ids or o == viewer_id]
+    # 차단 양방향 제외 (v3): 단일 소스 blocked_ids_batch 재사용
+    blocked_ids = await blocked_ids_batch(viewer_id, ids)
+    ids = [o for o in ids if o not in blocked_ids]
     if not ids:
         return set()
     profs = await asyncio.to_thread(

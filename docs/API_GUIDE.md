@@ -176,6 +176,7 @@ fetch(`${API_BASE}/api/me/profile`, {
 | 전체 공개 코스 | `GET /routes/public?sort=newest\|popular&limit` | 동일 shape. **차단·비공개 계정 owner의 코스는 제외**(2026-07-13, 검색과 동형 — `visible_owners` 필터). newest는 DB limit 후 필터라 결과가 limit보다 소폭 적을 수 있음 |
 | 근처 코스 | `GET /routes/nearby?lat&lng&radius_km` | 동일 shape. `radius_km`은 최대 50으로 클램프, `limit` 1~100 클램프 (음수·거대값도 안전) |
 | 코스 검색 | `GET /routes/search?q` | 동일 shape. `limit` 1~100 클램프 |
+| **유저 검색** (2026-07-13) | `GET /users/search?q&limit` | 닉네임 **부분 일치(대소문자 무관)**. 결과 `[{user_id, nickname, avatar_url, bio}]`. **`q` 최소 2자**(1자는 422 — 전 유저 열거 방지), `limit` 기본 20·**최대 50**(초과 422). **프라이버시**: ① **차단 상대(양방향) 제외** ② **본인 제외** ③ **잠금(비공개·볼 수 없는) 계정도 결과에 뜨되 `bio=null`**(닉네임·아바타만) — 프론트는 그대로 노출하고 **프로필 진입 시 🔒**(검색에서 숨기면 비공개 유저를 못 찾아 팔로우 요청 자체 불가). 승인제 계정은 정상 노출(팔로우 요청 진입점). 통합 검색 화면: 크루는 `GET /crews/search`, 유저는 이 엔드포인트 |
 | **장소 검색 (경유지·출발지)** | `GET /places?keyword&lat?&lng?&radius_m?&limit` | **⚠️ 인증 필수** — 토큰 없이 401. **용도별 2모드**: ① **경유지 검색** — `lat`+`lng` 포함 → 좌표 기준 **거리순**, `radius_m` 기본 2000·최대 20000(**20km 캡은 카카오 API 자체 제약** — 더 넓게는 ②로) ② **출발지 검색** — 좌표 생략 → **전국 정확도순**. 422 케이스: 한쪽 좌표만 / 좌표 없이 `radius_m` / `keyword` 1~50자 밖 / bbox·캡 밖. **출발지 자동완성 UI는 디바운스 300ms+ 권장**(타이핑마다 호출하면 카카오 쿼터 소모) |
 | 좋아요 토글 | `POST/DELETE /routes/{id}/like` | 204, 멱등 |
 | 댓글 | `GET/POST /routes/{id}/comments`, `DELETE /routes/{id}/comments/{comment_id}` | `content` 1~500자 |

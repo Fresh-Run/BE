@@ -497,6 +497,18 @@ class PublicProfileResponse(BaseModel):
     allow_comments: Optional[bool] = Field(None, description="이 유저에게 댓글 가능? (잠금 시 null)")
 
 
+class UserSearchItem(BaseModel):
+    """GET /users/search 결과 1건 — 통합 검색 화면용(닉네임·아바타·한줄)."""
+
+    user_id: str
+    nickname: str
+    avatar_url: Optional[str] = None
+    bio: Optional[str] = Field(
+        None, description="한 줄 소개. **잠금(볼 수 없는 비공개) 계정은 null** — "
+        "닉네임·아바타만. 프로필 진입 시 🔒 화면."
+    )
+
+
 class FollowDecisionRequest(BaseModel):
     """PATCH /me/follow-requests/{requester_id} — 승인/거절."""
 
