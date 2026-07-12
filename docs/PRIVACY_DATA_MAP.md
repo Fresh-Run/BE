@@ -68,6 +68,11 @@
 - **DB에 IP 주소 컬럼 없음.** 기기 식별자는 **푸시 토큰이 유일**(`push_tokens`,
   2026-07-11~ — §1 참조, 푸시 발송 외 용도 없음). Supabase Auth가 자체 관리하는
   인증 로그는 Supabase 측에 존재(대시보드에서 확인 가능).
+- **RLS 백스톱 전 테이블 적용** (2026-07-12) — 초기 커밋 테이블 10종(profiles·
+  runs·routes·crews·crew_members·crew_challenges·notifications·route_comments·
+  route_likes·preferences)이 RLS 미enable이라 anon key 직접 조회로 노출되던
+  드리프트를 소급 enable(전수 실증 → `scripts/verify_rls.py`로 노출 0 검증).
+  이제 전 테이블이 "정책 없이 enable = service_role 외 deny" 표준 통일.
 - **서버 로그(Fly.io)**: 짧은 링버퍼로 단기 보존, 영구 보관 없음. httpx INFO
   로그가 외부 API 요청 URL을 기록(민감값 쿼리스트링 금지 규칙 운용).
 - **Sentry (에러 트래킹, 스테이징 라이브, US 리전)** — sentry-sdk 2.18.0,

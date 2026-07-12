@@ -29,6 +29,14 @@
 
 - **L8 RSVP 마감 창** — `rsvp` 제출의 read→`_rsvp_open`(시간)→upsert 사이 μs wall-clock 경쟁. count 레이스가 아니라 **시간 경계**라 advisory/FOR UPDATE로 안 닫힘 — DB측 `now()` 조건부 upsert RPC가 필요(별도 기법). 마감 순간 정확히 투표하는 극단 엣지라 실질 무해, 필요 시점에 `rsvp_if_open` RPC로 처리 가능.
 
+- **RLS 드리프트 소급 (2026-07-12, H — 채팅 설계 중 발견·즉시 처리)**: 초기
+  커밋 테이블 10종이 RLS 미enable → anon key + 유저 JWT로 타인 데이터 직접
+  조회 가능(profiles 신체정보·notifications 포함). 앱은 service_role 경유라
+  실피해 없었으나 anon key는 공개값. 전수 실증(24개 중 노출 10 확정, 빈
+  테이블 preferences는 임시 행으로 확인) → `db/2026-07-12_rls_backfill.sql`로
+  일괄 enable(정책 없이 — 앱 무영향, 회귀 5종 통과) → `scripts/verify_rls.py`
+  노출 0 검증. 신규 테이블 RLS 표준이 초기분에 소급 안 됐던 게 원인.
+
 ## 운영 관측 (감사 외 — 배포 후 발견, 트리거 대기)
 
 - **stale HTTP/2 연결 재사용 → 간헐적 502** (2026-07-08 진단 → **2026-07-11
