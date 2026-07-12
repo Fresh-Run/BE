@@ -169,8 +169,14 @@ async def _list_follow_users(
 
     Each item carries is_following (viewer → listed user) so the frontend can
     render follow buttons inside the list without extra requests.
+
+    명단 잠금(2026-07-13): 잠금 프로필은 **카운트는 진실이되 명단은 잠금**
+    (인스타 비대칭 — 숫자 열고 리스트/콘텐츠 잠금). viewer가 target을 볼 수
+    없으면 빈 목록(공개 프로필 러닝 탭 list_user_runs와 동일 선례).
     """
     await _ensure_user_exists(target_id)
+    if target_id != viewer_id and not await profile_service.can_see_user(target_id, viewer_id):
+        return []                                   # 잠금 → 명단 미노출(카운트는 프로필 응답에서 진실값)
     limit = max(1, min(limit, _MAX_PAGE))
     offset = max(0, offset)
 
@@ -250,15 +256,24 @@ async def get_public_profile(target_id: str, viewer_id: str) -> PublicProfileRes
         raise UserNotFound()
 
     if not await profile_service.can_see_user(target_id, viewer_id):
-        is_following, is_followed_by = await asyncio.gather(
-            _follows(viewer_id, target_id), _follows(target_id, viewer_id),
+        # 잠금이어도 **카운트는 진실값**(인스타 컨벤션 — 0은 프라이버시가 아니라
+        # 오보). bio·러닝 목록·통계·피드는 잠금 유지, 리스트 엔드포인트도 잠금.
+        # "숫자는 열되 명단은 잠금"이 이 계약의 요점.
+        (follower_count, following_count, is_following, is_followed_by,
+         pub_run_count) = await asyncio.gather(
+            _follow_count("following_id", target_id),
+            _follow_count("follower_id", target_id),
+            _follows(viewer_id, target_id),
+            _follows(target_id, viewer_id),
+            run_service.public_run_count(target_id),
         )
         return PublicProfileResponse(
             user_id=profile.user_id, nickname=profile.nickname,
             avatar_url=profile.avatar_url, bio=None, tier=profile.tier,
-            created_at=profile.created_at, follower_count=0, following_count=0,
+            created_at=profile.created_at,
+            follower_count=follower_count, following_count=following_count,
             is_following=is_following, is_followed_by=is_followed_by,
-            public_run_count=0, visibility=profile.visibility, locked=True,
+            public_run_count=pub_run_count, visibility=profile.visibility, locked=True,
         )
 
     (follower_count, following_count, is_following, is_followed_by,

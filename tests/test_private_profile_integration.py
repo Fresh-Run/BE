@@ -101,14 +101,22 @@ def run_tests():
         for vis in ("public", "followers", "private"):
             r = api(c, "GET", f"/runs/{runs[vis]}", tk["v"])
             assert r.status_code == 404, f"private 계정 run {vis}: 404 기대, got {r.status_code}"
-        # 프로필 잠금 응답
+        # 프로필 잠금 응답 — 카운트는 진실값(2026-07-13 계약: 0은 프라이버시가
+        # 아니라 오보), bio·콘텐츠·명단은 잠금.
         p = api(c, "GET", f"/users/{uids['o']}/profile", tk["v"]).json()
         assert p["locked"] is True and p["visibility"] == "private"
-        assert p["public_run_count"] == 0 and p["bio"] is None and p["follower_count"] == 0
+        assert p["bio"] is None, "잠금: bio는 여전히 null"
+        assert p["follower_count"] == 1, f"잠금이어도 팔로워 수 진실값(F→O 1), got {p['follower_count']}"
+        assert p["following_count"] == 0, f"팔로잉 수 진실값(O는 팔로잉 0), got {p['following_count']}"
+        assert p["public_run_count"] == 1, f"공개 러닝 수 진실값(public 1), got {p['public_run_count']}"
         assert p["nickname"] and "user_id" in p, "닉네임은 잠금 화면에 노출"
-        # 공개 프로필 탭 빈 목록
+        # 콘텐츠·명단은 잠금: 러닝 탭 빈 목록 + 팔로워/팔로잉 명단 빈 목록(비대칭 요점)
         assert api(c, "GET", f"/users/{uids['o']}/runs", tk["v"]).json() == []
-        ok("비공개 계정: 전 run 404·프로필 locked(카운트/bio 미노출·닉네임 유지)·탭 빈 목록")
+        assert api(c, "GET", f"/users/{uids['o']}/followers", tk["v"]).json() == [], "잠금: 팔로워 명단 차단"
+        assert api(c, "GET", f"/users/{uids['o']}/following", tk["v"]).json() == [], "잠금: 팔로잉 명단 차단"
+        # 언락(팔로워 F)은 명단 접근 가능 — 무영향 확인
+        assert len(api(c, "GET", f"/users/{uids['o']}/followers", tk["f"]).json()) >= 1, "팔로워는 명단 열람"
+        ok("비공개 계정: 카운트 진실값·bio null·러닝/팔로워/팔로잉 명단 잠금·팔로워는 명단 열람")
 
         step("3. 팔로워 F는 프로필 게이트 통과 (run 축만 적용)")
         assert api(c, "GET", f"/runs/{runs['public']}", tk["f"]).status_code == 200
