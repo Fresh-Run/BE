@@ -232,9 +232,15 @@ async def get_public_profile(target_id: str, viewer_id: str) -> PublicProfileRes
     """Another user's public profile with follow stats. Never exposes email.
 
     비공개 계정을 볼 권한 없으면 잠금 응답(locked=true) — 닉네임·아바타만,
-    카운트·bio 미노출. 존재 은닉은 안 함(팔로우 요청하려면 프로필 필요 —
-    차단은 v3에서 404 은닉으로 별도).
+    카운트·bio 미노출. 존재 은닉은 안 함(팔로우 요청하려면 프로필 필요).
+    단 차단(v3)은 잠금과 달리 **404로 존재 은닉** — 양방향.
     """
+    # 차단(양방향)은 존재 자체를 숨긴다 — 잠금(locked)보다 강함
+    if target_id != viewer_id and await profile_service.is_blocked_either(
+        target_id, viewer_id
+    ):
+        raise UserNotFound()
+
     profile = await profile_service.get_profile(target_id)
     if profile is None:
         raise UserNotFound()
@@ -413,3 +419,77 @@ async def decide_follow_request(
         )
     except Exception:  # noqa: BLE001
         logger.warning("follow_request_approved 알림 생성 실패", exc_info=True)
+
+
+# ── 차단 (docs/PRIVATE_PROFILE_DESIGN.md v3) ─────────────────────────────────
+
+
+class SelfBlockNotAllowed(Exception):
+    """자기 자신은 차단할 수 없다."""
+
+
+async def block_user(target_id: str, blocker_id: str) -> None:
+    """target 차단 (멱등). 양방향 팔로우·pending 요청 4행을 즉시 정리 —
+    차단은 관계를 끊는다(재팔로우는 차단 해제 후에만). PK로 중복 멱등."""
+    if target_id == blocker_id:
+        raise SelfBlockNotAllowed()
+    await _ensure_user_exists(target_id)
+    supabase = get_supabase_admin()
+    try:
+        await asyncio.to_thread(
+            lambda: supabase.table("blocks")
+            .insert({"blocker_id": blocker_id, "blocked_id": target_id}).execute()
+        )
+    except APIError as exc:
+        if exc.code != _UNIQUE_VIOLATION:  # 이미 차단 중 = 멱등
+            raise
+    # 양방향 follows 삭제 (2행) — PostgREST or로 한 번에
+    await asyncio.to_thread(
+        lambda: supabase.table("follows").delete().or_(
+            f"and(follower_id.eq.{blocker_id},following_id.eq.{target_id}),"
+            f"and(follower_id.eq.{target_id},following_id.eq.{blocker_id})"
+        ).execute()
+    )
+    # 양방향 pending follow_requests 삭제 (2행)
+    await asyncio.to_thread(
+        lambda: supabase.table("follow_requests").delete().or_(
+            f"and(requester_id.eq.{blocker_id},target_id.eq.{target_id}),"
+            f"and(requester_id.eq.{target_id},target_id.eq.{blocker_id})"
+        ).execute()
+    )
+
+
+async def unblock_user(target_id: str, blocker_id: str) -> None:
+    """차단 해제 (멱등). 팔로우는 복구 안 됨 — 다시 팔로우해야 함(정책)."""
+    supabase = get_supabase_admin()
+    await asyncio.to_thread(
+        lambda: supabase.table("blocks").delete()
+        .eq("blocker_id", blocker_id).eq("blocked_id", target_id).execute()
+    )
+
+
+async def list_blocks(blocker_id: str, limit: int = 50, offset: int = 0) -> list[FollowUserItem]:
+    """내가 차단한 유저 목록 (프로필 설정 화면용), 최신순."""
+    limit = max(1, min(limit, _MAX_PAGE))
+    offset = max(0, offset)
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("blocks").select("blocked_id, created_at")
+        .eq("blocker_id", blocker_id)
+        .order("created_at", desc=True).range(offset, offset + limit - 1).execute()
+    )
+    rows = res.data
+    if not rows:
+        return []
+    ids = [r["blocked_id"] for r in rows]
+    briefs = await profile_service.get_profile_briefs(ids)
+    return [
+        FollowUserItem(
+            user_id=r["blocked_id"],
+            nickname=briefs.get(r["blocked_id"], {}).get("nickname"),
+            avatar_url=briefs.get(r["blocked_id"], {}).get("avatar_url"),
+            followed_at=r["created_at"],   # 차단 시각 (필드 재사용)
+            is_following=False,            # 차단 시 관계 끊김
+        )
+        for r in rows
+    ]

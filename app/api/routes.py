@@ -434,6 +434,60 @@ async def cancel_follow_request(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+@router.post(
+    "/users/{user_id}/block",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="사용자 차단 (멱등, 양방향 팔로우 해제)",
+)
+async def block_user(
+    user_id: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> Response:
+    """차단 시 상호 노출 차단(프로필·러닝 404 은닉) + 양방향 팔로우·요청 해제.
+    재팔로우는 차단 해제 후에만."""
+    try:
+        await follow_service.block_user(user_id, blocker_id=user.user_id)
+    except follow_service.SelfBlockNotAllowed:
+        raise HTTPException(status_code=400, detail="Cannot block yourself")
+    except follow_service.UserNotFound:
+        raise HTTPException(status_code=404, detail="User not found")
+    except Exception as exc:  # noqa: BLE001
+        raise _bad_gateway("Failed to block user", exc)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.delete(
+    "/users/{user_id}/block",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="차단 해제 (멱등 — 팔로우는 복구 안 됨)",
+)
+async def unblock_user(
+    user_id: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> Response:
+    try:
+        await follow_service.unblock_user(user_id, blocker_id=user.user_id)
+    except Exception as exc:  # noqa: BLE001
+        raise _bad_gateway("Failed to unblock user", exc)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get(
+    "/me/blocks",
+    response_model=list[FollowUserItem],
+    summary="내가 차단한 사용자 목록 (프로필 설정용)",
+)
+async def list_my_blocks(
+    limit: int = 50,
+    offset: int = 0,
+    user: CurrentUser = Depends(get_current_user),
+) -> list[FollowUserItem]:
+    try:
+        return await follow_service.list_blocks(user.user_id, limit=limit, offset=offset)
+    except Exception as exc:  # noqa: BLE001
+        raise _bad_gateway("Failed to list blocks", exc)
+
+
 @router.delete(
     "/users/{user_id}/follow",
     status_code=status.HTTP_204_NO_CONTENT,

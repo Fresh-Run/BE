@@ -371,13 +371,28 @@ async def _follows_or_crewmate(viewer_id: str, owner_id: str) -> bool:
     return bool(shared.data)
 
 
+async def is_blocked_either(a_id: str, b_id: str) -> bool:
+    """a·b 사이에 어느 방향이든 차단이 있는가 (양방향 노출 차단, v3)."""
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("blocks").select("blocker_id")
+        .or_(f"and(blocker_id.eq.{a_id},blocked_id.eq.{b_id}),"
+             f"and(blocker_id.eq.{b_id},blocked_id.eq.{a_id})")
+        .limit(1).execute()
+    )
+    return bool(res.data)
+
+
 async def can_see_user(owner_id: str, viewer_id: str) -> bool:
     """viewer가 owner의 계정(프로필·러닝)에 접근 가능한가.
 
-    public → 누구나 / followers·private → 팔로우 or 크루 공존(본인은 항상).
+    차단 최우선(양방향 → False, 존재 은닉) → public 누구나 →
+    followers·private는 팔로우 or 크루 공존. 본인은 항상.
     """
     if owner_id == viewer_id:
         return True
+    if await is_blocked_either(owner_id, viewer_id):   # v3: 차단이 크루 공존보다 위
+        return False
     supabase = get_supabase_admin()
     res = await asyncio.to_thread(
         lambda: supabase.table("profiles").select("visibility")
@@ -392,12 +407,23 @@ async def can_see_user(owner_id: str, viewer_id: str) -> bool:
 async def visible_owners(viewer_id: str, owner_ids: list[str]) -> set[str]:
     """{viewer가 볼 수 있는 owner_id} — 배치(목록·검색용, N+1 방지).
 
-    public owner는 즉시 통과. followers/private는 viewer의 팔로잉·크루원 교집합.
+    차단(양방향)은 먼저 제외 → public 즉시 통과 → followers/private는 팔로잉·크루원.
     """
     ids = list({o for o in owner_ids if o})
     if not ids:
         return set()
     supabase = get_supabase_admin()
+    # 차단 양방향 제외 (v3): viewer가 차단했거나 viewer를 차단한 owner
+    blk = await asyncio.to_thread(
+        lambda: supabase.table("blocks").select("blocker_id, blocked_id")
+        .or_(f"and(blocker_id.eq.{viewer_id},blocked_id.in.({','.join(ids)})),"
+             f"and(blocked_id.eq.{viewer_id},blocker_id.in.({','.join(ids)}))")
+        .execute()
+    )
+    blocked_ids = {r["blocked_id"] for r in blk.data} | {r["blocker_id"] for r in blk.data}
+    ids = [o for o in ids if o not in blocked_ids or o == viewer_id]
+    if not ids:
+        return set()
     profs = await asyncio.to_thread(
         lambda: supabase.table("profiles").select("user_id, visibility")
         .in_("user_id", ids).execute()

@@ -58,6 +58,7 @@
 | 좋아요/북마크/kudos | `route_likes`, `route_bookmarks`, `run_kudos` | 클릭 시 |
 | 팔로우 관계 | `follows` | 팔로우 시 |
 | 팔로우 요청 (승인제, 2026-07-12~) | `follow_requests`(requester·target·status) | 승인제 계정에 팔로우 요청 시 | 탈퇴 시 양방향 cascade(내 요청·나에게 온 요청 모두) |
+| 차단 목록 (2026-07-12~) | `blocks`(blocker·blocked) | 사용자 차단 시 | **신규 수집(방침 항목 추가).** 본인만 조회. 탈퇴 시 양방향 cascade(내가 차단·나를 차단 모두) |
 | 크루 소속·역할·가입 신청(결정자·결정 시각 포함) | `crews`, `crew_members`, `crew_join_requests` | 크루 활동 시 |
 | 공지·RSVP·챌린지 | `crew_announcements`, `crew_announcement_rsvps`, `crew_challenges` | 크루 활동 시 |
 | **크루 채팅 메시지·반응** (2026-07-12~) | `crew_messages`(자유 텍스트)·`crew_message_reactions`·`crew_read_state` | 채팅 사용 시 — **신규 수집(방침 수집 항목 추가 필요).** 크루원 전용 노출. 탈퇴 시 본문 익명화 보존(sender_id set null), 반응·읽음상태·mute cascade 삭제 |
