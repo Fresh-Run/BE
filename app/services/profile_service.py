@@ -96,6 +96,8 @@ async def upsert_profile(user_id: str, req: ProfileUpdate) -> ProfileResponse:
             record[body_field] = value
     if req.visibility is not None:   # 계정 공개범위 (v1)
         record["visibility"] = req.visibility
+    if req.follow_approval is not None:   # 팔로우 승인제 (v2)
+        record["follow_approval"] = req.follow_approval
 
     supabase = get_supabase_admin()
     try:

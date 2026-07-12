@@ -31,6 +31,14 @@ class SelfFollowNotAllowed(Exception):
     """A user tried to follow themself."""
 
 
+class FollowRequestPending(Exception):
+    """승인제 계정에 이미 pending 요청이 있음 (멱등 — 409로 매핑)."""
+
+
+class FollowRequestNotFound(Exception):
+    """승인/거절할 pending 요청이 없음 (없거나 이미 처리됨)."""
+
+
 async def _ensure_user_exists(user_id: str) -> None:
     """Raise UserNotFound unless the user has a profile.
 
@@ -41,17 +49,22 @@ async def _ensure_user_exists(user_id: str) -> None:
         raise UserNotFound()
 
 
-async def follow_user(target_id: str, follower_id: str) -> None:
-    """Follow another user. Idempotent: re-following is silently ignored.
+async def follow_user(target_id: str, follower_id: str) -> str:
+    """Follow another user (승인제면 요청). Idempotent.
 
-    Fires a best-effort 'user_followed' notification only on a genuinely new
-    follow (not on double-taps).
+    반환: "followed"(즉시 팔로우/멱등) | "requested"(승인 대기 pending 생성).
+    Fires a best-effort 'user_followed' notification only on a genuinely new follow.
     """
     if target_id == follower_id:
         raise SelfFollowNotAllowed()
     await _ensure_user_exists(target_id)
 
     supabase = get_supabase_admin()
+    # 승인제 계정이면 즉시 팔로우 대신 pending 요청. 기존 팔로워는 이 경로를
+    # 안 탄다 — 이미 follows에 있으면 approval 무관하게 관계 유지(소급 무영향).
+    if await _needs_approval(target_id, follower_id):
+        return await _create_follow_request(target_id, follower_id)  # "requested"
+
     followed_new = True
     try:
         await asyncio.to_thread(
@@ -78,6 +91,7 @@ async def follow_user(target_id: str, follower_id: str) -> None:
             )
         except Exception:  # noqa: BLE001
             logger.warning("user_followed 알림 생성 실패", exc_info=True)
+    return "followed"
 
 
 async def unfollow_user(target_id: str, follower_id: str) -> None:
@@ -260,3 +274,142 @@ async def get_public_profile(target_id: str, viewer_id: str) -> PublicProfileRes
         visibility=profile.visibility,
         locked=False,
     )
+
+
+# ── 팔로우 승인제 (docs/PRIVATE_PROFILE_DESIGN.md v2) ─────────────────────────
+
+
+async def _needs_approval(target_id: str, follower_id: str) -> bool:
+    """target이 승인제이고 follower가 아직 팔로워가 아닐 때만 True.
+
+    기존 팔로워는 approval 무관하게 관계 유지 — 소급 무영향(요청 경로 안 탐).
+    """
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("profiles").select("follow_approval")
+        .eq("user_id", target_id).limit(1).execute()
+    )
+    if not (res.data and res.data[0].get("follow_approval")):
+        return False
+    return not await _follows(follower_id, target_id)
+
+
+async def _create_follow_request(target_id: str, follower_id: str) -> str:
+    """pending 요청 생성 (멱등). PK 충돌(23505)=이미 pending → 409 신호.
+
+    거절됐던 행이면 status를 pending으로 되살린다(재신청 허용). 반환 "requested".
+    """
+    supabase = get_supabase_admin()
+    try:
+        await asyncio.to_thread(
+            lambda: supabase.table("follow_requests")
+            .insert({"requester_id": follower_id, "target_id": target_id})
+            .execute()
+        )
+    except APIError as exc:
+        if exc.code != _UNIQUE_VIOLATION:  # PK (requester,target) 이미 존재
+            raise
+        # 기존 행: rejected면 pending 부활, pending이면 이미 요청됨(멱등 409)
+        upd = await asyncio.to_thread(
+            lambda: supabase.table("follow_requests")
+            .update({"status": "pending", "created_at": _now_iso(), "decided_at": None})
+            .eq("requester_id", follower_id).eq("target_id", target_id)
+            .eq("status", "rejected").execute()
+        )
+        if not upd.data:
+            raise FollowRequestPending()  # 이미 pending — 멱등이나 명시 409
+    try:
+        await notification_service.create_notification(
+            recipient_id=target_id, actor_id=follower_id,
+            type="follow_requested", target_id=follower_id, target_type="user",
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("follow_requested 알림 생성 실패", exc_info=True)
+    return "requested"
+
+
+def _now_iso() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat()
+
+
+async def cancel_follow_request(target_id: str, requester_id: str) -> None:
+    """내 pending 요청 취소 (멱등 — 없으면 no-op)."""
+    supabase = get_supabase_admin()
+    await asyncio.to_thread(
+        lambda: supabase.table("follow_requests").delete()
+        .eq("requester_id", requester_id).eq("target_id", target_id)
+        .eq("status", "pending").execute()
+    )
+
+
+async def list_follow_requests(
+    target_id: str, limit: int = 20, offset: int = 0
+) -> list[FollowUserItem]:
+    """target(본인)에게 온 pending 요청 목록, 최신순 — requester 프로필 포함."""
+    limit = max(1, min(limit, _MAX_PAGE))
+    offset = max(0, offset)
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("follow_requests")
+        .select("requester_id, created_at")
+        .eq("target_id", target_id).eq("status", "pending")
+        .order("created_at", desc=True).range(offset, offset + limit - 1).execute()
+    )
+    rows = res.data
+    if not rows:
+        return []
+    ids = [r["requester_id"] for r in rows]
+    briefs, following = await asyncio.gather(
+        profile_service.get_profile_briefs(ids),
+        _following_set(target_id, ids),
+    )
+    return [
+        FollowUserItem(
+            user_id=r["requester_id"],
+            nickname=briefs.get(r["requester_id"], {}).get("nickname"),
+            avatar_url=briefs.get(r["requester_id"], {}).get("avatar_url"),
+            followed_at=r["created_at"],
+            is_following=r["requester_id"] in following,
+        )
+        for r in rows
+    ]
+
+
+async def decide_follow_request(
+    target_id: str, requester_id: str, *, approve: bool
+) -> None:
+    """target(본인)이 요청을 승인/거절. 승인 시 follows 생성 + 알림.
+
+    UPDATE 반환행 있을 때만 알림/follows 삽입 — 동시 승인 이중 처리 방지(L8).
+    """
+    supabase = get_supabase_admin()
+    upd = await asyncio.to_thread(
+        lambda: supabase.table("follow_requests")
+        .update({"status": "approved" if approve else "rejected",
+                 "decided_at": _now_iso()})
+        .eq("requester_id", requester_id).eq("target_id", target_id)
+        .eq("status", "pending").execute()
+    )
+    if not upd.data:
+        raise FollowRequestNotFound()  # 없거나 이미 처리됨
+    if not approve:
+        return  # 거절은 무알림 (crew 패턴과 동일)
+
+    # 승인: follows 생성 (멱등) + follow_request_approved 알림
+    try:
+        await asyncio.to_thread(
+            lambda: supabase.table("follows")
+            .insert({"follower_id": requester_id, "following_id": target_id})
+            .execute()
+        )
+    except APIError as exc:
+        if exc.code != _UNIQUE_VIOLATION:  # 이미 팔로우 중이면 무해
+            raise
+    try:
+        await notification_service.create_notification(
+            recipient_id=requester_id, actor_id=target_id,
+            type="follow_request_approved", target_id=target_id, target_type="user",
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("follow_request_approved 알림 생성 실패", exc_info=True)

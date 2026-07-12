@@ -180,7 +180,8 @@ fetch(`${API_BASE}/api/me/profile`, {
 | 좋아요 토글 | `POST/DELETE /routes/{id}/like` | 204, 멱등 |
 | 댓글 | `GET/POST /routes/{id}/comments`, `DELETE /routes/{id}/comments/{comment_id}` | `content` 1~500자 |
 | 이 코스 달리기(복사) | `POST /routes/{id}/copy` | 내 코스로 복사본 생성 |
-| 팔로우 토글 | `POST/DELETE /users/{user_id}/follow` | 204, 멱등. 자기 자신 400 |
+| 팔로우 토글 | `POST/DELETE /users/{user_id}/follow` | 즉시 팔로우 **204**(멱등), 자기 자신 400. **승인제 계정이면 202**(pending 요청 생성 — 이미 pending 재요청은 409 `follow_request_pending`). 202 받으면 "요청됨" 표시, 승인 전엔 `is_following:false` |
+| **팔로우 승인제** (v2) | `GET /me/follow-requests`, `PATCH /me/follow-requests/{requester_id}` `{approve}`, `DELETE /users/{id}/follow-request` | **`PATCH /me/profile {follow_approval:true}`로 켬**(GET /me/profile에 노출). ON이면 신규 팔로우가 요청 대기. **내게 온 요청**: `GET /me/follow-requests`(requester 프로필 목록) → 승인/거절 `PATCH .../{requester_id} {approve:true|false}`(승인 시 follows 생성+알림, 거절 무알림, 없음/처리됨 404). **내 요청 취소**: `DELETE /users/{id}/follow-request`(멱등). **기존 팔로워는 켜도 관계 불변**(소급 무영향) |
 | 공개 프로필 | `GET /users/{user_id}/profile` | `nickname`, `bio`, `tier`, `follower_count`, `following_count`, `is_following`, `is_followed_by`(맞팔 표시), **`public_run_count`**(전체 공개 게시 러닝 수), **`visibility`**·**`locked`**(비공개 프로필 v1). **⚠️ `locked: true`면 🔒 잠금 화면** — 비공개 계정(`visibility` followers/private)을 볼 권한 없음(비팔로워·비크루원). 이때 `bio`=null·카운트·`public_run_count`=0(미노출), **닉네임·아바타만** 표시(팔로우 버튼용). 팔로우/크루원이면 `locked:false`로 전체. 그 계정의 `GET /users/{id}/runs`도 잠금 시 빈 배열, 러닝 상세·검색에서도 제외 |
 | **공개 프로필 러닝** | `GET /users/{user_id}/runs?limit&offset` | 그 유저의 러닝 카드 — **활동 피드와 동일 shape**(`run_id, user_id, nickname, avatar_url, ran_at, title, distance_km, duration_sec, avg_pace_sec_per_km, route_id, route_summary, is_mine, kudos_count, my_kudos, comment_count`). **조회자 가시성 필터**: 본인=전부 / 타인은 `public` 항상 + `followers`는 내가 그 유저를 팔로우할 때 + `private` 제외. **본인 프로필에서만 각 카드에 `visibility` 채워짐**(뱃지용), 타인 프로필은 `visibility=null`. 좋아요=`kudos_count`, 댓글=`comment_count`(💬) |
 | 팔로워/팔로잉 목록 | `GET /users/{user_id}/followers` / `/following` | `[{user_id, nickname, avatar_url, followed_at, is_following}]` — 항목별 팔로우 버튼용 |
@@ -226,6 +227,8 @@ fetch(`${API_BASE}/api/me/profile`, {
 > | `join_requested` | crew | 크루 **신청 관리** 화면 | `target_id`(=crew_id) |
 > | `challenge_completed` | crew | 크루 챌린지 화면 | `target_id`(=crew_id) + `payload.challenge_id`(특정 챌린지, 2026-07-08~ 신규 발송분) |
 > | `user_followed` | user | 유저 공개 프로필 | `target_id`(=follower_id) |
+> | `follow_requested` | user | **팔로우 요청 목록**(또는 요청자 프로필) | `target_id`(=requester_id) |
+> | `follow_request_approved` | user | 승인해준 유저 프로필 | `target_id`(=승인자 id) |
 > | **`crew_announcement`** | announcement | 크루 공지 (`/crews/{crew_id}/…`) | **`payload.crew_id`** (target_id는 공지id) + `target_id`(=공지id) |
 >
 > **주의**: `crew_announcement`는 target_id가 공지id라 **crew_id는 `payload`에만** 있다. `payload.crew_id`가 없으면(2026-07-08 이전 발송분) 크루로 못 가니 폴백으로 무시하거나 크루 목록으로 보낸다. 그 외 type은 target_id만으로 라우팅 가능 — payload 불필요.

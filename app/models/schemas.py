@@ -89,6 +89,7 @@ class ProfileResponse(BaseModel):
     height_cm: Optional[float] = None
     gender: Optional[Literal["female", "male", "undisclosed"]] = None
     visibility: str = Field("public", description="계정 공개범위 public/followers/private.")
+    follow_approval: bool = Field(False, description="팔로우 승인제 (ON이면 신규 팔로우가 요청).")
     created_at: str
     updated_at: str
 
@@ -111,6 +112,9 @@ class ProfileUpdate(BaseModel):
     )
     visibility: Optional[Literal["public", "followers", "private"]] = Field(
         None, description="계정 공개범위. 비공개면 비팔로워에게 잠금 화면."
+    )
+    follow_approval: Optional[bool] = Field(
+        None, description="팔로우 승인제 토글 (ON이면 신규 팔로우가 pending 요청)."
     )
 
 
@@ -427,6 +431,12 @@ class PublicProfileResponse(BaseModel):
         False, description="True면 비공개 계정을 볼 권한 없음 — 🔒 화면. "
         "이때 follower/following/run count·bio는 0/null(미노출), 닉네임·아바타만."
     )
+
+
+class FollowDecisionRequest(BaseModel):
+    """PATCH /me/follow-requests/{requester_id} — 승인/거절."""
+
+    approve: bool = Field(..., description="True=승인(follows 생성) / False=거절.")
 
 
 class RouteRequest(BaseModel):

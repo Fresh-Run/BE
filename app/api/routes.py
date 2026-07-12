@@ -39,6 +39,7 @@ from app.models.schemas import (
     CrewRunItem,
     CrewUpdate,
     CurrentUser,
+    FollowDecisionRequest,
     FeedbackRequest,
     FollowUserItem,
     IapVerifyRequest,
@@ -354,22 +355,83 @@ async def get_user_profile(
 
 @router.post(
     "/users/{user_id}/follow",
-    status_code=status.HTTP_204_NO_CONTENT,
-    summary="팔로우",
+    summary="팔로우 (승인제면 202 요청)",
 )
 async def follow_user(
     user_id: str,
     user: CurrentUser = Depends(get_current_user),
-) -> None:
-    """Follow a user. Idempotent: re-following returns 204 as well."""
+) -> Response:
+    """Follow a user. 즉시 팔로우/멱등이면 **204**, 승인제 계정이면 **202**
+    (pending 요청 생성 — `GET /users/{id}/profile`의 follow 관계로 상태 판단).
+    이미 pending인 재요청은 409(멱등이나 명시)."""
     try:
-        await follow_service.follow_user(user_id, follower_id=user.user_id)
+        result = await follow_service.follow_user(user_id, follower_id=user.user_id)
     except follow_service.SelfFollowNotAllowed:
         raise HTTPException(status_code=400, detail="Cannot follow yourself")
     except follow_service.UserNotFound:
         raise HTTPException(status_code=404, detail="User not found")
+    except follow_service.FollowRequestPending:
+        raise HTTPException(status_code=409, detail={
+            "error": "follow_request_pending", "message": "이미 팔로우를 요청했어요."})
     except Exception as exc:  # noqa: BLE001
         raise _bad_gateway("Failed to follow", exc)
+    code = status.HTTP_202_ACCEPTED if result == "requested" else status.HTTP_204_NO_CONTENT
+    return Response(status_code=code)
+
+
+@router.get(
+    "/me/follow-requests",
+    response_model=list[FollowUserItem],
+    summary="내게 온 팔로우 요청 목록 (승인제, 최신순)",
+)
+async def list_my_follow_requests(
+    limit: int = 20,
+    offset: int = 0,
+    user: CurrentUser = Depends(get_current_user),
+) -> list[FollowUserItem]:
+    try:
+        return await follow_service.list_follow_requests(user.user_id, limit=limit, offset=offset)
+    except Exception as exc:  # noqa: BLE001
+        raise _bad_gateway("Failed to list follow requests", exc)
+
+
+@router.patch(
+    "/me/follow-requests/{requester_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="팔로우 요청 승인/거절 (본인)",
+)
+async def decide_follow_request(
+    requester_id: str,
+    req: FollowDecisionRequest,
+    user: CurrentUser = Depends(get_current_user),
+) -> Response:
+    """승인 시 follows 생성 + 알림, 거절은 무알림. 없거나 이미 처리됨 404."""
+    try:
+        await follow_service.decide_follow_request(
+            user.user_id, requester_id, approve=req.approve
+        )
+    except follow_service.FollowRequestNotFound:
+        raise HTTPException(status_code=404, detail="Follow request not found")
+    except Exception as exc:  # noqa: BLE001
+        raise _bad_gateway("Failed to decide follow request", exc)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.delete(
+    "/users/{user_id}/follow-request",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="내 팔로우 요청 취소 (멱등)",
+)
+async def cancel_follow_request(
+    user_id: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> Response:
+    """target에게 보낸 내 pending 요청 취소 — 없으면 no-op."""
+    try:
+        await follow_service.cancel_follow_request(user_id, requester_id=user.user_id)
+    except Exception as exc:  # noqa: BLE001
+        raise _bad_gateway("Failed to cancel follow request", exc)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.delete(
