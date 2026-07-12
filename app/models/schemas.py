@@ -1198,6 +1198,12 @@ class CrewMemberResponse(BaseModel):
         None, description="멤버 아바타 (없으면 null → 이니셜 폴백)."
     )
     joined_at: str = Field(..., description="When the user joined the crew (ISO 8601).")
+    challenge_km: Optional[float] = Field(
+        None,
+        description="현재 진행 챌린지에서 이 멤버의 기여 거리(km, verified run 합). "
+                    "진행 중 챌린지가 없으면 null. **주간 랭킹 km와 별개** — 랭킹은 "
+                    "이번 주 월요일 KST 기준, 이 값은 챌린지 기간(starts~ends) 기준.",
+    )
 
 
 class CrewRoleUpdate(BaseModel):
@@ -1427,9 +1433,11 @@ class AnnouncementCreate(BaseModel):
     title: str = Field(..., min_length=1, max_length=100, description="공지 제목")
     body: str = Field(..., min_length=1, max_length=2000, description="공지 본문")
     run_at: Optional[str] = Field(None, description="러닝 일시 (ISO 8601 + 타임존). 있어야 RSVP 가능.")
-    place_name: Optional[str] = Field(None, max_length=100, description="장소명")
-    place_lat: Optional[float] = None
-    place_lng: Optional[float] = None
+    place_name: Optional[str] = Field(None, max_length=100, description="장소명(표시용)")
+    # 집결 좌표 — 미니맵·"지도 앱에서 보기"용. 한국 bbox(Coordinate와 동일 범위,
+    # run.area/좌표 분업 선례처럼 서버는 저장·서빙만). place_name(표시명)과 병존.
+    place_lat: Optional[float] = Field(None, ge=33.0, le=39.0, description="집결 좌표 위도")
+    place_lng: Optional[float] = Field(None, ge=124.0, le=132.0, description="집결 좌표 경도")
     rsvp_closes_at: Optional[str] = Field(
         None, description="참석 투표 마감 (ISO 8601 + 타임존, run_at 이전). 없으면 run_at이 마감."
     )
@@ -1446,8 +1454,8 @@ class AnnouncementUpdate(BaseModel):
     body: Optional[str] = Field(None, min_length=1, max_length=2000)
     run_at: Optional[str] = None
     place_name: Optional[str] = Field(None, max_length=100)
-    place_lat: Optional[float] = None
-    place_lng: Optional[float] = None
+    place_lat: Optional[float] = Field(None, ge=33.0, le=39.0)
+    place_lng: Optional[float] = Field(None, ge=124.0, le=132.0)
     rsvp_closes_at: Optional[str] = None
 
     _tz = field_validator("run_at", "rsvp_closes_at")(

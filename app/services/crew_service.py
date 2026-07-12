@@ -1018,6 +1018,12 @@ async def list_members(crew_id: str, caller_id: str) -> list[CrewMemberResponse]
     # 5. Batch nickname lookup — one IN query, no N+1.
     briefs = await profile_service.get_profile_briefs([m["user_id"] for m in members])
 
+    # 6. 멤버별 챌린지 기여 거리 — 진행 중 챌린지가 있으면 단일 runs 쿼리로
+    #    집계(get_current_challenge와 동일 창·verified 정책, member별 그룹). 주간
+    #    랭킹 km와는 별개 값(랭킹=이번 주 월 KST, 이건 챌린지 기간). N+1 금지.
+    member_ids = [m["user_id"] for m in members]
+    challenge_km = await _challenge_contributions(crew_id, member_ids)
+
     return [
         CrewMemberResponse(
             user_id=m["user_id"],
@@ -1025,9 +1031,50 @@ async def list_members(crew_id: str, caller_id: str) -> list[CrewMemberResponse]
             avatar_url=briefs.get(m["user_id"], {}).get("avatar_url"),
             role=m["role"],
             joined_at=m["joined_at"],
+            challenge_km=challenge_km.get(m["user_id"]) if challenge_km is not None else None,
         )
         for m in members
     ]
+
+
+async def _challenge_contributions(
+    crew_id: str, member_ids: list[str]
+) -> dict[str, float] | None:
+    """진행 중 챌린지가 있으면 {user_id: 기여 km}(멤버별 verified run 합), 없으면 None.
+
+    get_current_challenge와 동일 정책(non-ended 챌린지, starts~ends 창, verified만).
+    단일 runs 쿼리 후 파이썬 그룹핑 — 멤버 수와 무관하게 쿼리 1회(N+1 금지).
+    기여 0인 멤버도 0.0으로 채워 반환(응답에서 null=챌린지 없음과 구분).
+    """
+    if not member_ids:
+        return None
+    supabase = get_supabase_admin()
+    now_utc = datetime.now(timezone.utc).isoformat()
+    ch_res = await asyncio.to_thread(
+        lambda: supabase.table("crew_challenges")
+        .select("starts_at, ends_at")
+        .eq("crew_id", crew_id)
+        .gt("ends_at", now_utc)
+        .order("ends_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    if not ch_res.data:
+        return None
+    ch = ch_res.data[0]
+    runs_res = await asyncio.to_thread(
+        lambda: supabase.table("runs")
+        .select("user_id, distance_km")
+        .in_("user_id", member_ids)
+        .gte("ran_at", ch["starts_at"])
+        .lte("ran_at", ch["ends_at"])
+        .eq("verification", "verified")
+        .execute()
+    )
+    contrib: dict[str, float] = {uid: 0.0 for uid in member_ids}
+    for r in runs_res.data:
+        contrib[r["user_id"]] = round(contrib.get(r["user_id"], 0.0) + r["distance_km"], 2)
+    return contrib
 
 
 async def get_weekly_ranking(crew_id: str, caller_id: str) -> list[CrewRankingEntry]:
