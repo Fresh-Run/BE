@@ -1529,6 +1529,46 @@ async def regenerate_invite_code(
         raise HTTPException(status_code=502, detail="Failed to issue invite code")
 
 
+@router.post(
+    "/crews/{crew_id}/cover/upload-url",
+    response_model=AvatarUploadUrlResponse,
+    summary="크루 커버 업로드 URL 발급 (운영진; Storage 직접 업로드용)",
+)
+async def create_crew_cover_upload_url(
+    crew_id: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> AvatarUploadUrlResponse:
+    """3-step: ① 이 URL 발급 ② 앱이 이미지 PUT ③ PATCH /crews/{id} cover_url에 public_url 저장."""
+    return await _crew_image_upload_url(crew_id, user.user_id, "cover")
+
+
+@router.post(
+    "/crews/{crew_id}/icon/upload-url",
+    response_model=AvatarUploadUrlResponse,
+    summary="크루 아이콘 업로드 URL 발급 (운영진; Storage 직접 업로드용)",
+)
+async def create_crew_icon_upload_url(
+    crew_id: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> AvatarUploadUrlResponse:
+    """3-step: ① 이 URL 발급 ② 앱이 이미지 PUT ③ PATCH /crews/{id} icon_url에 public_url 저장."""
+    return await _crew_image_upload_url(crew_id, user.user_id, "icon")
+
+
+async def _crew_image_upload_url(
+    crew_id: str, caller_id: str, kind: str
+) -> AvatarUploadUrlResponse:
+    """크루 커버/아이콘 업로드 URL 발급 공통 — 권한(운영진) 404/403 매핑."""
+    try:
+        return await crew_service.create_crew_image_upload_url(crew_id, caller_id, kind)
+    except crew_service.CrewNotFound:
+        raise HTTPException(status_code=404, detail="Crew not found")
+    except crew_service.NotOwner:
+        raise HTTPException(status_code=403, detail="Only managers can change crew images")
+    except Exception as exc:  # noqa: BLE001
+        raise _bad_gateway("Failed to create crew image upload url", exc)
+
+
 @router.get(
     "/crews/{crew_id}/challenges/current",
     response_model=ChallengeResponse | None,

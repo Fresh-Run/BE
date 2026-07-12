@@ -1115,10 +1115,10 @@ class CrewCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=50, description="크루 이름")
     description: Optional[str] = Field(None, max_length=500, description="한 줄 소개")
     area: Optional[str] = Field(None, max_length=50, description="활동 지역")
-    radius_km: Optional[float] = Field(None, gt=0, le=500, description="활동 반경(km)")
+    radius_km: Optional[float] = Field(None, gt=0, le=20, description="활동 반경(km, 시안 확정 상한 20)")
     sport: Optional[str] = Field(None, max_length=30, description="종목")
     level: CrewLevel = Field(CrewLevel.ANY, description="레벨")
-    max_members: Optional[int] = Field(None, gt=0, le=100000, description="최대 인원(없으면 무제한)")
+    max_members: Optional[int] = Field(None, gt=0, le=100, description="최대 인원(없으면 무제한, 시안 확정 상한 100)")
     is_public: bool = Field(True, description="공개여부")
     join_policy: Literal["open", "approval"] = Field(
         "open", description="가입 방식: open=즉시 가입, approval=승인제"
@@ -1184,6 +1184,9 @@ class CrewResponse(BaseModel):
         description="요청에 lat/lng가 있고 크루에 좌표가 있으면 계산된 거리(km, 1자리). "
         "그 외 null.",
     )
+    # 크루 이미지 (2026-07-13 additive) — 없으면 null → 프론트 기본 그라데이션/아이콘.
+    cover_url: Optional[str] = Field(None, description="커버 이미지 URL(둘러보기 카드·상세 헤더).")
+    icon_url: Optional[str] = Field(None, description="크루 아이콘 URL(원형 뱃지).")
 
 
 class CrewMemberResponse(BaseModel):
@@ -1289,10 +1292,10 @@ class CrewUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=50, description="크루 이름")
     description: Optional[str] = Field(None, max_length=500, description="한 줄 소개")
     area: Optional[str] = Field(None, max_length=50, description="활동 지역")
-    radius_km: Optional[float] = Field(None, gt=0, le=500, description="활동 반경(km)")
+    radius_km: Optional[float] = Field(None, gt=0, le=20, description="활동 반경(km, 시안 확정 상한 20)")
     sport: Optional[str] = Field(None, max_length=30, description="종목")
     level: Optional[CrewLevel] = Field(None, description="레벨")
-    max_members: Optional[int] = Field(None, gt=0, le=100000, description="최대 인원")
+    max_members: Optional[int] = Field(None, gt=0, le=100, description="최대 인원(시안 확정 상한 100)")
     is_public: Optional[bool] = Field(None, description="공개 여부")
     join_policy: Optional[Literal["open", "approval"]] = Field(
         None, description="가입 방식 변경 (크루장만)"
@@ -1305,6 +1308,10 @@ class CrewUpdate(BaseModel):
     lat: Optional[float] = Field(None, ge=33.0, le=39.0)
     lng: Optional[float] = Field(None, ge=124.0, le=132.0)
     tags: Optional[list[CrewTag]] = Field(None, max_length=5)
+    # 크루 이미지 — 업로드(3-step) 후 public_url을 여기에 저장. 명시 null=삭제
+    # (Storage 파일도 정리 — update_crew가 model_fields_set으로 구분). ""는 422.
+    cover_url: Optional[str] = Field(None, min_length=1, max_length=500, description="커버 URL. 명시 null=삭제.")
+    icon_url: Optional[str] = Field(None, min_length=1, max_length=500, description="아이콘 URL. 명시 null=삭제.")
 
     _days = field_validator("active_days")(staticmethod(_short_day_items))
 
@@ -1522,7 +1529,7 @@ class ChallengeCreate(BaseModel):
     """Input to create a crew challenge. crew_id and created_by come from the URL/token."""
 
     title: str = Field(..., min_length=1, max_length=100, description="챌린지 제목 (예: '이번 주 100km 달성!')")
-    goal_km: float = Field(..., gt=0, le=100000, description="목표 거리(km)")
+    goal_km: float = Field(..., gt=0, le=100, description="목표 거리(km, 시안 확정 상한 100)")
     starts_at: str = Field(..., description="시작 시각 (ISO 8601 + 타임존, 예: 2026-07-07T00:00:00+09:00)")
     ends_at: str = Field(..., description="종료 시각 (ISO 8601 + 타임존, 예: 2026-07-13T23:59:59+09:00)")
 

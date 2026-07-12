@@ -16,8 +16,10 @@ from datetime import datetime, timedelta, timezone
 
 from postgrest.exceptions import APIError
 
+from app.core.config import settings
 from app.core.supabase_client import get_supabase_admin
 from app.models.schemas import (
+    AvatarUploadUrlResponse,
     ChallengeCreate,
     ChallengeResponse,
     CrewCreate,
@@ -1292,6 +1294,13 @@ async def update_crew(crew_id: str, caller_id: str, req: CrewUpdate) -> CrewResp
 
     # mode='json' serialises enums (e.g. CrewLevel) to their string values.
     data = req.model_dump(mode="json", exclude_none=True)
+    # 이미지 명시 null=삭제 — exclude_none이 떨군 걸 되살려 DB null 기록 +
+    # Storage 파일 정리(아바타 삭제 선례와 동형, best-effort).
+    image_deletes: list[str] = []
+    for field, kind in (("cover_url", "cover"), ("icon_url", "icon")):
+        if field in req.model_fields_set and getattr(req, field) is None:
+            data[field] = None
+            image_deletes.append(kind)
     if not data:
         # Nothing to change — return current state.
         counts = await _member_counts([crew_id])
@@ -1300,6 +1309,8 @@ async def update_crew(crew_id: str, caller_id: str, req: CrewUpdate) -> CrewResp
     updated = await asyncio.to_thread(
         lambda: supabase.table("crews").update(data).eq("id", crew_id).execute()
     )
+    for kind in image_deletes:
+        await _remove_crew_image(crew_id, kind)  # best-effort Storage 정리
     counts = await _member_counts([crew_id])
     logger.info("Crew %s updated by owner %s: %s", crew_id, caller_id, list(data.keys()))
     return await _one_response(updated.data[0], counts.get(crew_id, 0))
@@ -1363,6 +1374,70 @@ async def set_member_role(
     return {"user_id": target_id, "role": role}
 
 
+# --- 크루 이미지 (커버·아이콘) — 아바타 3-step 패턴 재사용 ---------------------
+
+_CREW_IMAGE_BUCKET = "crew-images"          # public 버킷(둘러보기 카드 노출)
+_CREW_IMAGE_MAX_BYTES = 5 * 1024 * 1024
+_CREW_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp"]
+
+
+def _crew_image_path(crew_id: str, kind: str) -> str:
+    """고정 경로 {crew_id}/cover · {crew_id}/icon — 재업로드가 항상 덮어써 잔여 없음."""
+    return f"{crew_id}/{kind}"
+
+
+async def _remove_crew_image(crew_id: str, kind: str) -> None:
+    """Storage 파일 정리 — best-effort(없어도 무해)."""
+    supabase = get_supabase_admin()
+    try:
+        await asyncio.to_thread(
+            lambda: supabase.storage.from_(_CREW_IMAGE_BUCKET)
+            .remove([_crew_image_path(crew_id, kind)])
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("크루 이미지 Storage 정리 실패 (crew=%s, kind=%s)",
+                       crew_id, kind, exc_info=True)
+
+
+async def create_crew_image_upload_url(
+    crew_id: str, caller_id: str, kind: str
+) -> AvatarUploadUrlResponse:
+    """커버/아이콘 업로드용 signed URL 발급 (3-step 1단계). 운영진(ensure_manager)만.
+
+    경로는 크루당 고정({crew_id}/{kind}) — 재업로드가 덮어써 옛 파일이 안 남는다.
+    signed upload는 기존 객체에 409를 내므로 발급 전에 지운다. 크기(5MB)·타입
+    (jpeg/png/webp)은 crew-images 버킷 설정이 업로드 시점에 강제(public 버킷 —
+    읽기 공개, 쓰기는 이 signed URL로만). ⚠️ EXIF(GPS 좌표) 제거·재인코딩은
+    클라이언트 하드룰(아바타·run photos 동일 — 서명 URL 직접 업로드라 서버 미경유).
+    """
+    await ensure_manager(crew_id, caller_id)
+    path = _crew_image_path(crew_id, kind)
+    supabase = get_supabase_admin()
+
+    def _issue() -> dict:
+        storage = supabase.storage.from_(_CREW_IMAGE_BUCKET)
+        try:
+            storage.remove([path])  # 고정 경로 덮어쓰기 — 없어도 무해
+        except Exception:  # noqa: BLE001
+            pass
+        return storage.create_signed_upload_url(path)
+
+    res = await asyncio.to_thread(_issue)
+    upload_url = res.get("signed_url") or res.get("signedUrl") or res.get("signedURL")
+    if not upload_url:
+        raise RuntimeError("Storage did not return a signed upload URL.")
+    public_url = (
+        f"{settings.supabase_url}/storage/v1/object/public/{_CREW_IMAGE_BUCKET}/{path}"
+    )
+    logger.info("크루 이미지 업로드 URL 발급 (crew=%s, kind=%s)", crew_id, kind)
+    return AvatarUploadUrlResponse(
+        upload_url=upload_url,
+        public_url=public_url,
+        max_bytes=_CREW_IMAGE_MAX_BYTES,
+        allowed_types=_CREW_IMAGE_TYPES,
+    )
+
+
 async def delete_crew(crew_id: str, caller_id: str) -> None:
     """Delete a crew (owner only). Memberships, announcements, and RSVPs are
     removed via the ON DELETE CASCADE chain (crews → announcements → rsvps)."""
@@ -1372,6 +1447,9 @@ async def delete_crew(crew_id: str, caller_id: str) -> None:
     await asyncio.to_thread(
         lambda: supabase.table("crews").delete().eq("id", crew_id).execute()
     )
+    # 크루 이미지 Storage 정리 (커버·아이콘 — best-effort, 크루 삭제 시)
+    for kind in ("cover", "icon"):
+        await _remove_crew_image(crew_id, kind)
     # 이 크루를 가리키던 알림 정리 (M10 — 유령 알림·unread_count 방지)
     try:
         await notification_service.delete_for_target("crew", crew_id)
