@@ -34,6 +34,8 @@ from app.models.schemas import (
     ChatMuteRequest,
     ChatReactRequest,
     ChatUnreadResponse,
+    CrewPermissionsPatch,
+    CrewPermissionsResponse,
     CrewRoleResponse,
     CrewRoleUpdate,
     CrewResponse,
@@ -1730,7 +1732,7 @@ async def kick_member(
 @router.patch(
     "/crews/{crew_id}/members/{target_id}/role",
     response_model=CrewRoleResponse,
-    summary="멤버 role 전환 (owner 전용, admin↔member)",
+    summary="멤버 role 전환 (owner 또는 manage_admins admin, admin↔member)",
 )
 async def set_member_role(
     crew_id: str,
@@ -1738,7 +1740,8 @@ async def set_member_role(
     req: CrewRoleUpdate,
     user: CurrentUser = Depends(get_current_user),
 ) -> CrewRoleResponse:
-    """owner 전용·멱등. owner의 role은 불변(422) — 위임은 PATCH /crews/{id}/transfer."""
+    """owner 또는 manage_admins admin·멱등. 승격 시 시안 기본 permissions 자동 부여,
+    강등 시 permissions null. owner의 role은 불변(422) — 위임은 transfer."""
     try:
         res = await crew_service.set_member_role(
             crew_id, caller_id=user.user_id, target_id=target_id, role=req.role
@@ -1746,7 +1749,7 @@ async def set_member_role(
     except crew_service.CrewNotFound:
         raise HTTPException(status_code=404, detail="Crew not found")
     except crew_service.NotOwner:
-        raise HTTPException(status_code=403, detail="Only the owner can change roles")
+        raise HTTPException(status_code=403, detail="Missing manage_admins permission")
     except crew_service.RoleTargetIsOwner:
         raise HTTPException(
             status_code=422,
@@ -1757,6 +1760,41 @@ async def set_member_role(
     except Exception as exc:  # noqa: BLE001
         raise _bad_gateway("Failed to change member role", exc)
     return CrewRoleResponse(**res)
+
+
+@router.patch(
+    "/crews/{crew_id}/members/{target_id}/permissions",
+    response_model=CrewPermissionsResponse,
+    summary="운영진 세부 권한 조정 (owner 또는 manage_admins admin — v2)",
+)
+async def set_member_permissions(
+    crew_id: str,
+    target_id: str,
+    req: CrewPermissionsPatch,
+    user: CurrentUser = Depends(get_current_user),
+) -> CrewPermissionsResponse:
+    """보낸 키만 갱신. 대상은 admin이어야(422). §3: 비owner는 주의 2키
+    (kick_members·manage_admins) 부여 불가·자기 미보유 키 부여 불가(403)."""
+    try:
+        res = await crew_service.set_member_permissions(
+            crew_id, caller_id=user.user_id, target_id=target_id,
+            patch=req.model_dump(exclude_none=True),
+        )
+    except crew_service.CrewNotFound:
+        raise HTTPException(status_code=404, detail="Crew not found")
+    except crew_service.NotOwner:
+        raise HTTPException(status_code=403, detail="Missing manage_admins permission")
+    except crew_service.PermissionGrantDenied:
+        raise HTTPException(status_code=403, detail="Cannot grant this permission (owner-only or not held)")
+    except crew_service.RoleTargetIsOwner:
+        raise HTTPException(status_code=422, detail="Owner permissions are implicit and immutable")
+    except crew_service.TargetNotAdmin:
+        raise HTTPException(status_code=422, detail="Target must be an admin")
+    except crew_service.NotAMember:
+        raise HTTPException(status_code=404, detail="User is not a member of this crew")
+    except Exception as exc:  # noqa: BLE001
+        raise _bad_gateway("Failed to set permissions", exc)
+    return CrewPermissionsResponse(**res)
 
 
 @router.get(

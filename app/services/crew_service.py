@@ -78,6 +78,14 @@ class InviteTargetNotFound(CrewError):
     """초대 대상이 없거나 차단 관계 — 404 은닉(존재/관계 노출 차단)."""
 
 
+class TargetNotAdmin(CrewError):
+    """permissions 설정 대상이 admin이 아님(member/owner) — 422."""
+
+
+class PermissionGrantDenied(CrewError):
+    """비owner가 부여 불가한 권한(주의 2키 or 자기 미보유 키)을 grant 시도 — 403 (§3)."""
+
+
 class OwnerCannotKickSelf(CrewError):
     """The owner cannot kick themselves (use leave/transfer/delete instead)."""
 
@@ -252,13 +260,57 @@ async def _member_role(crew_id: str, user_id: str) -> str | None:
 async def ensure_manager(crew_id: str, caller_id: str) -> None:
     """Guard: owner 또는 admin(운영진). 아니면 NotOwner(기존 403 계약 유지).
 
-    admin role v1 — 공지 CRUD·챌린지 생성·member 강퇴에 사용.
+    v2 이후 **채팅 모더레이션(delete_message)에만** 잔존(role 기반, F1: 5키 밖).
+    5키 게이트 경로는 ensure_permission로 전환됨.
     """
     crew = await _crew_row(crew_id)
     if crew["owner_id"] == caller_id:
         return
     if await _member_role(crew_id, caller_id) != "admin":
         raise NotOwner()
+
+
+# ── 크루 세부 권한 v2 (docs/CREW_PERMISSIONS_V2_DESIGN.md) ────────────────────
+_PERM_KEYS = ("announcements", "challenges", "edit_crew", "kick_members", "manage_admins")
+_CAUTION_KEYS = ("kick_members", "manage_admins")   # 부여는 owner만(§3)
+# 신규 admin 승격 시 기본값 (시안 토글 초기 상태)
+_NEW_ADMIN_PERMS = {"announcements": True, "challenges": True, "edit_crew": False,
+                    "kick_members": False, "manage_admins": False}
+_OWNER_PERMS = {k: True for k in _PERM_KEYS}         # owner 응답 노출용 합성(암묵 전권)
+
+
+async def _member_perm_row(crew_id: str, user_id: str) -> dict | None:
+    """crew_members의 {role, permissions} 한 행, 비멤버면 None."""
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("crew_members")
+        .select("role, permissions")
+        .eq("crew_id", crew_id).eq("user_id", user_id).limit(1).execute()
+    )
+    return res.data[0] if res.data else None
+
+
+async def ensure_permission(crew_id: str, caller_id: str, key: str) -> None:
+    """Guard: owner면 통과, admin이고 permissions[key]==true면 통과, 아니면
+    NotOwner(기존 403 계약 유지). 5키 게이트 단일 진입점(v2)."""
+    crew = await _crew_row(crew_id)
+    if crew["owner_id"] == caller_id:
+        return
+    row = await _member_perm_row(crew_id, caller_id)
+    if row and row.get("role") == "admin" and (row.get("permissions") or {}).get(key):
+        return
+    raise NotOwner()
+
+
+async def _ensure_can_manage_admins(crew_id: str, caller_id: str) -> dict:
+    """role·permissions 변경 권한 게이트 — owner 또는 manage_admins admin. crew 반환."""
+    crew = await _crew_row(crew_id, "*")
+    if crew["owner_id"] == caller_id:
+        return crew
+    row = await _member_perm_row(crew_id, caller_id)
+    if row and row.get("role") == "admin" and (row.get("permissions") or {}).get("manage_admins"):
+        return crew
+    raise NotOwner()
 
 
 async def _cleanup_member_rsvps(crew_id: str, user_id: str) -> None:
@@ -449,7 +501,19 @@ async def get_crew(crew_id: str, user_id: str) -> CrewResponse | None:
     if not crew["is_public"] and not await _is_member(crew_id, user_id):
         return None  # don't reveal private crews to non-members
     counts = await _member_counts([crew_id])
-    return await _one_response(crew, counts.get(crew_id, 0))
+    resp = await _one_response(crew, counts.get(crew_id, 0))
+    resp.admin_count = await _admin_count(crew_id)   # v2: 관리 화면 통계(상세에서만)
+    return resp
+
+
+async def _admin_count(crew_id: str) -> int:
+    """role=admin 수 (크루 상세 통계용)."""
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("crew_members").select("user_id", count="exact")
+        .eq("crew_id", crew_id).eq("role", "admin").execute()
+    )
+    return res.count or 0
 
 
 async def join_crew(crew_id: str, user_id: str) -> CrewResponse:
@@ -1045,7 +1109,7 @@ async def list_members(crew_id: str, caller_id: str) -> list[CrewMemberResponse]
     #    visibility check instead of making a separate _is_member call).
     members_res = await asyncio.to_thread(
         lambda: supabase.table("crew_members")
-        .select("user_id, role, joined_at")
+        .select("user_id, role, joined_at, permissions")
         .eq("crew_id", crew_id)
         .execute()
     )
@@ -1077,6 +1141,9 @@ async def list_members(crew_id: str, caller_id: str) -> list[CrewMemberResponse]
             role=m["role"],
             joined_at=m["joined_at"],
             challenge_km=challenge_km.get(m["user_id"]) if challenge_km is not None else None,
+            # v2: owner=전권 합성 / admin=부여값 / member=null
+            permissions=(_OWNER_PERMS if m["role"] == "owner"
+                         else (m.get("permissions") if m["role"] == "admin" else None)),
         )
         for m in members
     ]
@@ -1216,7 +1283,7 @@ async def create_challenge(
     supabase = get_supabase_admin()
 
     # 1. Confirm crew exists and caller is owner.
-    await ensure_manager(crew_id, caller_id)
+    await ensure_permission(crew_id, caller_id, "challenges")   # v2
 
     # 2. Guard: reject if any non-ended challenge already exists.
     now_utc = datetime.now(timezone.utc).isoformat()
@@ -1333,7 +1400,8 @@ async def update_crew(crew_id: str, caller_id: str, req: CrewUpdate) -> CrewResp
     what the client sends — they are simply not present in CrewUpdate.
     """
     supabase = get_supabase_admin()
-    crew = await ensure_owner(crew_id, caller_id, "*")
+    await ensure_permission(crew_id, caller_id, "edit_crew")   # v2: owner 전용 → edit_crew
+    crew = await _crew_row(crew_id, "*")
 
     # mode='json' serialises enums (e.g. CrewLevel) to their string values.
     data = req.model_dump(mode="json", exclude_none=True)
@@ -1377,7 +1445,7 @@ async def kick_member(crew_id: str, caller_id: str, target_id: str) -> None:
         OwnerCannotKickSelf — owner tried to kick themselves.
         NotAMember        — target is not currently a member.
     """
-    await ensure_manager(crew_id, caller_id)
+    await ensure_permission(crew_id, caller_id, "kick_members")   # v2
     if target_id == caller_id:
         raise OwnerCannotKickSelf()
     target_role = await _member_role(crew_id, target_id)
@@ -1403,27 +1471,70 @@ async def kick_member(crew_id: str, caller_id: str, target_id: str) -> None:
 async def set_member_role(
     crew_id: str, caller_id: str, target_id: str, role: str
 ) -> dict:
-    """멤버 role 전환 (owner 전용): admin↔member 양방향·멱등.
+    """멤버 role 전환 (v2: owner 또는 manage_admins admin): admin↔member 양방향·멱등.
 
-    owner의 role은 불변(RoleTargetIsOwner → 422) — 위임은 transfer 경유.
-    비멤버 target은 NotAMember(→404 은닉). 반환: {user_id, role}.
+    owner의 role은 불변(RoleTargetIsOwner → 422) — 위임은 transfer 경유. 비멤버
+    target은 NotAMember(→404 은닉). 승격(→admin) 시 시안 기본 permissions 자동
+    부여(announcements·challenges ON, 나머지 OFF), 강등(→member) 시 permissions
+    null. 반환: {user_id, role}.
     """
-    crew = await ensure_owner(crew_id, caller_id)
+    crew = await _ensure_can_manage_admins(crew_id, caller_id)   # v2: manage_admins로 확장
     if target_id == crew["owner_id"]:
         raise RoleTargetIsOwner()
     if await _member_role(crew_id, target_id) is None:
         raise NotAMember()
 
+    update = {"role": role, "permissions": _NEW_ADMIN_PERMS if role == "admin" else None}
     supabase = get_supabase_admin()
     await asyncio.to_thread(
         lambda: supabase.table("crew_members")
-        .update({"role": role})
+        .update(update)
         .eq("crew_id", crew_id)
         .eq("user_id", target_id)
         .execute()
     )
-    logger.info("Crew %s: %s role → %s (by owner).", crew_id, target_id, role)
+    logger.info("Crew %s: %s role → %s (by %s).", crew_id, target_id, role, caller_id)
     return {"user_id": target_id, "role": role}
+
+
+async def set_member_permissions(
+    crew_id: str, caller_id: str, target_id: str, patch: dict
+) -> dict:
+    """세부 권한 부분 갱신 (v2). owner 또는 manage_admins admin.
+
+    대상은 admin이어야(TargetNotAdmin → 422). §3 위임 사슬: 비owner는 (a) 주의
+    2키(kick_members·manage_admins) grant 불가(owner만), (b) 자기 미보유 키 grant
+    불가 — 위반 시 PermissionGrantDenied(403). owner 대상은 불변(RoleTargetIsOwner).
+    반환: {user_id, permissions(머지 후)}.
+    """
+    crew = await _ensure_can_manage_admins(crew_id, caller_id)
+    is_owner = crew["owner_id"] == caller_id
+    if target_id == crew["owner_id"]:
+        raise RoleTargetIsOwner()          # owner permissions 불변(암묵 전권)
+    target = await _member_perm_row(crew_id, target_id)
+    if target is None:
+        raise NotAMember()
+    if target.get("role") != "admin":
+        raise TargetNotAdmin()             # member에 permissions 설정 불가
+
+    sent = {k: v for k, v in patch.items() if v is not None}   # 부분 PATCH
+    if not is_owner:
+        caller_perms = ((await _member_perm_row(crew_id, caller_id)) or {}).get("permissions") or {}
+        for key, val in sent.items():
+            if key in _CAUTION_KEYS:
+                raise PermissionGrantDenied()          # 주의 2키는 owner만
+            if val is True and not caller_perms.get(key):
+                raise PermissionGrantDenied()          # 자기 미보유 키 grant 불가
+
+    merged = {**(target.get("permissions") or {}), **sent}
+    supabase = get_supabase_admin()
+    await asyncio.to_thread(
+        lambda: supabase.table("crew_members")
+        .update({"permissions": merged})
+        .eq("crew_id", crew_id).eq("user_id", target_id).execute()
+    )
+    logger.info("Crew %s: %s permissions %s (by %s).", crew_id, target_id, list(sent), caller_id)
+    return {"user_id": target_id, "permissions": merged}
 
 
 # --- 크루 이미지 (커버·아이콘) — 아바타 3-step 패턴 재사용 ---------------------
@@ -1462,7 +1573,7 @@ async def create_crew_image_upload_url(
     읽기 공개, 쓰기는 이 signed URL로만). ⚠️ EXIF(GPS 좌표) 제거·재인코딩은
     클라이언트 하드룰(아바타·run photos 동일 — 서명 URL 직접 업로드라 서버 미경유).
     """
-    await ensure_manager(crew_id, caller_id)
+    await ensure_permission(crew_id, caller_id, "edit_crew")   # v2: 이미지=edit_crew
     path = _crew_image_path(crew_id, kind)
     supabase = get_supabase_admin()
 

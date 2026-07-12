@@ -110,11 +110,15 @@ def run_tests():
         assert r.status_code == 422, f'"" → 422 기대, got {r.status_code}'
         ok("명시 null 삭제(icon 보존)·빈문자열 422")
 
-        step("5. admin 승격 후 B도 업로드 가능(운영진 확장)")
+        step("5. admin 승격 + edit_crew 부여 후 B도 업로드 가능 (v2: 이미지=edit_crew)")
         assert api(c, "PATCH", f"/crews/{crew}/members/{uids['b']}/role", tk["a"],
                    json={"role": "admin"}).status_code == 200
+        # v2: 신규 admin은 edit_crew 기본 OFF → 이미지 403, 부여 후 200
+        assert api(c, "POST", f"/crews/{crew}/cover/upload-url", tk["b"]).status_code == 403, "edit_crew 미보유 403"
+        assert api(c, "PATCH", f"/crews/{crew}/members/{uids['b']}/permissions", tk["a"],
+                   json={"edit_crew": True}).status_code == 200
         assert api(c, "POST", f"/crews/{crew}/cover/upload-url", tk["b"]).status_code == 200
-        ok("admin 승격 후 커버 업로드 200")
+        ok("admin 승격+edit_crew 부여 후 커버 업로드 200 (미보유 시 403)")
 
         step("6. 크루 삭제 — 정상 완료(이미지 정리 best-effort)")
         assert api(c, "DELETE", f"/crews/{crew}", tk["a"]).status_code == 204

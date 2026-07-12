@@ -1257,6 +1257,10 @@ class CrewResponse(BaseModel):
     # 크루 이미지 (2026-07-13 additive) — 없으면 null → 프론트 기본 그라데이션/아이콘.
     cover_url: Optional[str] = Field(None, description="커버 이미지 URL(둘러보기 카드·상세 헤더).")
     icon_url: Optional[str] = Field(None, description="크루 아이콘 URL(원형 뱃지).")
+    admin_count: Optional[int] = Field(
+        None, description="운영진(role=admin) 수 — 크루 상세(GET /crews/{id})에서만 채움"
+                         "(관리 화면 통계). 목록/기타 응답은 null.",
+    )
 
 
 class CrewMemberResponse(BaseModel):
@@ -1277,10 +1281,39 @@ class CrewMemberResponse(BaseModel):
                     "진행 중 챌린지가 없으면 null. **주간 랭킹 km와 별개** — 랭킹은 "
                     "이번 주 월요일 KST 기준, 이 값은 챌린지 기간(starts~ends) 기준.",
     )
+    permissions: Optional[dict] = Field(
+        None,
+        description="세부 권한 5키 bool (v2). **owner는 전부 true 합성**, admin은 "
+                    "부여된 값, member는 null. 키: announcements·challenges·edit_crew·"
+                    "kick_members·manage_admins. 행동 가능 판별용(role은 표시·정렬용).",
+    )
+
+
+class CrewPermissionsPatch(BaseModel):
+    """PATCH /crews/{id}/members/{uid}/permissions — 보낸 키만 갱신(v2).
+
+    owner 또는 manage_admins admin. 대상은 admin이어야. 비owner는 자기 보유 키만
+    grant + 주의 2키(kick_members·manage_admins)는 owner만(§3 위임 사슬).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    announcements: Optional[bool] = None
+    challenges: Optional[bool] = None
+    edit_crew: Optional[bool] = None
+    kick_members: Optional[bool] = None
+    manage_admins: Optional[bool] = None
+
+
+class CrewPermissionsResponse(BaseModel):
+    """permissions 조정 결과 — 머지 후 5키 전체."""
+
+    user_id: str
+    permissions: dict = Field(..., description="머지 후 5키 bool.")
 
 
 class CrewRoleUpdate(BaseModel):
-    """PATCH /crews/{id}/members/{user_id}/role — owner 전용, admin↔member."""
+    """PATCH /crews/{id}/members/{user_id}/role — owner 또는 manage_admins admin, admin↔member."""
 
     role: Literal["admin", "member"] = Field(
         ..., description="owner로의 변경은 불가 — 위임은 PATCH /crews/{id}/transfer."

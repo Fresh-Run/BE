@@ -124,7 +124,10 @@ def run_tests():
                    json=ch_body).status_code == 403, "member 챌린지 403"
         assert api(c, "POST", f"/crews/{crew}/challenges", tok["a"],
                    json=ch_body).status_code in (200, 201), "admin 챌린지 생성"
-        # 강퇴: admin이 member 강퇴 OK / admin·owner 강퇴 403 / member 강퇴 403
+        # 강퇴: v2 — kick_members 권한 필요(신규 admin 기본 OFF라 부여 후 테스트).
+        assert api(c, "PATCH", f"/crews/{crew}/members/{uids['a']}/permissions", tok["o"],
+                   json={"kick_members": True}).status_code == 200
+        # admin(kick 보유)이 member 강퇴 OK / admin·owner 강퇴 403 / member 강퇴 403
         assert api(c, "DELETE", f"/crews/{crew}/members/{uids['o']}", tok["a"]).status_code == 403
         assert api(c, "DELETE", f"/crews/{crew}/members/{uids['m']}", tok["m2"]).status_code == 403
         assert api(c, "DELETE", f"/crews/{crew}/members/{uids['m2']}", tok["a"]).status_code == 204
@@ -135,14 +138,18 @@ def run_tests():
         api(c, "PATCH", f"/crews/{crew}/members/{uids['m2']}/role", tok["o"], json={"role": "member"})
         ok("공지 CRUD·챌린지·강퇴(제약 포함) 매트릭스 ✓")
 
-        step("3. 권한 매트릭스 — owner 전용 유지 4종 (admin 403)")
+        step("3. 권한 매트릭스 — owner 전용 유지 3종 + edit_crew(v2)")
         assert api(c, "PATCH", f"/crews/{crew}/transfer", tok["a"],
                    json={"new_owner_id": uids["m"]}).status_code == 403, "위임 owner 전용"
-        assert api(c, "PATCH", f"/crews/{crew}", tok["a"],
-                   json={"description": "x"}).status_code == 403, "크루 수정 owner 전용"
         assert api(c, "DELETE", f"/crews/{crew}", tok["a"]).status_code == 403, "삭제 owner 전용"
         assert api(c, "POST", f"/crews/{crew}/invite", tok["a"]).status_code == 403, "초대 코드 owner 전용"
-        ok("transfer·수정·삭제·초대 코드 전부 admin 403 ✓")
+        # v2: 크루 수정은 edit_crew 게이트(owner 전용 아님) — a는 기본 미보유라 403,
+        # 부여하면 200(owner 전용에서 이관됨).
+        assert api(c, "PATCH", f"/crews/{crew}", tok["a"], json={"description": "x"}).status_code == 403, "edit_crew 미보유 403"
+        assert api(c, "PATCH", f"/crews/{crew}/members/{uids['a']}/permissions", tok["o"],
+                   json={"edit_crew": True}).status_code == 200
+        assert api(c, "PATCH", f"/crews/{crew}", tok["a"], json={"description": "x"}).status_code == 200, "edit_crew 부여 후 수정 200"
+        ok("transfer·삭제·초대 owner 전용 유지 / 크루 수정은 edit_crew로 이관(v2) ✓")
 
         step("4. 강등 → 권한 즉시 소멸")
         api(c, "PATCH", f"/crews/{crew}/members/{uids['a']}/role", tok["o"], json={"role": "member"})
