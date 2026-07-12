@@ -185,6 +185,17 @@ class WeatherSettings(BaseModel):
     avoid_rain: bool = False
 
 
+class FeedSettings(BaseModel):
+    """피드 설정 (시안 프로필 설정 — 서버 강제). 기존 유저는 전부 기본값 True라
+    breaking 0. auto_publish OFF는 POST /runs 미지정 시 기본 visibility=private."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    auto_publish: bool = True
+    allow_likes: bool = True
+    allow_comments: bool = True
+
+
 class UserSettings(BaseModel):
     """GET /me/settings 응답 — 항상 완전한 객체 (기본값 머지됨)."""
 
@@ -197,6 +208,7 @@ class UserSettings(BaseModel):
     ai_course: AiCourseSettings = Field(default_factory=AiCourseSettings)
     weather: WeatherSettings = Field(default_factory=WeatherSettings)
     audio_coach: AudioCoachSettings = Field(default_factory=AudioCoachSettings)
+    feed: FeedSettings = Field(default_factory=FeedSettings)
 
 
 class RunSettingsPatch(BaseModel):
@@ -241,6 +253,14 @@ class AudioCoachSettingsPatch(BaseModel):
     announce_calories: Optional[bool] = None
 
 
+class FeedSettingsPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    auto_publish: Optional[bool] = None
+    allow_likes: Optional[bool] = None
+    allow_comments: Optional[bool] = None
+
+
 class SettingsPatch(BaseModel):
     """PATCH /me/settings 입력 — 보낸 키만 deep merge. 허용 외 키/값은 422."""
 
@@ -253,6 +273,7 @@ class SettingsPatch(BaseModel):
     ai_course: Optional[AiCourseSettingsPatch] = None
     weather: Optional[WeatherSettingsPatch] = None
     audio_coach: Optional[AudioCoachSettingsPatch] = None
+    feed: Optional[FeedSettingsPatch] = None
 
 
 # --- Weather ------------------------------------------------------------------

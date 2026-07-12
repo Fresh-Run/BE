@@ -267,9 +267,14 @@ fetch(`${API_BASE}/api/me/profile`, {
                    "rate": 1.0,                 // 0.6 ~ 1.6 (TTS 말하기 속도)
                    "cue_interval_km": 1.0,      // 0.5 ~ 3.0 (안내 간격)
                    "announce_distance": true, "announce_pace": true,
-                   "announce_calories": false } // 안내 항목 (프론트 로컬 낭독)
+                   "announce_calories": false }, // 안내 항목 (프론트 로컬 낭독)
+  "feed": { "auto_publish": true,     // 프로필 설정 화면 (2026-07-12). OFF면 POST /runs의
+                                      //   visibility 미지정 시 기본 private (명시값은 존중)
+            "allow_likes": true,      // OFF면 내 run/코스에 타인 좋아요·kudos 403 likes_disabled
+            "allow_comments": true }  // OFF면 내 run/코스에 타인 댓글 403 comments_disabled
 }
 ```
+> **피드 설정 강제 (서버측)** — `allow_likes/comments` OFF면 **타인**의 kudos/좋아요·댓글이 **403 구조화**(`{error: likes_disabled|comments_disabled, message}`)로 거부됩니다(내 콘텐츠엔 항상 가능). 프론트는 이 403을 받으면 버튼 비활성 + 안내("이 사용자는 좋아요를 받지 않아요"). **404가 아닌 403인 이유**: 콘텐츠는 이미 보이는 상태(가시성 통과)라 존재 은닉 대상이 아님 — 반대로 **안 보이는 run은 설정 게이트 전에 404**(은닉 우선). `auto_publish` OFF는 저장 화면 기본 공개범위만 바꿉니다(visibility 슬라이더를 명시하면 그 값 우선). 기존 유저는 3키 전부 기본 true라 동작 변화 없음. 토글 위치는 프로필 설정 화면.
 
 > **theme/lang 구현 힌트**: 로컬 캐시 + 서버 동기화 권장 — 첫 프레임(로그인 전·오프라인)은 AsyncStorage 캐시로 그리고, 로그인 후 `GET /me/settings` 값으로 갱신하세요.
 >

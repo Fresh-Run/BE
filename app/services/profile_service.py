@@ -430,3 +430,25 @@ async def visible_owners(viewer_id: str, owner_ids: list[str]) -> set[str]:
             )
             visible |= {r["user_id"] for r in mates.data}
     return visible
+
+
+# ── 피드 설정 게이트 (docs/PRIVATE_PROFILE_DESIGN.md v1.5) ────────────────────
+
+
+class FeedActionDisabled(Exception):
+    """owner가 좋아요/댓글을 설정으로 껐다 — 403 구조화 (존재 은닉 아님:
+    콘텐츠는 이미 가시성 게이트를 통과해 보이는 상태라 '받지 않음'을 알려도
+    은닉 위반 아님). feature: 'likes' | 'comments'."""
+
+    def __init__(self, feature: str):
+        super().__init__(f"{feature} disabled by owner")
+        self.feature = feature
+
+
+async def feed_allows(owner_id: str, key: str) -> bool:
+    """owner의 피드 설정 허용 여부 (key: allow_likes | allow_comments).
+
+    프로필 없는 유저(설정 미저장)는 기본 True — get_settings가 기본값 머지.
+    """
+    settings_obj = await get_settings(owner_id)
+    return getattr(settings_obj.feed, key)

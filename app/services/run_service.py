@@ -52,6 +52,16 @@ async def create_run(req: RunRequest, user_id: str | None = None) -> RunResponse
     anonymous requests. supabase-py is synchronous, so the blocking call
     runs in a worker thread.
     """
+    # auto_publish OFF + visibility 미지정 시 기본 private (결정 D — 명시는 존중,
+    # 기존 유저는 auto_publish 기본 True라 무영향). 명시/미지정은 model_fields_set.
+    final_visibility = req.visibility
+    if user_id and "visibility" not in req.model_fields_set:
+        try:
+            if not (await profile_service.get_settings(user_id)).feed.auto_publish:
+                final_visibility = "private"
+        except Exception:  # noqa: BLE001 — 설정 조회 실패 시 기본(public) 유지
+            logger.warning("auto_publish 조회 실패 — 기본 visibility 유지", exc_info=True)
+
     # ── GPS 서버 검증 (설계 2026-07-06): gps_track이 있으면 필터→거리→스플릿.
     # Best-effort: 처리 실패가 기록 저장을 막으면 안 됨 (unverified로 진행).
     processed: track_service.ProcessedTrack | None = None
@@ -116,7 +126,7 @@ async def create_run(req: RunRequest, user_id: str | None = None) -> RunResponse
         "notes": req.notes,
         "title": req.title,
         "area": req.area,
-        "visibility": req.visibility,
+        "visibility": final_visibility,
         "verification": verification,
         "distance_km_reported": reported,
         "is_flagged": is_flagged,
@@ -815,6 +825,8 @@ async def give_kudos(run_id: str, user_id: str) -> None:
         raise SelfKudos()
     if not await _can_see_run(owner_id, user_id, visibility):
         raise RunNotVisible()
+    if not await profile_service.feed_allows(owner_id, "allow_likes"):
+        raise profile_service.FeedActionDisabled("likes")
 
     supabase = get_supabase_admin()
     kudos_new = True
@@ -948,6 +960,10 @@ async def create_run_comment(
     owner_id, visibility = await _run_owner(run_id)  # RunNotFound if missing
     if not await _can_see_run(owner_id, caller_id, visibility):
         raise RunNotVisible()
+    if owner_id != caller_id and not await profile_service.feed_allows(
+        owner_id, "allow_comments"
+    ):
+        raise profile_service.FeedActionDisabled("comments")
 
     supabase = get_supabase_admin()
     res = await asyncio.to_thread(

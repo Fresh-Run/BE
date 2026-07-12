@@ -490,6 +490,10 @@ async def like_route(route_id: str, user_id: str) -> None:
         raise RouteNotFound()
 
     route_owner = res.data[0].get("user_id")
+    if route_owner and route_owner != user_id and not await profile_service.feed_allows(
+        route_owner, "allow_likes"
+    ):
+        raise profile_service.FeedActionDisabled("likes")
     liked_new = True
     try:
         await asyncio.to_thread(
@@ -964,6 +968,10 @@ async def create_comment(route_id: str, user_id: str, content: str) -> CommentRe
         raise RouteNotFound()
 
     route_owner = res.data[0].get("user_id")
+    if route_owner and route_owner != user_id and not await profile_service.feed_allows(
+        route_owner, "allow_comments"
+    ):
+        raise profile_service.FeedActionDisabled("comments")
 
     out = await asyncio.to_thread(
         lambda: supabase.table("route_comments")

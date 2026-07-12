@@ -62,6 +62,7 @@ DEFAULTS = {
     "audio_coach": {"enabled": True, "voice": "joy", "rate": 1.0,
                     "cue_interval_km": 1.0, "announce_distance": True,
                     "announce_pace": True, "announce_calories": False},
+    "feed": {"auto_publish": True, "allow_likes": True, "allow_comments": True},
 }
 
 

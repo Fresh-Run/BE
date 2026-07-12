@@ -764,6 +764,10 @@ async def like_route(
         await route_service.like_route(route_id, user_id=user.user_id)
     except route_service.RouteNotFound:
         raise HTTPException(status_code=404, detail="Route not found or not public")
+    except profile_service.FeedActionDisabled:
+        raise HTTPException(status_code=403, detail={
+            "error": "likes_disabled",
+            "message": "이 사용자는 좋아요를 받지 않아요."})
     except Exception as exc:  # noqa: BLE001
         raise _bad_gateway("Failed to like route", exc)
 
@@ -834,6 +838,10 @@ async def create_comment(
         return await route_service.create_comment(route_id, user_id=user.user_id, content=req.content)
     except route_service.RouteNotFound:
         raise HTTPException(status_code=404, detail="Route not found or not public")
+    except profile_service.FeedActionDisabled:
+        raise HTTPException(status_code=403, detail={
+            "error": "comments_disabled",
+            "message": "이 사용자는 댓글을 받지 않아요."})
     except Exception as exc:  # noqa: BLE001
         raise _bad_gateway("Failed to create comment", exc)
 
@@ -1083,6 +1091,10 @@ async def give_kudos(
         raise HTTPException(status_code=404, detail="Run not found")  # 존재 은닉
     except run_service.SelfKudos:
         raise HTTPException(status_code=400, detail="Cannot kudos your own run")
+    except profile_service.FeedActionDisabled as exc:
+        raise HTTPException(status_code=403, detail={
+            "error": "likes_disabled",
+            "message": "이 사용자는 좋아요를 받지 않아요."})
     except Exception as exc:  # noqa: BLE001
         raise _bad_gateway("Failed to give kudos", exc)
 
@@ -1164,6 +1176,10 @@ async def create_run_comment(
         )
     except (run_service.RunNotFound, run_service.RunNotVisible):
         raise HTTPException(status_code=404, detail="Run not found")
+    except profile_service.FeedActionDisabled:
+        raise HTTPException(status_code=403, detail={
+            "error": "comments_disabled",
+            "message": "이 사용자는 댓글을 받지 않아요."})
     except Exception as exc:  # noqa: BLE001
         raise _bad_gateway("Failed to create comment", exc)
 
