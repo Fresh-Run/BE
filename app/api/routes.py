@@ -45,6 +45,7 @@ from app.models.schemas import (
     FollowUserItem,
     IapVerifyRequest,
     IapVerifyResponse,
+    CrewInviteRequest,
     InviteCodeResponse,
     JoinByCodeRequest,
     JoinRequestItem,
@@ -1530,6 +1531,31 @@ async def regenerate_invite_code(
         raise HTTPException(status_code=403, detail="Only the owner can issue invite codes")
     except Exception:  # noqa: BLE001
         raise HTTPException(status_code=502, detail="Failed to issue invite code")
+
+
+@router.post(
+    "/crews/{crew_id}/invitations",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="인앱 개인 초대 (크루원 발송 — crew_invited 알림)",
+)
+async def invite_to_crew(
+    crew_id: str,
+    req: CrewInviteRequest,
+    user: CurrentUser = Depends(get_current_user),
+) -> Response:
+    """크루원이 비크루원을 초대 → 대상에게 crew_invited 알림(payload에 초대코드).
+    비크루원 발송자·차단 관계·없는 유저 404(은닉), 이미 크루원 409. 수신자는
+    payload.invite_code로 preview→join 흐름 재사용."""
+    try:
+        await crew_service.invite_member(crew_id, user.user_id, req.user_id)
+    except (crew_service.CrewNotFound, crew_service.CrewAccessDenied,
+            crew_service.InviteTargetNotFound):
+        raise HTTPException(status_code=404, detail="Not found")
+    except crew_service.AlreadyMember:
+        raise HTTPException(status_code=409, detail="Already a member")
+    except Exception as exc:  # noqa: BLE001
+        raise _bad_gateway("Failed to invite", exc)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post(

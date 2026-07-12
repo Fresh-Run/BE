@@ -74,6 +74,10 @@ class NotAMember(CrewError):
     """User is not a member of the crew."""
 
 
+class InviteTargetNotFound(CrewError):
+    """초대 대상이 없거나 차단 관계 — 404 은닉(존재/관계 노출 차단)."""
+
+
 class OwnerCannotKickSelf(CrewError):
     """The owner cannot kick themselves (use leave/transfer/delete instead)."""
 
@@ -685,11 +689,9 @@ async def get_invite_code(crew_id: str, caller_id: str) -> str | None:
     return crew.get("invite_code")
 
 
-async def regenerate_invite_code(crew_id: str, caller_id: str) -> str:
-    """Issue a new invite code (owner only). The previous code dies with the
-    UPDATE — regeneration is the leak response. Retries on the ~impossible
-    UNIQUE collision. Code values are never logged."""
-    await ensure_owner(crew_id, caller_id)
+async def _issue_invite_code(crew_id: str) -> str:
+    """새 초대코드 생성·저장 (단일 소스 — regenerate·invite_member 공용). 이전
+    코드는 UPDATE로 소멸. ~불가능한 UNIQUE 충돌만 재시도. 코드값은 로깅 금지."""
     supabase = get_supabase_admin()
     for _ in range(5):
         code = _gen_invite_code()
@@ -705,6 +707,36 @@ async def regenerate_invite_code(crew_id: str, caller_id: str) -> str:
             if exc.code != _UNIQUE_VIOLATION:
                 raise
     raise RuntimeError("invite code collision retries exhausted")
+
+
+async def regenerate_invite_code(crew_id: str, caller_id: str) -> str:
+    """Issue a new invite code (owner only). Regeneration is the leak response."""
+    await ensure_owner(crew_id, caller_id)
+    return await _issue_invite_code(crew_id)
+
+
+async def invite_member(crew_id: str, sender_id: str, target_id: str) -> None:
+    """크루원이 비크루원을 인앱 초대 — crew_invited 알림(payload에 초대코드).
+
+    발송자는 크루원이어야(비크루원 → ensure_member가 CrewNotFound/AccessDenied,
+    404 은닉). 차단 관계·없는 유저는 404 은닉, 이미 크루원은 409. 수신자는
+    payload.invite_code로 **기존 preview→join 흐름 재사용**(별도 수락 API 없음).
+    초대코드가 없으면 이 시점에 발급(멤버 초대가 코드 활성화 — 크루 전체 코드).
+    """
+    await ensure_member(crew_id, sender_id)                     # 비크루원 발송자 404
+    if await profile_service.is_blocked_either(sender_id, target_id):
+        raise InviteTargetNotFound()                           # 차단 관계 은닉
+    if not await profile_service.get_nicknames([target_id]):
+        raise InviteTargetNotFound()                           # 없는 유저(프로필 부재)
+    if await _member_role(crew_id, target_id) is not None:
+        raise AlreadyMember()                                  # 이미 크루원 409
+    crew = await _crew_row(crew_id, "name, invite_code")
+    code = crew.get("invite_code") or await _issue_invite_code(crew_id)
+    await notification_service.create_notification(
+        recipient_id=target_id, actor_id=sender_id,
+        type="crew_invited", target_id=crew_id, target_type="crew",
+        payload={"crew_id": crew_id, "invite_code": code, "crew_name": crew.get("name")},
+    )
 
 
 async def _crew_by_code(code: str) -> dict:

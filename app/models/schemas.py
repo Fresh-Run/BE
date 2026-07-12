@@ -1446,6 +1446,12 @@ class InviteCodeResponse(BaseModel):
     code: str = Field(..., description="8자 초대 코드 (I/O/0/1 제외 대문자+숫자).")
 
 
+class CrewInviteRequest(BaseModel):
+    """POST /crews/{id}/invitations — 크루원이 비크루원을 인앱 초대."""
+
+    user_id: str = Field(..., description="초대할 대상 user_id (비크루원·비차단).")
+
+
 class JoinByCodeRequest(BaseModel):
     """Join a crew by invite code. Normalized server-side (strip + upper)."""
 

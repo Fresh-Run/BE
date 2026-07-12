@@ -85,6 +85,9 @@ _TEMPLATES: dict[str, dict[str, str]] = {
                             "en": "Crew challenge completed! 🎉"},
     # PB 축하 — 제네릭(복수 기록·미지 종류 폴백). 단일 종류는 _PB_MESSAGES로 세분.
     "pb_achieved": {"ko": "새 기록을 세웠어요! 🎉", "en": "New personal record! 🎉"},
+    # 인앱 개인 초대 (crew_invited는 _CATEGORY에 이미 crewJoin — 이제 발송 시작)
+    "crew_invited": {"ko": "{nickname}님이 크루에 초대했어요",
+                     "en": "{nickname} invited you to a crew"},
 }
 
 # M-11 (감사 3차): 로드 시 정합 강제 — 템플릿 있는 type(=실제 발송)은 반드시
