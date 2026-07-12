@@ -764,6 +764,9 @@ async def _can_see_run(owner_id: str, caller_id: str, visibility: str) -> bool:
     """
     if owner_id == caller_id:
         return True
+    # 프로필 잠금 선행 합성 (v1): 비공개 계정이면 run visibility 무관하게 차단
+    if not await profile_service.can_see_user(owner_id, caller_id):
+        return False
     if visibility == "private":
         return False
     if visibility == "public":
@@ -1101,6 +1104,12 @@ async def list_user_runs(
     limit = max(1, min(limit, 100))
     offset = max(0, offset)
     supabase = get_supabase_admin()
+
+    # 프로필 잠금 선행 (v1): 비공개 계정을 볼 권한 없으면 빈 목록
+    if caller_id != target_id and not await profile_service.can_see_user(
+        target_id, caller_id
+    ):
+        return []
 
     # caller가 볼 수 있는 visibility 집합 결정 (관계 1쿼리로 판정)
     if caller_id == target_id:

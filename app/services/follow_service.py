@@ -215,10 +215,27 @@ async def list_following(
 
 
 async def get_public_profile(target_id: str, viewer_id: str) -> PublicProfileResponse:
-    """Another user's public profile with follow stats. Never exposes email."""
+    """Another user's public profile with follow stats. Never exposes email.
+
+    비공개 계정을 볼 권한 없으면 잠금 응답(locked=true) — 닉네임·아바타만,
+    카운트·bio 미노출. 존재 은닉은 안 함(팔로우 요청하려면 프로필 필요 —
+    차단은 v3에서 404 은닉으로 별도).
+    """
     profile = await profile_service.get_profile(target_id)
     if profile is None:
         raise UserNotFound()
+
+    if not await profile_service.can_see_user(target_id, viewer_id):
+        is_following, is_followed_by = await asyncio.gather(
+            _follows(viewer_id, target_id), _follows(target_id, viewer_id),
+        )
+        return PublicProfileResponse(
+            user_id=profile.user_id, nickname=profile.nickname,
+            avatar_url=profile.avatar_url, bio=None, tier=profile.tier,
+            created_at=profile.created_at, follower_count=0, following_count=0,
+            is_following=is_following, is_followed_by=is_followed_by,
+            public_run_count=0, visibility=profile.visibility, locked=True,
+        )
 
     (follower_count, following_count, is_following, is_followed_by,
      pub_run_count) = await asyncio.gather(
@@ -240,4 +257,6 @@ async def get_public_profile(target_id: str, viewer_id: str) -> PublicProfileRes
         is_following=is_following,
         is_followed_by=is_followed_by,
         public_run_count=pub_run_count,
+        visibility=profile.visibility,
+        locked=False,
     )

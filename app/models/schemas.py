@@ -88,6 +88,7 @@ class ProfileResponse(BaseModel):
     weight_kg: Optional[float] = None
     height_cm: Optional[float] = None
     gender: Optional[Literal["female", "male", "undisclosed"]] = None
+    visibility: str = Field("public", description="계정 공개범위 public/followers/private.")
     created_at: str
     updated_at: str
 
@@ -107,6 +108,9 @@ class ProfileUpdate(BaseModel):
     height_cm: Optional[float] = Field(None, ge=100, le=250)
     gender: Optional[Literal["female", "male", "undisclosed"]] = Field(
         None, description="시안 선택지: 여성(female)/남성(male)/선택 안 함(undisclosed)."
+    )
+    visibility: Optional[Literal["public", "followers", "private"]] = Field(
+        None, description="계정 공개범위. 비공개면 비팔로워에게 잠금 화면."
     )
 
 
@@ -396,6 +400,11 @@ class PublicProfileResponse(BaseModel):
     )
     public_run_count: int = Field(
         0, description="이 유저가 '전체 공개'로 게시한 러닝 수 (시안 '게시한 러닝 · 공개 N')."
+    )
+    visibility: str = Field("public", description="계정 공개범위 (잠금 화면 판단용).")
+    locked: bool = Field(
+        False, description="True면 비공개 계정을 볼 권한 없음 — 🔒 화면. "
+        "이때 follower/following/run count·bio는 0/null(미노출), 닉네임·아바타만."
     )
 
 

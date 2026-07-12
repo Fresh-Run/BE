@@ -787,6 +787,11 @@ async def search_nearby_routes(
     ]
     if not rows:
         return []
+    # 결정 B: 비공개 계정 owner의 코스는 검색(근처)에서 제외
+    visible = await profile_service.visible_owners(user_id, [r.get("user_id") for r in rows])
+    rows = [r for r in rows if r.get("user_id") in visible or r.get("user_id") is None]
+    if not rows:
+        return []
 
     route_ids = [r["id"] for r in rows]
     copy_counts, like_counts, liked_set, comment_counts, nicknames = await asyncio.gather(
@@ -848,6 +853,11 @@ async def search_public_routes(
         .execute()
     )
     rows = res.data
+    if not rows:
+        return []
+    # 결정 B: owner가 비공개 계정이면 코스가 public이어도 검색에서 제외
+    visible = await profile_service.visible_owners(user_id, [r.get("user_id") for r in rows])
+    rows = [r for r in rows if r.get("user_id") in visible or r.get("user_id") is None]
     if not rows:
         return []
 

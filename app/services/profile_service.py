@@ -94,6 +94,8 @@ async def upsert_profile(user_id: str, req: ProfileUpdate) -> ProfileResponse:
         value = getattr(req, body_field)
         if value is not None:
             record[body_field] = value
+    if req.visibility is not None:   # 계정 공개범위 (v1)
+        record["visibility"] = req.visibility
 
     supabase = get_supabase_admin()
     try:
@@ -334,3 +336,97 @@ async def delete_account(user_id: str, email: str | None) -> None:
 
     await asyncio.to_thread(lambda: supabase.auth.admin.delete_user(user_id))
     logger.info("계정 삭제 완료 (user=%s)", user_id)
+
+
+# ── 계정 가시성 게이트 (docs/PRIVATE_PROFILE_DESIGN.md v1) ────────────────────
+# profile visibility 축. run visibility와 AND 합성(_can_see_run이 선행 호출).
+# 결정 A: followers/private 계정도 팔로우·크루 공존 시 노출(크루 가입=노출 동의).
+# 차단(v3)·승인제(v2)는 이후 사이클에서 이 게이트에 합성.
+
+
+async def _follows_or_crewmate(viewer_id: str, owner_id: str) -> bool:
+    """viewer가 owner를 팔로우 중이거나 같은 크루 소속인가 (_can_see_run과 동일 관계)."""
+    supabase = get_supabase_admin()
+    follow = await asyncio.to_thread(
+        lambda: supabase.table("follows")
+        .select("follower_id")
+        .eq("follower_id", viewer_id).eq("following_id", owner_id)
+        .limit(1).execute()
+    )
+    if follow.data:
+        return True
+    my = await asyncio.to_thread(
+        lambda: supabase.table("crew_members").select("crew_id")
+        .eq("user_id", viewer_id).execute()
+    )
+    crew_ids = [r["crew_id"] for r in my.data]
+    if not crew_ids:
+        return False
+    shared = await asyncio.to_thread(
+        lambda: supabase.table("crew_members").select("crew_id")
+        .eq("user_id", owner_id).in_("crew_id", crew_ids).limit(1).execute()
+    )
+    return bool(shared.data)
+
+
+async def can_see_user(owner_id: str, viewer_id: str) -> bool:
+    """viewer가 owner의 계정(프로필·러닝)에 접근 가능한가.
+
+    public → 누구나 / followers·private → 팔로우 or 크루 공존(본인은 항상).
+    """
+    if owner_id == viewer_id:
+        return True
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("profiles").select("visibility")
+        .eq("user_id", owner_id).limit(1).execute()
+    )
+    vis = (res.data[0]["visibility"] if res.data else "public")
+    if vis == "public":
+        return True
+    return await _follows_or_crewmate(viewer_id, owner_id)
+
+
+async def visible_owners(viewer_id: str, owner_ids: list[str]) -> set[str]:
+    """{viewer가 볼 수 있는 owner_id} — 배치(목록·검색용, N+1 방지).
+
+    public owner는 즉시 통과. followers/private는 viewer의 팔로잉·크루원 교집합.
+    """
+    ids = list({o for o in owner_ids if o})
+    if not ids:
+        return set()
+    supabase = get_supabase_admin()
+    profs = await asyncio.to_thread(
+        lambda: supabase.table("profiles").select("user_id, visibility")
+        .in_("user_id", ids).execute()
+    )
+    vis_map = {r["user_id"]: r["visibility"] for r in profs.data}
+    visible = {viewer_id} & set(ids)
+    restricted = []
+    for oid in ids:
+        if vis_map.get(oid, "public") == "public":
+            visible.add(oid)
+        elif oid != viewer_id:
+            restricted.append(oid)
+    if not restricted:
+        return visible
+    # 팔로잉 교집합
+    fol = await asyncio.to_thread(
+        lambda: supabase.table("follows").select("following_id")
+        .eq("follower_id", viewer_id).in_("following_id", restricted).execute()
+    )
+    visible |= {r["following_id"] for r in fol.data}
+    remaining = [o for o in restricted if o not in visible]
+    if remaining:
+        my = await asyncio.to_thread(
+            lambda: supabase.table("crew_members").select("crew_id")
+            .eq("user_id", viewer_id).execute()
+        )
+        crew_ids = [r["crew_id"] for r in my.data]
+        if crew_ids:
+            mates = await asyncio.to_thread(
+                lambda: supabase.table("crew_members").select("user_id")
+                .in_("crew_id", crew_ids).in_("user_id", remaining).execute()
+            )
+            visible |= {r["user_id"] for r in mates.data}
+    return visible

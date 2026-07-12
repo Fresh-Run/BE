@@ -16,6 +16,7 @@
 | 신체 정보: 출생연도·체중·키·성별 | `profiles.birth_year/weight_kg/height_cm/gender` | 프로필 편집(선택 입력) | **본인 조회(`GET /me/profile`)에만 노출** — 타인이 보는 모든 응답에 미포함(테스트로 이중 검증된 표준). 체중은 칼로리 클라이언트 계산용 |
 | 구독 등급 | `profiles.tier` | 구독 변경 시 | free/premium |
 | 앱 설정(언어 등) | `profiles.settings` (jsonb, 화이트리스트 필터) | 설정 변경 시 | AI 생성물 언어 결정에 사용 |
+| 계정 공개범위 | `profiles.visibility` (public/followers/private, 2026-07-12~) | 프로필 설정 | 비공개면 비팔로워·비크루원에게 프로필·러닝 전면 잠금(run visibility와 AND 합성). 승인제·차단은 후속 사이클 |
 | 러닝 취향 | `preferences.distance_pref/vibe_pref` | 온보딩/설정 | |
 | **푸시 기기 토큰** (2026-07-11~) | `push_tokens` (Expo token·플랫폼·갱신 시각) | 로그인 후 앱이 등록(선택 — OS 권한 거부 시 미수집) | **기기 식별자 성격.** 로그아웃 시 해제 + 죽은 토큰 자동 정리 + **탈퇴 시 cascade 삭제**(테스트 검증). 토큰은 발송 외 용도 없음 |
 
