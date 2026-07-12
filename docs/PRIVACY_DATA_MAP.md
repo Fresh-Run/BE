@@ -58,6 +58,7 @@
 | 팔로우 관계 | `follows` | 팔로우 시 |
 | 크루 소속·역할·가입 신청(결정자·결정 시각 포함) | `crews`, `crew_members`, `crew_join_requests` | 크루 활동 시 |
 | 공지·RSVP·챌린지 | `crew_announcements`, `crew_announcement_rsvps`, `crew_challenges` | 크루 활동 시 |
+| **크루 채팅 메시지·반응** (2026-07-12~) | `crew_messages`(자유 텍스트)·`crew_message_reactions`·`crew_read_state` | 채팅 사용 시 — **신규 수집(방침 수집 항목 추가 필요).** 크루원 전용 노출. 탈퇴 시 본문 익명화 보존(sender_id set null), 반응·읽음상태·mute cascade 삭제 |
 | 알림(행위자 id·대상 id·딥링크 payload) | `notifications` | 상호작용 발생 시 |
 | AI 생성물 캐시(코치 스크립트·월간 코칭 텍스트) | `coach_scripts`, `monthly_insights` | AI 기능 사용 시 |
 | AI 생성 이력(사용자·시각만) | `route_generations` | 코스 생성 시 (주간 쿼터 산정용) |
@@ -125,8 +126,9 @@
     kudos/런댓글), routes(+타인의 댓글·좋아요·북마크), 크루 멤버십, 팔로우,
     알림(내가 받은 것 + **내가 유발해 타인이 받은 것**), 코치 스크립트,
     월간 인사이트, 구독, route_generations.
-  - **보존**: 크루 공지·챌린지(작성자만 NULL 익명화), 가입 신청의 결정자
-    기록(NULL), **타인이 복사해 간 코스**(`copied_from`만 NULL — 실증 SET NULL).
+  - **보존**: 크루 공지·챌린지·**채팅 메시지**(작성자만 NULL 익명화 — 실증),
+    가입 신청의 결정자 기록(NULL), **타인이 복사해 간 코스**(`copied_from`만
+    NULL — 실증 SET NULL).
 - **백업 잔존**: 주 1회 pg_dump(public 스키마) → GitHub Actions artifacts
   **90일 롤링**. 삭제된 데이터도 백업에는 최대 90일 잔존. `auth.users`는 백업
   범위 밖.
