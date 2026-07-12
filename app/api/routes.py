@@ -201,6 +201,8 @@ async def update_my_profile(
     """Create or update the caller's profile (nickname must be unique)."""
     try:
         return await profile_service.upsert_profile(user.user_id, req)
+    except profile_service.NicknameRequired:
+        raise HTTPException(status_code=422, detail="nickname is required to create a profile")
     except profile_service.NicknameTaken:
         raise HTTPException(status_code=409, detail="Nickname already taken")
     except Exception as exc:  # noqa: BLE001

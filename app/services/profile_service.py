@@ -38,6 +38,10 @@ class NicknameTaken(Exception):
     """The requested nickname is already used by another profile."""
 
 
+class NicknameRequired(Exception):
+    """최초 프로필 생성 시 nickname 필수 (부분 PATCH는 생략 허용, 생성은 아님)."""
+
+
 class ProfileNotFound(Exception):
     """Settings write requires an existing profile row."""
 
@@ -74,12 +78,26 @@ async def upsert_profile(user_id: str, req: ProfileUpdate) -> ProfileResponse:
 
     Only the fields provided are written, so a nickname-only update won't wipe
     an existing avatar_url/bio. Raises NicknameTaken on a duplicate nickname.
+
+    부분 PATCH 시맨틱: nickname 생략=유지. 단 프로필 최초 생성(행 없음)은
+    nickname 필수 — 없으면 NicknameRequired(422). 존재 여부로 insert/update를
+    갈라 upsert의 NOT NULL INSERT 실패를 피한다.
     """
+    supabase = get_supabase_admin()
+    existing = await asyncio.to_thread(
+        lambda: supabase.table("profiles").select("user_id")
+        .eq("user_id", user_id).limit(1).execute()
+    )
+    is_new = not existing.data
+    if is_new and req.nickname is None:
+        raise NicknameRequired()
+
     record: dict = {
         "user_id": user_id,
-        "nickname": req.nickname,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
+    if req.nickname is not None:   # 생략=유지 (부분 PATCH)
+        record["nickname"] = req.nickname
     # 명시 null(avatar_url 키를 보냈는데 값이 null) = 삭제 — 미전송과 구분은
     # model_fields_set으로 (PATCH 명시 null 시맨틱 선례, 다른 필드 확대는 수요 시)
     avatar_delete = "avatar_url" in req.model_fields_set and req.avatar_url is None
@@ -99,11 +117,16 @@ async def upsert_profile(user_id: str, req: ProfileUpdate) -> ProfileResponse:
     if req.follow_approval is not None:   # 팔로우 승인제 (v2)
         record["follow_approval"] = req.follow_approval
 
-    supabase = get_supabase_admin()
     try:
-        res = await asyncio.to_thread(
-            lambda: supabase.table("profiles").upsert(record).execute()
-        )
+        if is_new:   # 최초 생성 — nickname 보장됨(위 분기), insert
+            res = await asyncio.to_thread(
+                lambda: supabase.table("profiles").insert(record).execute()
+            )
+        else:        # 갱신 — 보낸 필드만 update(생략된 nickname 보존)
+            res = await asyncio.to_thread(
+                lambda: supabase.table("profiles").update(record)
+                .eq("user_id", user_id).execute()
+            )
     except APIError as exc:
         if exc.code == _UNIQUE_VIOLATION:
             raise NicknameTaken() from exc

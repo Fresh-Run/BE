@@ -97,7 +97,10 @@ class ProfileResponse(BaseModel):
 class ProfileUpdate(BaseModel):
     """Input to create/update the caller's profile. user_id comes from the token."""
 
-    nickname: str = Field(..., min_length=2, max_length=20, description="Display name.")
+    # 부분 PATCH 시맨틱: 생략=유지(아바타 "생략=유지" 선례와 정합). 최초 생성
+    # 시엔 필수 — upsert_profile이 프로필 유무로 분기해 강제(없으면 422).
+    # 명시 null은 거부(닉네임은 삭제 개념 없음 — 아래 validator), ""는 min_length=2로 422.
+    nickname: Optional[str] = Field(None, min_length=2, max_length=20, description="Display name. 생략=유지, 최초 생성 시 필수.")
     # 명시 null = 아바타 삭제 (PATCH 명시 null 시맨틱의 선례 필드 — API_GUIDE).
     # ""는 422 (min_length — normalize 금지, null과 혼동 차단).
     avatar_url: Optional[str] = Field(None, min_length=1, max_length=500,
@@ -116,6 +119,14 @@ class ProfileUpdate(BaseModel):
     follow_approval: Optional[bool] = Field(
         None, description="팔로우 승인제 토글 (ON이면 신규 팔로우가 pending 요청)."
     )
+
+    @model_validator(mode="after")
+    def _reject_explicit_null_nickname(self) -> "ProfileUpdate":
+        # 명시 null(키를 보냈는데 값 null) = 422. 미전송(생략)과 구분은
+        # model_fields_set으로 — 생략은 "유지", null은 삭제 시도라 거부.
+        if "nickname" in self.model_fields_set and self.nickname is None:
+            raise ValueError("nickname cannot be null (omit to keep, non-null to change)")
+        return self
 
 
 class AvatarUploadUrlResponse(BaseModel):
