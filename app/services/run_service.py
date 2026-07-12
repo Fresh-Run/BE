@@ -183,6 +183,25 @@ async def create_run(req: RunRequest, user_id: str | None = None) -> RunResponse
         except Exception:
             logger.warning("챌린지 달성 알림 실패", exc_info=True)
 
+    # PB 축하 알림 — new_records가 비어있지 않으면 본인에게 1건(인앱+푸시).
+    # ⚠️ 유일한 '자기 자신 대상' 알림(recipient==actor) — self-skip의 의도적
+    # 예외라 allow_self=True. 저장 직후 PB 모달(new_records 응답)과 별개로,
+    # 인앱은 알림함 기록·푸시는 앱 밖일 때 의미. best-effort(저장 성공 불변).
+    if user_id and new_records:
+        try:
+            from app.services import notification_service  # local (circular 회피)
+            await notification_service.create_notification(
+                recipient_id=user_id,
+                actor_id=user_id,
+                type="pb_achieved",
+                target_id=saved["id"],      # 딥링크: run 상세
+                target_type="run",
+                allow_self=True,            # self-only 알림 — 의도된 예외
+                payload={"record_types": [r.type for r in new_records]},
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("PB 축하 알림 실패 — 저장은 성공", exc_info=True)
+
     return run
 
 

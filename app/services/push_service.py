@@ -44,6 +44,17 @@ _CATEGORY: dict[str, str] = {
     "crew_announcement": "crewNotice",
     "challenge_completed": "crewChallenge",
     "crew_chat": "crewChat",             # 선등록
+    "pb_achieved": "pb",                 # PB 축하 (자기 대상)
+}
+
+
+# PB 축하 문구 — 기록 종류별(new_records[].type). 단일 기록이면 종류별 문구,
+# 복수·미지면 _TEMPLATES["pb_achieved"] 제네릭. self 알림이라 {nickname} 없음.
+_PB_MESSAGES: dict[str, dict[str, str]] = {
+    "best_pace":        {"ko": "최고 페이스 경신! ⚡", "en": "New fastest pace! ⚡"},
+    "best_5k":          {"ko": "5km 최고 기록! 🏅",   "en": "New 5K best! 🏅"},
+    "longest_distance": {"ko": "최장 거리 경신! 🏃",   "en": "Longest run yet! 🏃"},
+    "longest_duration": {"ko": "최장 시간 경신! ⏱️",   "en": "Longest duration yet! ⏱️"},
 }
 
 
@@ -72,6 +83,8 @@ _TEMPLATES: dict[str, dict[str, str]] = {
                           "en": "New announcement in your crew"},
     "challenge_completed": {"ko": "크루 챌린지를 달성했어요! 🎉",
                             "en": "Crew challenge completed! 🎉"},
+    # PB 축하 — 제네릭(복수 기록·미지 종류 폴백). 단일 종류는 _PB_MESSAGES로 세분.
+    "pb_achieved": {"ko": "새 기록을 세웠어요! 🎉", "en": "New personal record! 🎉"},
 }
 
 # M-11 (감사 3차): 로드 시 정합 강제 — 템플릿 있는 type(=실제 발송)은 반드시
@@ -176,7 +189,15 @@ async def send_for_notification(
             logger.info("푸시 스킵: %s OFF (recipient=%s, type=%s)", category, recipient_id, type)
             return
         lang = recipient_settings.lang if recipient_settings.lang in ("ko", "en") else "ko"
-        body = template[lang].format(nickname=nicknames.get(actor_id) or "러너")
+        if type == "pb_achieved":
+            # PB는 자기 대상 — {nickname} 없이 기록 종류별 문구. 단일 종류면 세분,
+            # 복수·미지면 제네릭 템플릿. record_types는 payload에 실려 옴.
+            rtypes = (payload or {}).get("record_types") or []
+            body = (_PB_MESSAGES[rtypes[0]][lang]
+                    if len(rtypes) == 1 and rtypes[0] in _PB_MESSAGES
+                    else template[lang])
+        else:
+            body = template[lang].format(nickname=nicknames.get(actor_id) or "러너")
 
         messages = [{
             "to": t,

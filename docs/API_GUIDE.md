@@ -234,6 +234,9 @@ fetch(`${API_BASE}/api/me/profile`, {
 > | `follow_requested` | user | **팔로우 요청 목록**(또는 요청자 프로필) | `target_id`(=requester_id) |
 > | `follow_request_approved` | user | 승인해준 유저 프로필 | `target_id`(=승인자 id) |
 > | **`crew_announcement`** | announcement | 크루 공지 (`/crews/{crew_id}/…`) | **`payload.crew_id`** (target_id는 공지id) + `target_id`(=공지id) |
+> | **`pb_achieved`** | run | **내 run 상세** (자기 자신 대상) | `target_id`(=run_id) → `GET /runs/{id}`. `payload.record_types[]`(경신 종류: best_pace·best_5k·longest_distance·longest_duration) |
+>
+> **⚠️ `pb_achieved`는 유일한 '자기 자신 대상' 알림**(수신자==행위자) — 저장 직후 PB 모달(POST /runs 응답 `new_records`)과 별개로 알림함에도 남고, 앱 밖일 때 푸시로 알린다(2026-07-13). 푸시 문구는 경신 종류별(단일: "최고 페이스 경신! ⚡" 등 / 복수: "새 기록을 세웠어요! 🎉"). `notif.pb` 토글로 푸시 끄기(인앱은 유지). `actor_nickname`은 본인이라 렌더 생략 권장.
 >
 > **주의**: `crew_announcement`는 target_id가 공지id라 **crew_id는 `payload`에만** 있다. `payload.crew_id`가 없으면(2026-07-08 이전 발송분) 크루로 못 가니 폴백으로 무시하거나 크루 목록으로 보낸다. 그 외 type은 target_id만으로 라우팅 가능 — payload 불필요.
 >
