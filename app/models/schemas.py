@@ -1284,6 +1284,13 @@ class ChatMessageCreate(BaseModel):
     content: str = Field(..., min_length=1, max_length=2000)
 
 
+class ChatShareRunRequest(BaseModel):
+    """POST /crews/{id}/chat/share-run — 본인 run을 채팅에 카드로 공유 (v1.5)."""
+
+    run_id: str = Field(..., description="공유할 run (본인 것만, private 불가).")
+    caption: Optional[str] = Field(None, max_length=2000, description="카드에 붙일 한마디(선택).")
+
+
 class ChatReactRequest(BaseModel):
     """POST/DELETE /crews/{id}/chat/messages/{mid}/react."""
 

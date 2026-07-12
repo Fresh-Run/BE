@@ -24,7 +24,7 @@ from app.models.schemas import (
     RsvpMember,
     RsvpTally,
 )
-from app.services import crew_service, notification_service, profile_service
+from app.services import chat_service, crew_service, notification_service, profile_service
 
 logger = logging.getLogger(__name__)
 
@@ -191,6 +191,17 @@ async def create_announcement(
     row = res.data[0]
 
     await _notify_members(crew_id, caller_id, row["id"])
+
+    # 크루 채팅에 시스템 메시지 유입 (v1.5 단일 훅) — best-effort(실패해도 공지 성공).
+    # sender_id=작성자(운영진 표기), content="announcement" 렌더 키, payload에 딥링크.
+    try:
+        await chat_service.post_system(
+            crew_id, caller_id, "announcement",
+            {"announcement_id": row["id"], "title": row.get("title")},
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("공지 시스템 메시지 삽입 실패 — 공지는 성공 (crew=%s)",
+                       crew_id, exc_info=True)
 
     briefs = await profile_service.get_profile_briefs([caller_id])
     return _to_response(row, RsvpTally(), None, briefs.get(caller_id))

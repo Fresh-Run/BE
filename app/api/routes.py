@@ -29,6 +29,7 @@ from app.models.schemas import (
     CrewMemberResponse,
     CrewRankingEntry,
     ChatMessageCreate,
+    ChatShareRunRequest,
     ChatMessageResponse,
     ChatMuteRequest,
     ChatReactRequest,
@@ -2316,6 +2317,10 @@ def _chat_404_403(exc: Exception) -> HTTPException:
         return HTTPException(status_code=404, detail="Not found")
     if isinstance(exc, chat_service.NotDeletable):
         return HTTPException(status_code=403, detail="Cannot delete this message")
+    if isinstance(exc, chat_service.RunNotShareable):  # 없음/타인 run → 은닉
+        return HTTPException(status_code=404, detail="Not found")
+    if isinstance(exc, chat_service.PrivateRunNotShareable):
+        return HTTPException(status_code=422, detail="Private runs cannot be shared")
     return _bad_gateway("Chat operation failed", exc)
 
 
@@ -2353,6 +2358,25 @@ async def post_chat_message(
 ) -> ChatMessageResponse:
     try:
         return await chat_service.post_message(crew_id, user.user_id, req.content)
+    except Exception as exc:  # noqa: BLE001
+        raise _chat_404_403(exc)
+
+
+@router.post(
+    "/crews/{crew_id}/chat/share-run",
+    response_model=ChatMessageResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="기록 카드 공유 (본인 run, 스냅샷 박제 — v1.5)",
+)
+async def share_run_to_chat(
+    crew_id: str,
+    req: ChatShareRunRequest,
+    user: CurrentUser = Depends(get_current_user),
+) -> ChatMessageResponse:
+    """본인 run(public·followers)을 크루 채팅에 카드로 공유. 타인 run·없음 404,
+    private run 422. payload에 전송 시점 스냅샷 박제 — 상세 진입은 현재 권한 재평가."""
+    try:
+        return await chat_service.share_run(crew_id, user.user_id, req.run_id, req.caption)
     except Exception as exc:  # noqa: BLE001
         raise _chat_404_403(exc)
 
