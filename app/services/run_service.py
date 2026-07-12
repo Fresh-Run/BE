@@ -555,15 +555,17 @@ async def get_run(run_id: str, user_id: str) -> RunResponse | None:
         return None
 
     photo_paths = row.get("photos") or []
-    tracks, kudos, comments, signed, mine, thumbs = await asyncio.gather(
+    tracks, kudos, comments, signed, mine, thumbs, flags = await asyncio.gather(
         _track_summaries([row["id"]]),
         _kudos_counts([row["id"]]),
         _comment_counts([row["id"]]),
         _signed_photo_urls(photo_paths),
         _my_kudos_set([row["id"]], user_id),
         _polyline_thumbs([row["id"]]),
+        profile_service.feed_flags_batch([owner_id]),
     )
     photos = [signed[p] for p in photo_paths if p in signed]
+    owner_flags = flags.get(owner_id, {})
     common = dict(
         has_track=row["id"] in tracks, splits=tracks.get(row["id"]),
         kudos_count=kudos.get(row["id"], 0),
@@ -571,6 +573,9 @@ async def get_run(run_id: str, user_id: str) -> RunResponse | None:
         my_kudos=row["id"] in mine,
         comment_count=comments.get(row["id"], 0), photos=photos,
         polyline_thumb=thumbs.get(row["id"]),
+        # 피드 설정 렌더 힌트 — 소유자값(본인·타인 상세 공통, owner_id 기준)
+        allow_likes=owner_flags.get("allow_likes", True),
+        allow_comments=owner_flags.get("allow_comments", True),
     )
     if is_own:
         return RunResponse(**{k: v for k, v in row.items() if k != "photos"}, **common)
@@ -1075,7 +1080,7 @@ async def list_activity_feed(
         return {row["id"]: row["summary"] for row in r.data}
 
     firsts = {r["id"]: (r.get("photos") or [None])[0] for r in rows}
-    briefs, summaries, kudos_counts, my_kudos, comment_counts, signed, thumbs = await asyncio.gather(
+    briefs, summaries, kudos_counts, my_kudos, comment_counts, signed, thumbs, flags = await asyncio.gather(
         profile_service.get_profile_briefs([r["user_id"] for r in rows]),
         _public_route_summaries(),
         _kudos_counts(run_ids),
@@ -1083,6 +1088,7 @@ async def list_activity_feed(
         _comment_counts(run_ids),
         _signed_photo_urls([p for p in firsts.values() if p]),
         _polyline_thumbs(run_ids),
+        profile_service.feed_flags_batch([r["user_id"] for r in rows]),
     )
     return [
         ActivityFeedItem(
@@ -1104,6 +1110,8 @@ async def list_activity_feed(
             my_kudos=row["id"] in my_kudos,
             photo_thumb=signed.get(firsts.get(row["id"])),
             polyline_thumb=thumbs.get(row["id"]),
+            allow_likes=flags.get(row["user_id"], {}).get("allow_likes", True),
+            allow_comments=flags.get(row["user_id"], {}).get("allow_comments", True),
         )
         for row in rows
     ]

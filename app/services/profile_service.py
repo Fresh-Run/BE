@@ -511,3 +511,27 @@ async def feed_allows(owner_id: str, key: str) -> bool:
     """
     settings_obj = await get_settings(owner_id)
     return getattr(settings_obj.feed, key)
+
+
+async def feed_flags_batch(owner_ids: list[str | None]) -> dict[str, dict]:
+    """{owner_id: {"allow_likes": bool, "allow_comments": bool}} — 배치 1쿼리(N+1 방지).
+
+    피드·프로필·상세의 "좋아요/댓글 가능?" 렌더 힌트용. 설정/프로필 미저장은
+    FeedSettings 기본값(둘 다 True). 요청한 모든 id에 항목 보장(기본값으로 채움).
+    """
+    ids = list({uid for uid in owner_ids if uid})
+    if not ids:
+        return {}
+    out = {uid: {"allow_likes": True, "allow_comments": True} for uid in ids}
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("profiles").select("user_id, settings")
+        .in_("user_id", ids).execute()
+    )
+    for row in res.data:
+        feed = (row.get("settings") or {}).get("feed") or {}
+        out[row["user_id"]] = {
+            "allow_likes": feed.get("allow_likes", True),
+            "allow_comments": feed.get("allow_comments", True),
+        }
+    return out

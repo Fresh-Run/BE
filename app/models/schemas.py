@@ -490,6 +490,11 @@ class PublicProfileResponse(BaseModel):
         False, description="True면 비공개 계정을 볼 권한 없음 — 🔒 화면. "
         "이때 follower/following/run count·bio는 0/null(미노출), 닉네임·아바타만."
     )
+    # 피드 설정 렌더 힌트 (2026-07-13 additive) — 소유자 설정값 그대로. **잠금
+    # 응답(locked=true)엔 null**(affordance 자체가 없어 무의미). false면 프론트가
+    # 좋아요/댓글 버튼 렌더 생략(403은 레이스 폴백).
+    allow_likes: Optional[bool] = Field(None, description="이 유저에게 좋아요 가능? (잠금 시 null)")
+    allow_comments: Optional[bool] = Field(None, description="이 유저에게 댓글 가능? (잠금 시 null)")
 
 
 class FollowDecisionRequest(BaseModel):
@@ -1088,6 +1093,10 @@ class RunResponse(BaseModel):
         None, description="카드 지도용 축약 폴리라인(≤36pt, 좌표 5자리). "
         "트랙 없는 run은 null — 지도 자리 숨김/일러스트 폴백."
     )
+    # 피드 설정 렌더 힌트 (2026-07-13 additive) — run 소유자 설정값. 타인 상세에서
+    # "좋아요/댓글 버튼 렌더 여부" 판단(false면 생략, 403은 레이스 폴백). 본인 상세도 참값.
+    allow_likes: Optional[bool] = Field(None, description="소유자에게 kudos 가능?")
+    allow_comments: Optional[bool] = Field(None, description="소유자에게 댓글 가능?")
 
 
 class RunTrackResponse(BaseModel):
@@ -1400,6 +1409,10 @@ class CrewRunItem(BaseModel):
         None, description="연결된 코스 요약 — 공개 코스일 때만, 비공개면 null."
     )
     comment_count: int = Field(0, description="run 댓글 수 (카드 💬).")
+    # 피드 설정 렌더 힌트 (2026-07-13 additive) — run 소유자 설정값. false면 프론트가
+    # 좋아요/댓글 버튼 렌더 생략(403은 레이스 폴백). ActivityFeedItem에 자동 전파.
+    allow_likes: Optional[bool] = Field(None, description="소유자에게 kudos 가능?")
+    allow_comments: Optional[bool] = Field(None, description="소유자에게 댓글 가능?")
 
 
 class ActivityFeedItem(CrewRunItem):

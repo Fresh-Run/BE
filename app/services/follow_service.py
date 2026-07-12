@@ -262,13 +262,15 @@ async def get_public_profile(target_id: str, viewer_id: str) -> PublicProfileRes
         )
 
     (follower_count, following_count, is_following, is_followed_by,
-     pub_run_count) = await asyncio.gather(
+     pub_run_count, flags) = await asyncio.gather(
         _follow_count("following_id", target_id),
         _follow_count("follower_id", target_id),
         _follows(viewer_id, target_id),
         _follows(target_id, viewer_id),
         run_service.public_run_count(target_id),
+        profile_service.feed_flags_batch([target_id]),
     )
+    f = flags.get(target_id, {})
     return PublicProfileResponse(
         user_id=profile.user_id,
         nickname=profile.nickname,
@@ -283,6 +285,8 @@ async def get_public_profile(target_id: str, viewer_id: str) -> PublicProfileRes
         public_run_count=pub_run_count,
         visibility=profile.visibility,
         locked=False,
+        allow_likes=f.get("allow_likes", True),
+        allow_comments=f.get("allow_comments", True),
     )
 
 

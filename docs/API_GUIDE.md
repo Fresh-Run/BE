@@ -282,6 +282,8 @@ fetch(`${API_BASE}/api/me/profile`, {
 }
 ```
 > **피드 설정 강제 (서버측)** — `allow_likes/comments` OFF면 **타인**의 kudos/좋아요·댓글이 **403 구조화**(`{error: likes_disabled|comments_disabled, message}`)로 거부됩니다(내 콘텐츠엔 항상 가능). 프론트는 이 403을 받으면 버튼 비활성 + 안내("이 사용자는 좋아요를 받지 않아요"). **404가 아닌 403인 이유**: 콘텐츠는 이미 보이는 상태(가시성 통과)라 존재 은닉 대상이 아님 — 반대로 **안 보이는 run은 설정 게이트 전에 404**(은닉 우선). `auto_publish` OFF는 저장 화면 기본 공개범위만 바꿉니다(visibility 슬라이더를 명시하면 그 값 우선). 기존 유저는 3키 전부 기본 true라 동작 변화 없음. 토글 위치는 프로필 설정 화면.
+>
+> **`allow_likes`·`allow_comments` 렌더 힌트 (2026-07-13 additive)** — 위 403을 **사전에 피하는** 힌트를 3곳 응답에 노출: **① `GET /users/{id}/profile`**(공개 프로필) **② `GET /runs/{id}`**(타인·본인 상세) **③ `GET /feed/activities`**(활동 피드 아이템). 값은 **소유자 설정 그대로**(bool 2개, 본인 응답에도 참값). **소비 규칙**: `false`면 해당 **버튼(좋아요/댓글) 렌더를 생략** — 눌러서 403 받기 전에 숨기는 게 UX 정석. **403은 레이스 폴백**(힌트 받은 뒤 소유자가 설정을 바꾼 찰나) — 여전히 403 처리는 유지하되 평소엔 힌트로 미리 숨김. **⚠️ 잠금 프로필(`locked:true`) 응답엔 두 필드 `null`** — 잠긴 계정엔 좋아요/댓글 affordance 자체가 없어 무의미(렌더 대상 아님). 신규 엔드포인트 없음(아바타 필드 선례 — 응답 필드만 additive).
 
 > **푸시 알림 설정 (`settings.notif`, 시안 FrNotifSettings v1)** — `PATCH /me/settings {"notif":{"likes":false}}`처럼 카테고리별 토글. **키 12종**(camelCase 그대로): `master`(마스터 스위치)·`crewChallenge`·`crewNotice`·`crewChat`·`crewJoin`·`likes`·`comments`·`followers`·`runReminder`·`weekly`·`pb`·`marketing`. **기본 전부 ON**(`marketing`만 OFF) → 기존 유저 동작 변화 0.
 >
