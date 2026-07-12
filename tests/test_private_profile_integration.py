@@ -2,7 +2,7 @@
 Integration test: 비공개 프로필 v1 (docs/PRIVATE_PROFILE_DESIGN.md)
 
 profile visibility × run visibility 3×3 조합 매트릭스(비팔로워 뷰어) +
-팔로워는 프로필 게이트 통과 + 크루원 무시(결정 A) + 잠금 응답(locked) +
+팔로워는 프로필 게이트 통과 + 크루원도 비팔로워면 locked(결정 A′)·run은 ⓑ 탭스루 + 잠금 응답(locked) +
 공개 프로필 탭 빈 목록 + 검색 제외(결정 B) + 본인 무영향.
 
 Run: python tests/test_private_profile_integration.py  (로컬 서버 필요)
@@ -119,12 +119,13 @@ def run_tests():
         assert len(api(c, "GET", f"/users/{uids['o']}/runs", tk["f"]).json()) >= 2  # public+followers
         ok("팔로워: 프로필 통과·public/followers run 200·private 404")
 
-        step("4. 크루원 M은 비공개 계정 뚫음 (결정 A — 크루 공존)")
+        step("4. 크루원 M — 결정 A′: 프로필은 잠기되(비팔로워) run은 크루 탭스루(ⓑ)")
         assert api(c, "GET", f"/runs/{runs['public']}", tk["m"]).status_code == 200
-        assert api(c, "GET", f"/runs/{runs['followers']}", tk["m"]).status_code == 200  # 크루=followers 허용
+        assert api(c, "GET", f"/runs/{runs['followers']}", tk["m"]).status_code == 200  # ⓑ: 크루 노출 run 탭스루
+        assert api(c, "GET", f"/runs/{runs['private']}", tk["m"]).status_code == 404, "private run은 ⓑ 제외"
         pm = api(c, "GET", f"/users/{uids['o']}/profile", tk["m"]).json()
-        assert pm["locked"] is False, "크루원은 프로필 잠금 무시"
-        ok("크루원: 프로필 통과·크루=followers run 200 (결정 A)")
+        assert pm["locked"] is True, "A′: 비팔로워 크루원은 프로필 locked (크루 예외는 크루 서피스로 한정)"
+        ok("A′: 크루원 비팔로워 프로필 locked·히스토리 잠김 / 크루 문맥 run은 ⓑ로 200(private 404)")
 
         step("5. 검색 — 비공개 계정 코스 제외 (결정 B)")
         summ = f"PP검색코스{TS}"

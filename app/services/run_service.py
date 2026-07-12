@@ -791,51 +791,34 @@ class RunNotVisible(Exception):
 
 
 async def _can_see_run(owner_id: str, caller_id: str, visibility: str) -> bool:
-    """run이 caller에게 보이는가 — 노출 경로 정책과 일치.
+    """run이 caller에게 보이는가 — 노출 경로 정책과 일치 (결정 A′ + 엣지 ⓑ).
 
-    ① 본인 → 항상 ② private → 본인만(False) ③ public → 누구나(공개 프로필로
-    노출되므로) ④ followers → 팔로우 중이거나 같은 크루 소속.
+    ① 본인 → 항상 ② 차단 → 항상 False(최우선) ③ **엣지 ⓑ 크루 탭스루**: 크루
+    공유 + private 아님 → 허용(프로필 잠금과 독립 — 크루 피드에 뜬 카드는 크루원이
+    상세까지 탭 가능, "서피스에 보이는 것은 그 서피스 안에서 완결") ④ 그 외는
+    프로필 게이트(A′=팔로우만) + run visibility: private 본인만·public 누구나·
+    followers 팔로우.
     """
     if owner_id == caller_id:
         return True
-    # 프로필 잠금 선행 합성 (v1): 비공개 계정이면 run visibility 무관하게 차단
+    # 차단 최우선 — 차단이면 크루 탭스루도 막힘
+    if await profile_service.is_blocked_either(owner_id, caller_id):
+        return False
+    # 엣지 ⓑ(A′): 크루 서피스 노출 run(private 아님)은 크루원이 상세 탭 가능.
+    # 프로필이 A′로 잠겨도 크루 문맥 run은 열림 — 크루 피드가 이미 private 제외라
+    # "피드에 보이는 카드 = 탭 가능"이 성립. 응답은 기존 화이트리스트 정제 그대로.
+    if visibility != "private" and await profile_service._are_crewmates(caller_id, owner_id):
+        return True
+    # 크루 아니면 프로필 게이트(A′: 팔로우만) + run visibility 합성
     if not await profile_service.can_see_user(owner_id, caller_id):
         return False
     if visibility == "private":
         return False
     if visibility == "public":
         return True
-    # visibility == "followers": 팔로우 or 같은 크루
-    supabase = get_supabase_admin()
-    follow = await asyncio.to_thread(
-        lambda: supabase.table("follows")
-        .select("follower_id")
-        .eq("follower_id", caller_id)
-        .eq("following_id", owner_id)
-        .limit(1)
-        .execute()
-    )
-    if follow.data:
-        return True
-    # 같은 크루 소속 여부 — caller의 크루 목록과 owner의 교집합
-    my = await asyncio.to_thread(
-        lambda: supabase.table("crew_members")
-        .select("crew_id")
-        .eq("user_id", caller_id)
-        .execute()
-    )
-    crew_ids = [r["crew_id"] for r in my.data]
-    if not crew_ids:
-        return False
-    shared = await asyncio.to_thread(
-        lambda: supabase.table("crew_members")
-        .select("crew_id")
-        .eq("user_id", owner_id)
-        .in_("crew_id", crew_ids)
-        .limit(1)
-        .execute()
-    )
-    return bool(shared.data)
+    # visibility == "followers": 팔로우만 (A′ — 크루 탭스루는 위 ⓑ에서 이미 처리,
+    # 여기 도달 시 caller는 비크루원이므로 크루 재검사 불필요/제거).
+    return await profile_service._follows(caller_id, owner_id)
 
 
 async def give_kudos(run_id: str, user_id: str) -> None:

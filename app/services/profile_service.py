@@ -377,17 +377,25 @@ async def delete_account(user_id: str, email: str | None) -> None:
 # 차단(v3)·승인제(v2)는 이후 사이클에서 이 게이트에 합성.
 
 
-async def _follows_or_crewmate(viewer_id: str, owner_id: str) -> bool:
-    """viewer가 owner를 팔로우 중이거나 같은 크루 소속인가 (_can_see_run과 동일 관계)."""
+async def _follows(viewer_id: str, owner_id: str) -> bool:
+    """viewer가 owner를 팔로우 중인가."""
     supabase = get_supabase_admin()
-    follow = await asyncio.to_thread(
-        lambda: supabase.table("follows")
-        .select("follower_id")
+    res = await asyncio.to_thread(
+        lambda: supabase.table("follows").select("follower_id")
         .eq("follower_id", viewer_id).eq("following_id", owner_id)
         .limit(1).execute()
     )
-    if follow.data:
-        return True
+    return bool(res.data)
+
+
+async def _are_crewmates(viewer_id: str, owner_id: str) -> bool:
+    """viewer와 owner가 같은 크루 소속인가.
+
+    결정 A′(2026-07-13): 크루 공유는 **프로필 게이트(can_see_user)에선 미사용** —
+    크루 예외를 크루 서피스로 한정. 이 헬퍼는 _can_see_run의 크루 탭스루(엣지 ⓑ)
+    에서만 쓴다("서피스에 보이는 카드는 그 서피스 안에서 상세까지 완결").
+    """
+    supabase = get_supabase_admin()
     my = await asyncio.to_thread(
         lambda: supabase.table("crew_members").select("crew_id")
         .eq("user_id", viewer_id).execute()
@@ -418,11 +426,16 @@ async def can_see_user(owner_id: str, viewer_id: str) -> bool:
     """viewer가 owner의 계정(프로필·러닝)에 접근 가능한가.
 
     차단 최우선(양방향 → False, 존재 은닉) → public 누구나 →
-    followers·private는 팔로우 or 크루 공존. 본인은 항상.
+    followers·private는 **팔로우만**(결정 A′: 크루 공유는 프로필 게이트에서 제외).
+    본인은 항상.
+
+    결정 A′(2026-07-13): 비팔로워 크루원은 이제 프로필·러닝 히스토리·통계가
+    잠긴다(locked). 크루 서피스(랭킹·명단·채팅·크루 피드 카드)는 이 게이트를
+    안 타므로 현행 유지 — 크루 문맥 run 상세 탭은 _can_see_run의 엣지 ⓑ가 담당.
     """
     if owner_id == viewer_id:
         return True
-    if await is_blocked_either(owner_id, viewer_id):   # v3: 차단이 크루 공존보다 위
+    if await is_blocked_either(owner_id, viewer_id):   # v3: 차단이 최우선
         return False
     supabase = get_supabase_admin()
     res = await asyncio.to_thread(
@@ -432,7 +445,7 @@ async def can_see_user(owner_id: str, viewer_id: str) -> bool:
     vis = (res.data[0]["visibility"] if res.data else "public")
     if vis == "public":
         return True
-    return await _follows_or_crewmate(viewer_id, owner_id)
+    return await _follows(viewer_id, owner_id)          # A′: 크루메이트 제거
 
 
 async def blocked_ids_batch(viewer_id: str, owner_ids: list[str]) -> set[str]:
@@ -510,7 +523,8 @@ async def search_users(viewer_id: str, q: str, limit: int = 20) -> list[dict]:
 async def visible_owners(viewer_id: str, owner_ids: list[str]) -> set[str]:
     """{viewer가 볼 수 있는 owner_id} — 배치(목록·검색용, N+1 방지).
 
-    차단(양방향)은 먼저 제외 → public 즉시 통과 → followers/private는 팔로잉·크루원.
+    차단(양방향)은 먼저 제외 → public 즉시 통과 → followers/private는 **팔로잉만**
+    (결정 A′: 크루 공유 제외 — can_see_user 단건판과 동일 정책).
     """
     ids = list({o for o in owner_ids if o})
     if not ids:
@@ -535,25 +549,12 @@ async def visible_owners(viewer_id: str, owner_ids: list[str]) -> set[str]:
             restricted.append(oid)
     if not restricted:
         return visible
-    # 팔로잉 교집합
+    # 팔로잉 교집합만 (A′: 크루 교집합 제거 — 크루 서피스는 이 배치를 안 탄다)
     fol = await asyncio.to_thread(
         lambda: supabase.table("follows").select("following_id")
         .eq("follower_id", viewer_id).in_("following_id", restricted).execute()
     )
     visible |= {r["following_id"] for r in fol.data}
-    remaining = [o for o in restricted if o not in visible]
-    if remaining:
-        my = await asyncio.to_thread(
-            lambda: supabase.table("crew_members").select("crew_id")
-            .eq("user_id", viewer_id).execute()
-        )
-        crew_ids = [r["crew_id"] for r in my.data]
-        if crew_ids:
-            mates = await asyncio.to_thread(
-                lambda: supabase.table("crew_members").select("user_id")
-                .in_("crew_id", crew_ids).in_("user_id", remaining).execute()
-            )
-            visible |= {r["user_id"] for r in mates.data}
     return visible
 
 

@@ -1341,6 +1341,12 @@ class ChatMessageResponse(BaseModel):
         default_factory=list, description="조회자가 누른 이모지 목록."
     )
     deleted: bool = Field(False, description="soft 삭제 여부 (content=null).")
+    blocked: bool = Field(
+        False,
+        description="차단 관계 발신자의 메시지 (v3.5). true면 서버가 content·"
+        "payload를 null로 보냄 — 프론트는 '가려진 메시지' 플레이스홀더 렌더. "
+        "반응 집계(reactions)는 유지(카운트 왜곡 방지), 새 반응 추가는 404.",
+    )
 
 
 class ChatUnreadResponse(BaseModel):

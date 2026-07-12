@@ -86,21 +86,29 @@ async def list_messages(
         return []
 
     msg_ids = [r["id"] for r in rows]
-    reacts, briefs = await asyncio.gather(
+    sender_ids = [r.get("sender_id") for r in rows]
+    reacts, briefs, blocked = await asyncio.gather(
         _reactions_for(msg_ids, caller_id),
-        profile_service.get_profile_briefs([r.get("sender_id") for r in rows]),
+        profile_service.get_profile_briefs(sender_ids),
+        profile_service.blocked_ids_batch(caller_id, sender_ids),
     )
     out = []
     for r in rows:
         counts, mine = reacts.get(r["id"], ({}, []))
-        brief = briefs.get(r["sender_id"], {}) if r.get("sender_id") else {}
+        # v3.5: 차단 관계 발신자 메시지는 content·payload를 서버가 null로 (신뢰
+        # 경계 — 클라 필터에 맡기지 않음). 반응 집계는 유지(카운트 왜곡 방지).
+        is_blocked = r.get("sender_id") in blocked
+        brief = {} if is_blocked else (briefs.get(r["sender_id"], {}) if r.get("sender_id") else {})
         out.append(ChatMessageResponse(
             id=r["id"], crew_id=r["crew_id"], sender_id=r.get("sender_id"),
             sender_nickname=brief.get("nickname"),
             sender_avatar_url=brief.get("avatar_url"),
-            type=r["type"], content=r.get("content"), payload=r.get("payload"),
+            type=r["type"],
+            content=None if is_blocked else r.get("content"),
+            payload=None if is_blocked else r.get("payload"),
             created_at=r["created_at"], reactions=counts, my_reactions=mine,
             deleted=(r["type"] == "text" and r.get("content") is None),
+            blocked=is_blocked,
         ))
     return out
 
@@ -252,6 +260,9 @@ async def react(crew_id: str, caller_id: str, message_id: str, emoji: str) -> No
     # M-9: soft-deleted 메시지(content null인 text)엔 새 반응 불가 — 404 은닉.
     # 기존 반응·맥락은 유지(delete_message가 반응은 안 지움)지만 신규는 막는다.
     if msg["type"] == "text" and msg.get("content") is None:
+        raise MessageNotFound()
+    # v3.5: 차단 관계 발신자의 메시지엔 새 반응 불가(404). 기존 반응 집계는 유지.
+    if msg.get("sender_id") and await profile_service.is_blocked_either(caller_id, msg["sender_id"]):
         raise MessageNotFound()
     supabase = get_supabase_admin()
     try:

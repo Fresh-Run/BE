@@ -803,6 +803,13 @@ async def list_crew_runs(
     member_ids = [r["user_id"] for r in members_res.data]
     if not member_ids:
         return []
+    # v3.5: 차단 관계 멤버의 run 카드는 크루 피드에서 제외(카드 자체 숨김 —
+    # 채팅의 "가려진 메시지"와 달리 피드는 목록 합성이라 항목 제거가 자연스러움).
+    # runs 쿼리 전에 제외해 limit 보존. 랭킹·명단·challenge_km은 차단 무시(잔존).
+    blocked = await profile_service.blocked_ids_batch(caller_id, member_ids)
+    member_ids = [m for m in member_ids if m not in blocked]
+    if not member_ids:
+        return []
 
     runs_res = await asyncio.to_thread(
         lambda: supabase.table("runs")
