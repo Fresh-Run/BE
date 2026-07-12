@@ -490,6 +490,12 @@ async def like_route(route_id: str, user_id: str) -> None:
         raise RouteNotFound()
 
     route_owner = res.data[0].get("user_id")
+    # 차단·비공개 게이트 — feed_allows(403)보다 선행(은닉 우선). 차단/비가시
+    # 소유자의 코스는 존재 은닉(404), run kudos의 _can_see_run과 동일 정책.
+    if route_owner and route_owner != user_id and not await profile_service.can_see_user(
+        route_owner, user_id
+    ):
+        raise RouteNotFound()
     if route_owner and route_owner != user_id and not await profile_service.feed_allows(
         route_owner, "allow_likes"
     ):
@@ -968,6 +974,11 @@ async def create_comment(route_id: str, user_id: str, content: str) -> CommentRe
         raise RouteNotFound()
 
     route_owner = res.data[0].get("user_id")
+    # 차단·비공개 게이트 — feed_allows(403)보다 선행(은닉 우선, like_route와 동형).
+    if route_owner and route_owner != user_id and not await profile_service.can_see_user(
+        route_owner, user_id
+    ):
+        raise RouteNotFound()
     if route_owner and route_owner != user_id and not await profile_service.feed_allows(
         route_owner, "allow_comments"
     ):

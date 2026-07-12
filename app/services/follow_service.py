@@ -58,6 +58,10 @@ async def follow_user(target_id: str, follower_id: str) -> str:
     if target_id == follower_id:
         raise SelfFollowNotAllowed()
     await _ensure_user_exists(target_id)
+    # 차단 게이트 — 양방향 차단이면 존재 은닉(404). 승인제/비승인제 분기보다
+    # 앞이라 pending 요청·follows 행·알림 어느 것도 생성되지 않는다(차단 우회 봉쇄).
+    if await profile_service.is_blocked_either(target_id, follower_id):
+        raise UserNotFound()
 
     supabase = get_supabase_admin()
     # 승인제 계정이면 즉시 팔로우 대신 pending 요청. 기존 팔로워는 이 경로를
@@ -401,6 +405,12 @@ async def decide_follow_request(
         raise FollowRequestNotFound()  # 없거나 이미 처리됨
     if not approve:
         return  # 거절은 무알림 (crew 패턴과 동일)
+
+    # M-8 레이스 봉쇄: block_user의 pending 삭제와 approve가 동시 실행돼 pending을
+    # 먼저 잠근 경우에도, follows 삽입 전 차단 재검증으로 차단 두 유저 간 엣지 생성
+    # 차단(요청은 이미 approved로 소진 — 승인은 무효 처리, 없던 요청과 동일 404).
+    if await profile_service.is_blocked_either(target_id, requester_id):
+        raise FollowRequestNotFound()
 
     # 승인: follows 생성 (멱등) + follow_request_approved 알림
     try:
