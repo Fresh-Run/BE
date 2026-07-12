@@ -63,6 +63,9 @@ DEFAULTS = {
                     "cue_interval_km": 1.0, "announce_distance": True,
                     "announce_pace": True, "announce_calories": False},
     "feed": {"auto_publish": True, "allow_likes": True, "allow_comments": True},
+    "notif": {"master": True, "crewChallenge": True, "crewNotice": True, "crewChat": True,
+              "crewJoin": True, "likes": True, "comments": True, "followers": True,
+              "runReminder": True, "weekly": True, "pb": True, "marketing": False},
 }
 
 

@@ -216,7 +216,7 @@ fetch(`${API_BASE}/api/me/profile`, {
 | 공지 작성/수정/삭제 | `POST/PATCH/DELETE /crews/{id}/announcements...` | **크루장·운영진(admin)**. 작성 시 크루원 전체 알림, 수정은 알림 없음 |
 | **크루 채팅** (v1) | `GET/POST /crews/{id}/chat/messages`, `GET /chat/unread`, `POST /chat/read`, `POST/DELETE /chat/messages/{mid}/react`, `DELETE /chat/messages/{mid}`, `PATCH /chat/mute` | **크루원 전용**(비크루원 404 은닉). **폴링** — 활성 화면 20~30초 주기 권장(Realtime 아님). 목록은 **역순 커서**(`before=<가장 오래된 created_at>`, /runs와 동일 규칙 — `+`는 인코딩/`Z`). 메시지: `reactions{이모지:수}`·`my_reactions[]`·`deleted`(soft)·`sender_nickname/avatar_url`(탈퇴 시 null). 반응 **👍🔥👏💪 4종 고정**(그 외 422)·멱등 토글. `unread`는 배지용(본인 메시지 제외)+`muted`. **삭제: 본인 or 운영진**(soft — content null, 행 잔존). **방별 mute**는 전역 알림과 독립(채팅 푸시 발송 자체가 v2라 지금은 배지에 무영향). 시스템 메시지·기록 카드 공유는 v1.5 |
 | **참석 투표** | `PUT /crews/{id}/announcements/{aid}/rsvp` | body: `{"status": "going"\|"not_going"\|"maybe"}` → 204. 재투표=덮어쓰기 |
-| **원격 푸시 (Expo)** | `POST /me/push-token` body `{token, platform}` / `DELETE /me/push-token` body `{token}` | **앱 계약**: ① 로그인 후 `expo-notifications` 권한 요청 → `getExpoPushTokenAsync()` → POST(앱 시작마다 호출해도 **멱등**, 토큰 갱신 리스너에서도 재호출) ② 로그아웃 시 DELETE(실패해도 로그아웃 진행 — 서버가 죽은 토큰 자동 정리) ③ **푸시 탭 시 `data`의 `type/target_id/target_type/payload`로 아래 딥링크 라우팅 표 재사용**(인앱 탭 핸들러 공유). 형식 밖 토큰 422. 발송은 알림 생성 시 자동(본문은 닉네임+행위만 — 콘텐츠 내용 미포함), per-type 끄기는 v2(현재는 OS 알림 설정) |
+| **원격 푸시 (Expo)** | `POST /me/push-token` body `{token, platform}` / `DELETE /me/push-token` body `{token}` | **앱 계약**: ① 로그인 후 `expo-notifications` 권한 요청 → `getExpoPushTokenAsync()` → POST(앱 시작마다 호출해도 **멱등**, 토큰 갱신 리스너에서도 재호출) ② 로그아웃 시 DELETE(실패해도 로그아웃 진행 — 서버가 죽은 토큰 자동 정리) ③ **푸시 탭 시 `data`의 `type/target_id/target_type/payload`로 아래 딥링크 라우팅 표 재사용**(인앱 탭 핸들러 공유). 형식 밖 토큰 422. 발송은 알림 생성 시 자동(본문은 닉네임+행위만 — 콘텐츠 내용 미포함). **카테고리별 푸시 끄기는 `PATCH /me/settings`의 `notif` 그룹(v1) — 아래 "푸시 알림 설정" 참고** |
 | 알림 | `GET /notifications`, `GET /notifications/unread-count`, `PATCH /notifications/read-all`, `PATCH /notifications/{id}/read`, **`DELETE /notifications/{id}`**(스와이프 삭제 — 본인 것만, 없음/남의 것 404, 성공 204), **`DELETE /notifications`**(모두 지우기 — 멱등, 0건이어도 204) | 각 항목: `type`·`actor_nickname`·**`actor_avatar_url`**(null=이니셜 폴백)·`target_id`·`target_type`·**`payload`**(딥링크 보조 jsonb, 없으면 null). **탭 시 목적지·사용 필드는 아래 "딥링크 라우팅 표"를 그대로 따를 것** |
 
 > **알림 딥링크 라우팅 표** — 알림 탭 시 이 표대로 화면을 특정한다. **`target_type`으로 분기**하고 표의 "사용 필드"로 id를 얻는다. (대부분 `target_id`면 충분, `crew_announcement`만 `payload.crew_id` 필요.)
@@ -281,6 +281,23 @@ fetch(`${API_BASE}/api/me/profile`, {
 ```
 > **피드 설정 강제 (서버측)** — `allow_likes/comments` OFF면 **타인**의 kudos/좋아요·댓글이 **403 구조화**(`{error: likes_disabled|comments_disabled, message}`)로 거부됩니다(내 콘텐츠엔 항상 가능). 프론트는 이 403을 받으면 버튼 비활성 + 안내("이 사용자는 좋아요를 받지 않아요"). **404가 아닌 403인 이유**: 콘텐츠는 이미 보이는 상태(가시성 통과)라 존재 은닉 대상이 아님 — 반대로 **안 보이는 run은 설정 게이트 전에 404**(은닉 우선). `auto_publish` OFF는 저장 화면 기본 공개범위만 바꿉니다(visibility 슬라이더를 명시하면 그 값 우선). 기존 유저는 3키 전부 기본 true라 동작 변화 없음. 토글 위치는 프로필 설정 화면.
 
+> **푸시 알림 설정 (`settings.notif`, 시안 FrNotifSettings v1)** — `PATCH /me/settings {"notif":{"likes":false}}`처럼 카테고리별 토글. **키 12종**(camelCase 그대로): `master`(마스터 스위치)·`crewChallenge`·`crewNotice`·`crewChat`·`crewJoin`·`likes`·`comments`·`followers`·`runReminder`·`weekly`·`pb`·`marketing`. **기본 전부 ON**(`marketing`만 OFF) → 기존 유저 동작 변화 0.
+>
+> **게이트 대상은 푸시만** — **인앱 알림(`GET /notifications`)은 이 설정과 무관하게 항상 생성**됩니다. 설정은 원격 푸시(Expo) 발송 여부만 제어. `master` OFF면 전 카테고리 푸시 스킵, 아니면 알림 type의 카테고리 토글을 확인해 스킵/발송.
+>
+> **알림 type → 카테고리 매핑** (프론트가 "무엇을 끄면 무엇이 안 오는지" 안내용):
+> | 카테고리 | 꺼지는 푸시 |
+> |---|---|
+> | `likes` | 코스 좋아요·러닝 응원(kudos) |
+> | `comments` | 코스·러닝 댓글 |
+> | `followers` | 팔로우·팔로우 요청·요청 수락 (팔로우 관계 알림 전부 — 승인제 2종 포함, 전용 토글 없이 이 계열로 묶임) |
+> | `crewJoin` | 크루 가입·가입 신청·신청 승인·(크루 초대) |
+> | `crewNotice` | 크루 공지 |
+> | `crewChallenge` | 크루 챌린지 달성 |
+> | `crewChat` | 크루 채팅 *(발송은 채팅 v2 — 토글은 선반영)* |
+>
+> **발송 주체가 아직 없는 토글**: `runReminder`·`weekly`·`pb`(러닝 리마인더·주간 리포트·개인기록 축하)와 `marketing`은 **키는 저장되지만 현재 서버 발송 기능이 없습니다** — 프론트는 토글을 노출·저장하되 "예약 알림은 준비 중" 정도로 두면 됩니다. **각 발송 기능이 생기는 사이클에서 이 토글에 게이트를 연결**할 예정(PB는 러닝 저장 시 감지 가능 → 백로그 소품).
+>
 > **theme/lang 구현 힌트**: 로컬 캐시 + 서버 동기화 권장 — 첫 프레임(로그인 전·오프라인)은 AsyncStorage 캐시로 그리고, 로그인 후 `GET /me/settings` 값으로 갱신하세요.
 >
 > **ai_course/weather는 실제 파이프라인에 반영됩니다** (전 티어 공통, 무료 포함 — 2026-07-09 티어 결정 ⓐ 확정: 생성 기능이 free 주3회로 열려 있어 설정도 개방, 차등은 쿼터로. 시안의 프리미엄 잠금은 제거됨·설정 UI도 전 티어):

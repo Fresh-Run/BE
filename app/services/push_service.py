@@ -24,6 +24,29 @@ _MAX_TOKENS_PER_USER = 10  # 감사 M-B: 초과 등록 시 오래된 것 정리 
 
 # type별 본문 템플릿 — {nickname} 치환. 제목은 앱명 고정.
 _TITLE = "FreshRun"
+# 알림 type → NotifSettings 카테고리 토글 키 (시안 FrNotifSettings).
+# 매핑 없는 type은 카테고리 게이트 없이 master만 적용(안전 기본 — 신규 type이
+# 매핑보다 먼저 생겨도 master ON이면 발송). 승인제 2종(follow_requested·
+# follow_request_approved)은 전용 토글이 없어 followers 계열로 묶음(팔로우 관계
+# 알림). crew_invited·crew_chat은 선등록 type이라 매핑만(발송은 각 기능 사이클).
+_CATEGORY: dict[str, str] = {
+    "route_liked": "likes",
+    "run_kudoed": "likes",
+    "route_commented": "comments",
+    "run_commented": "comments",
+    "user_followed": "followers",
+    "follow_requested": "followers",
+    "follow_request_approved": "followers",
+    "crew_joined": "crewJoin",
+    "join_requested": "crewJoin",
+    "join_approved": "crewJoin",
+    "crew_invited": "crewJoin",          # 선등록
+    "crew_announcement": "crewNotice",
+    "challenge_completed": "crewChallenge",
+    "crew_chat": "crewChat",             # 선등록
+}
+
+
 _TEMPLATES: dict[str, dict[str, str]] = {
     "route_liked": {"ko": "{nickname}님이 회원님의 코스를 좋아해요",
                     "en": "{nickname} liked your course"},
@@ -131,6 +154,17 @@ async def send_for_notification(
             profile_service.get_nicknames([actor_id]),
             profile_service.get_settings(recipient_id),
         )
+        # 푸시 발송 게이트 (인앱 알림은 이미 저장됨 — 여기선 푸시만 스킵).
+        # master OFF → 전부 스킵. 아니면 해당 카테고리 토글 확인. 미설정 유저는
+        # NotifSettings 기본값(전부 True, marketing만 False)이라 정상 발송.
+        notif = recipient_settings.notif
+        if not notif.master:
+            logger.info("푸시 스킵: master OFF (recipient=%s, type=%s)", recipient_id, type)
+            return
+        category = _CATEGORY.get(type)
+        if category is not None and not getattr(notif, category):
+            logger.info("푸시 스킵: %s OFF (recipient=%s, type=%s)", category, recipient_id, type)
+            return
         lang = recipient_settings.lang if recipient_settings.lang in ("ko", "en") else "ko"
         body = template[lang].format(nickname=nicknames.get(actor_id) or "러너")
 

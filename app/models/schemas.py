@@ -211,6 +211,31 @@ class FeedSettings(BaseModel):
     allow_comments: bool = True
 
 
+class NotifSettings(BaseModel):
+    """푸시 알림 설정 (시안 FrNotifSettings — 프론트 키 그대로 camelCase).
+
+    기본 전부 True(marketing만 False) → 기존 유저는 미설정=기본 발송(breaking 0).
+    게이트 대상은 **푸시만** — 인앱 알림은 이 설정과 무관하게 항상 생성.
+    runReminder·weekly·pb는 서버 발송 주체가 아직 없음(키만 보관, 향후 각 기능
+    사이클에서 게이트 연결). marketing도 발송 기능 없음. → docs API_GUIDE 표.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    master: bool = True          # 마스터 스위치 — OFF면 전 카테고리 푸시 스킵
+    crewChallenge: bool = True   # challenge_completed
+    crewNotice: bool = True      # crew_announcement
+    crewChat: bool = True        # crew_chat (선등록 — 발송은 채팅 v2)
+    crewJoin: bool = True         # crew_joined, join_requested, join_approved, crew_invited(선등록)
+    likes: bool = True            # route_liked, run_kudoed
+    comments: bool = True         # route_commented, run_commented
+    followers: bool = True        # user_followed, follow_requested, follow_request_approved
+    runReminder: bool = True      # (발송 주체 없음 — 향후)
+    weekly: bool = True           # (발송 주체 없음 — 향후)
+    pb: bool = True               # (발송 주체 없음 — PB 저장 시 감지 가능, 백로그)
+    marketing: bool = False       # (발송 기능 없음 — 기본 OFF)
+
+
 class UserSettings(BaseModel):
     """GET /me/settings 응답 — 항상 완전한 객체 (기본값 머지됨)."""
 
@@ -224,6 +249,7 @@ class UserSettings(BaseModel):
     weather: WeatherSettings = Field(default_factory=WeatherSettings)
     audio_coach: AudioCoachSettings = Field(default_factory=AudioCoachSettings)
     feed: FeedSettings = Field(default_factory=FeedSettings)
+    notif: NotifSettings = Field(default_factory=NotifSettings)
 
 
 class RunSettingsPatch(BaseModel):
@@ -276,6 +302,23 @@ class FeedSettingsPatch(BaseModel):
     allow_comments: Optional[bool] = None
 
 
+class NotifSettingsPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    master: Optional[bool] = None
+    crewChallenge: Optional[bool] = None
+    crewNotice: Optional[bool] = None
+    crewChat: Optional[bool] = None
+    crewJoin: Optional[bool] = None
+    likes: Optional[bool] = None
+    comments: Optional[bool] = None
+    followers: Optional[bool] = None
+    runReminder: Optional[bool] = None
+    weekly: Optional[bool] = None
+    pb: Optional[bool] = None
+    marketing: Optional[bool] = None
+
+
 class SettingsPatch(BaseModel):
     """PATCH /me/settings 입력 — 보낸 키만 deep merge. 허용 외 키/값은 422."""
 
@@ -289,6 +332,7 @@ class SettingsPatch(BaseModel):
     weather: Optional[WeatherSettingsPatch] = None
     audio_coach: Optional[AudioCoachSettingsPatch] = None
     feed: Optional[FeedSettingsPatch] = None
+    notif: Optional[NotifSettingsPatch] = None
 
 
 # --- Weather ------------------------------------------------------------------
