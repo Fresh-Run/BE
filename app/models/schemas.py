@@ -1164,6 +1164,53 @@ class CrewRoleResponse(BaseModel):
     role: str
 
 
+# ── 크루 채팅 (docs/CREW_CHAT_DESIGN.md) ──────────────────────────────────────
+
+CHAT_EMOJIS = ("👍", "🔥", "👏", "💪")   # 고정 4종 (단일 소스)
+
+
+class ChatMessageCreate(BaseModel):
+    """POST /crews/{id}/chat/messages — v1은 text만 (system/run_share는 v1.5)."""
+
+    content: str = Field(..., min_length=1, max_length=2000)
+
+
+class ChatReactRequest(BaseModel):
+    """POST/DELETE /crews/{id}/chat/messages/{mid}/react."""
+
+    emoji: Literal["👍", "🔥", "👏", "💪"]
+
+
+class ChatMuteRequest(BaseModel):
+    muted: bool
+
+
+class ChatMessageResponse(BaseModel):
+    """채팅 메시지 1건 — 발신자 프로필·반응 집계 포함."""
+
+    id: str
+    crew_id: str
+    sender_id: Optional[str] = Field(None, description="탈퇴 작성자는 null(익명화).")
+    sender_nickname: Optional[str] = None
+    sender_avatar_url: Optional[str] = None
+    type: str = Field("text", description="text / system / run_share.")
+    content: Optional[str] = Field(None, description="삭제된 메시지는 null.")
+    payload: Optional[dict] = None
+    created_at: str
+    reactions: dict[str, int] = Field(
+        default_factory=dict, description="이모지별 카운트 (0인 이모지는 생략)."
+    )
+    my_reactions: list[str] = Field(
+        default_factory=list, description="조회자가 누른 이모지 목록."
+    )
+    deleted: bool = Field(False, description="soft 삭제 여부 (content=null).")
+
+
+class ChatUnreadResponse(BaseModel):
+    unread_count: int
+    muted: bool = Field(False, description="이 방 채팅 mute 상태.")
+
+
 class CrewRankingEntry(BaseModel):
     """One entry in the crew weekly distance ranking."""
 

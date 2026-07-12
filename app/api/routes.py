@@ -28,6 +28,11 @@ from app.models.schemas import (
     CrewCreate,
     CrewMemberResponse,
     CrewRankingEntry,
+    ChatMessageCreate,
+    ChatMessageResponse,
+    ChatMuteRequest,
+    ChatReactRequest,
+    ChatUnreadResponse,
     CrewRoleResponse,
     CrewRoleUpdate,
     CrewResponse,
@@ -82,6 +87,7 @@ from app.services import (
     notification_service,
     profile_service,
     push_service,
+    chat_service,
     quota_service,
     route_service,
     run_service,
@@ -101,6 +107,27 @@ def _bad_gateway(context: str, exc: Exception) -> HTTPException:
     """
     logger.warning("%s: %s", context, exc, exc_info=True)
     return HTTPException(status_code=502, detail="일시적인 서버 오류입니다. 잠시 후 다시 시도해 주세요.")
+
+
+def _parse_before_cursor(before: str | None) -> str | None:
+    """ISO 8601+tz 커서 검증 (단일 소스 — /runs·/chat 공용).
+
+    감사 M-A: '+'를 URL 인코딩 안 한 흔한 실수는 공백으로 도착 → tz 오프셋
+    위치의 공백만 '+'로 복원. tz 없으면 422 (naive는 UTC 오해석 방지).
+    """
+    if before is None:
+        return None
+    before = re.sub(r" (\d{2}:?\d{2})$", r"+\1", before)
+    try:
+        parsed = datetime.fromisoformat(before)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="before must be ISO 8601")
+    if parsed.tzinfo is None:
+        raise HTTPException(
+            status_code=422,
+            detail="before must include a timezone offset (e.g. +09:00 or Z)",
+        )
+    return before
 
 
 @router.get("/me", response_model=CurrentUser, summary="Who am I (auth check)")
@@ -985,19 +1012,7 @@ async def list_runs(
     before: 커서 페이지네이션 — 직전 페이지 마지막 run의 ran_at(ISO 8601 +
     타임존)을 그대로 보내면 그 이전 run들이 온다. 응답이 limit보다 짧으면 끝.
     """
-    if before is not None:
-        # 감사 M-A: '+'를 URL 인코딩 안 한 흔한 실수는 공백으로 도착 —
-        # tz 오프셋 위치의 공백만 '+'로 복원 (다른 공백 사용처는 그대로 422)
-        before = re.sub(r" (\d{2}:?\d{2})$", r"+\1", before)
-        try:
-            parsed = datetime.fromisoformat(before)
-        except ValueError:
-            raise HTTPException(status_code=422, detail="before must be ISO 8601")
-        if parsed.tzinfo is None:
-            raise HTTPException(
-                status_code=422,
-                detail="before must include a timezone offset (e.g. +09:00 or Z)",
-            )
+    before = _parse_before_cursor(before)
     try:
         return await run_service.list_runs(
             user_id=user.user_id, limit=limit, route_id=route_id, before=before
@@ -2109,6 +2124,160 @@ async def rsvp_announcement(
         )
     except Exception as exc:  # noqa: BLE001
         raise _bad_gateway("Failed to submit RSVP", exc)
+
+
+# --- Crew chat (docs/CREW_CHAT_DESIGN.md v1) ---------------------------------
+# 크루원만(비크루원·미존재 모두 404 은닉). 고정 경로(unread/read/mute)는
+# /{message_id} 패턴보다 위 — 여기선 세그먼트가 겹치지 않아 순서 무관.
+
+
+def _chat_404_403(exc: Exception) -> HTTPException:
+    """채팅 공용 에러 매핑 — 크루 없음·비크루원·메시지 없음은 전부 404 은닉."""
+    if isinstance(exc, (crew_service.CrewNotFound, crew_service.CrewAccessDenied,
+                        chat_service.MessageNotFound)):
+        return HTTPException(status_code=404, detail="Not found")
+    if isinstance(exc, chat_service.NotDeletable):
+        return HTTPException(status_code=403, detail="Cannot delete this message")
+    return _bad_gateway("Chat operation failed", exc)
+
+
+@router.get(
+    "/crews/{crew_id}/chat/messages",
+    response_model=list[ChatMessageResponse],
+    summary="채팅 메시지 목록 (역순 커서, 크루원)",
+)
+async def list_chat_messages(
+    crew_id: str,
+    limit: int = 30,
+    before: str | None = None,
+    user: CurrentUser = Depends(get_current_user),
+) -> list[ChatMessageResponse]:
+    """최신→과거 역순. 다음 페이지는 `before=<마지막(가장 오래된) created_at>`."""
+    before = _parse_before_cursor(before)
+    try:
+        return await chat_service.list_messages(
+            crew_id, caller_id=user.user_id, limit=limit, before=before
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise _chat_404_403(exc)
+
+
+@router.post(
+    "/crews/{crew_id}/chat/messages",
+    response_model=ChatMessageResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="채팅 메시지 전송 (text, 크루원)",
+)
+async def post_chat_message(
+    crew_id: str,
+    req: ChatMessageCreate,
+    user: CurrentUser = Depends(get_current_user),
+) -> ChatMessageResponse:
+    try:
+        return await chat_service.post_message(crew_id, user.user_id, req.content)
+    except Exception as exc:  # noqa: BLE001
+        raise _chat_404_403(exc)
+
+
+@router.get(
+    "/crews/{crew_id}/chat/unread",
+    response_model=ChatUnreadResponse,
+    summary="안 읽은 수 + mute 상태 (배지용)",
+)
+async def chat_unread(
+    crew_id: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> ChatUnreadResponse:
+    try:
+        return await chat_service.unread(crew_id, user.user_id)
+    except Exception as exc:  # noqa: BLE001
+        raise _chat_404_403(exc)
+
+
+@router.post(
+    "/crews/{crew_id}/chat/read",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="읽음 처리 (last_read_at = now)",
+)
+async def chat_mark_read(
+    crew_id: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> Response:
+    try:
+        await chat_service.mark_read(crew_id, user.user_id)
+    except Exception as exc:  # noqa: BLE001
+        raise _chat_404_403(exc)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.patch(
+    "/crews/{crew_id}/chat/mute",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="방별 채팅 mute 토글 (전역 알림과 독립)",
+)
+async def chat_set_mute(
+    crew_id: str,
+    req: ChatMuteRequest,
+    user: CurrentUser = Depends(get_current_user),
+) -> Response:
+    try:
+        await chat_service.set_mute(crew_id, user.user_id, req.muted)
+    except Exception as exc:  # noqa: BLE001
+        raise _chat_404_403(exc)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    "/crews/{crew_id}/chat/messages/{message_id}/react",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="이모지 반응 (👍🔥👏💪, 멱등)",
+)
+async def chat_react(
+    crew_id: str,
+    message_id: str,
+    req: ChatReactRequest,
+    user: CurrentUser = Depends(get_current_user),
+) -> Response:
+    try:
+        await chat_service.react(crew_id, user.user_id, message_id, req.emoji)
+    except Exception as exc:  # noqa: BLE001
+        raise _chat_404_403(exc)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.delete(
+    "/crews/{crew_id}/chat/messages/{message_id}/react",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="이모지 반응 취소 (멱등)",
+)
+async def chat_unreact(
+    crew_id: str,
+    message_id: str,
+    req: ChatReactRequest,
+    user: CurrentUser = Depends(get_current_user),
+) -> Response:
+    try:
+        await chat_service.unreact(crew_id, user.user_id, message_id, req.emoji)
+    except Exception as exc:  # noqa: BLE001
+        raise _chat_404_403(exc)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.delete(
+    "/crews/{crew_id}/chat/messages/{message_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="메시지 삭제 (본인·운영진, soft — system 불가)",
+)
+async def delete_chat_message(
+    crew_id: str,
+    message_id: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> Response:
+    try:
+        await chat_service.delete_message(crew_id, user.user_id, message_id)
+    except Exception as exc:  # noqa: BLE001
+        raise _chat_404_403(exc)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # --- Notifications -----------------------------------------------------------
