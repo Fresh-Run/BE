@@ -69,3 +69,26 @@ async def get_optional_user(
     if credentials is None or not credentials.credentials:
         return None
     return await get_current_user(credentials)
+
+
+def _admin_ids() -> set[str]:
+    """ADMIN_USER_IDS(콤마구분 UUID) → set. 미설정이면 빈 set(전원 404 fail-safe).
+
+    매 호출 파싱(문자열 split 1회 — 비용 무시 가능)이라 secret 변경 시 재배포만
+    필요. 값은 절대 로그·응답에 노출하지 않는다.
+    """
+    from app.core.config import settings
+    return {u.strip() for u in settings.admin_user_ids.split(",") if u.strip()}
+
+
+async def require_admin(
+    user: CurrentUser = Depends(get_current_user),
+) -> CurrentUser:
+    """운영진 전용 의존성 (docs/REPORT_DESIGN.md §4). 비운영진은 **404**.
+
+    403이 아닌 404 = 운영 엔드포인트의 존재 자체 은닉(프로젝트 표준).
+    ADMIN_USER_IDS 미설정(빈 set)이면 전원 404 — 의도된 fail-safe.
+    """
+    if user.user_id not in _admin_ids():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not Found")
+    return user

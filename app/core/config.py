@@ -69,6 +69,11 @@ class Settings(BaseSettings):
     # 기본값 apple: 미설정 환경에서는 verify가 503으로 안전하게 닫혀 있다.
     iap_mode: Literal["apple", "mock"] = "apple"
 
+    # 운영진 화이트리스트 (docs/REPORT_DESIGN.md §4) — 콤마구분 UUID 문자열.
+    # Fly secret ADMIN_USER_IDS로 주입. 미설정(빈 값)이면 admin 엔드포인트가
+    # 전원 404 = fail-safe(의도된 안전 기본값). 값은 로그·화면에 출력 금지.
+    admin_user_ids: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:

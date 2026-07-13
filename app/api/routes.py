@@ -10,7 +10,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 
-from app.core.auth import get_current_user
+from app.core.auth import get_current_user, require_admin
 from app.models.schemas import (
     ActivityFeedItem,
     AnnouncementCreate,
@@ -61,6 +61,9 @@ from app.models.schemas import (
     ProfileResponse,
     ProfileUpdate,
     PushTokenRequest,
+    ReportCreate,
+    ReportDecision,
+    ReportItem,
     PublicProfileResponse,
     PublicRouteResponse,
     PublishRequest,
@@ -95,6 +98,7 @@ from app.services import (
     push_service,
     chat_service,
     quota_service,
+    report_service,
     route_service,
     run_service,
     weather_service,
@@ -515,6 +519,70 @@ async def list_my_blocks(
         return await follow_service.list_blocks(user.user_id, limit=limit, offset=offset)
     except Exception as exc:  # noqa: BLE001
         raise _bad_gateway("Failed to list blocks", exc)
+
+
+@router.post(
+    "/reports",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="신고 (v1: 유저 신고만)",
+)
+async def create_report(
+    req: ReportCreate,
+    user: CurrentUser = Depends(get_current_user),
+) -> Response:
+    """유저 신고 접수 — 성공/중복 pending(멱등) 모두 **204**(block·follow 관성).
+    self 400, 없는 유저·차단 관계 404 은닉. target_type은 v1 'user'만(그 외 422).
+    차단과 독립(신고가 차단을 유발하지 않음 — 프론트는 별도 2호출). 무알림."""
+    try:
+        await report_service.create_report(user.user_id, req)
+    except report_service.SelfReportNotAllowed:
+        raise HTTPException(status_code=400, detail="Cannot report yourself")
+    except report_service.ReportTargetNotFound:
+        raise HTTPException(status_code=404, detail="User not found")
+    except Exception as exc:  # noqa: BLE001
+        raise _bad_gateway("Failed to create report", exc)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get(
+    "/admin/reports",
+    response_model=list[ReportItem],
+    summary="신고 목록 (운영 전용 — 비운영진 404)",
+)
+async def list_reports(
+    report_status: str = Query("pending", alias="status",
+                               pattern="^(pending|reviewed|dismissed)$"),
+    limit: int = 20,
+    offset: int = 0,
+    admin: CurrentUser = Depends(require_admin),
+) -> list[ReportItem]:
+    """운영진 신고 목록(최신순, reporter/target 프로필 brief 포함).
+    게이트는 require_admin — 비운영진·ADMIN_USER_IDS 미설정 시 404(존재 은닉)."""
+    try:
+        return await report_service.list_reports(report_status, limit=limit, offset=offset)
+    except Exception as exc:  # noqa: BLE001
+        raise _bad_gateway("Failed to list reports", exc)
+
+
+@router.patch(
+    "/admin/reports/{report_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="신고 처리 (운영 전용 — reviewed/dismissed 단방향)",
+)
+async def decide_report(
+    report_id: str,
+    req: ReportDecision,
+    admin: CurrentUser = Depends(require_admin),
+) -> Response:
+    """pending → reviewed/dismissed(단방향 — pending 되돌리기는 스키마 422).
+    reviewed_at 기록. 없는 id·이미 처리된 신고 404."""
+    try:
+        await report_service.decide_report(report_id, status=req.status)
+    except report_service.ReportNotFound:
+        raise HTTPException(status_code=404, detail="Report not found")
+    except Exception as exc:  # noqa: BLE001
+        raise _bad_gateway("Failed to decide report", exc)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.delete(

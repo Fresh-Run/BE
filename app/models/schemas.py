@@ -1747,3 +1747,58 @@ class ChallengeResponse(BaseModel):
     progress_pct: float = Field(..., description="달성률 0~100 (소수점 1자리)")
     is_completed: bool = Field(..., description="achieved_km >= goal_km")
     is_active: bool = Field(..., description="현재 시각이 starts_at~ends_at 사이인지")
+
+
+# ── 신고 (docs/REPORT_DESIGN.md) ──────────────────────────────────────────────
+
+
+class ReportCreate(BaseModel):
+    """POST /reports 입력. v1은 target_type='user'만 오픈(Literal이 나머지 422)."""
+
+    # 오타/미지 키 422 — reason·target_type 같은 필드가 오타로 silent 무시되면
+    # 신고가 조용히 누락된다(M-7 계열, 신규 모델은 forbid 기본).
+    model_config = ConfigDict(extra="forbid")
+
+    target_type: Literal["user"] = Field(
+        ..., description="v1은 'user'만. run/댓글 등은 스키마(DB CHECK 6종)만 선반영 — API 확장 시 Literal만 넓힘."
+    )
+    target_id: str = Field(..., description="신고 대상 user_id.")
+    reason: Literal["spam", "abuse", "inappropriate", "impersonation", "other"] = Field(
+        ..., description="사유(영문 서버 키 — 한글 라벨은 프론트 몫)."
+    )
+    detail: Optional[str] = Field(
+        None, max_length=500, description="자유 서술(선택, ≤500자 — 'other' 보완용)."
+    )
+
+
+class ReportUserBrief(BaseModel):
+    """신고 목록의 reporter/target 프로필 요약."""
+
+    user_id: str
+    nickname: Optional[str] = None
+    avatar_url: Optional[str] = None
+
+
+class ReportItem(BaseModel):
+    """GET /admin/reports 한 항목 (운영 전용 — 일반 응답에 노출 금지)."""
+
+    id: str
+    reporter: ReportUserBrief
+    target_type: str
+    target_id: str
+    target: Optional[ReportUserBrief] = Field(
+        None, description="target_type='user'일 때만 프로필 요약(그 외 null)."
+    )
+    reason: str
+    detail: Optional[str] = None
+    status: str
+    created_at: str
+    reviewed_at: Optional[str] = None
+
+
+class ReportDecision(BaseModel):
+    """PATCH /admin/reports/{id} 입력 — 단방향(pending 되돌리기는 Literal 밖 422)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["reviewed", "dismissed"]
