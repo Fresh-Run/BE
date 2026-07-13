@@ -901,7 +901,13 @@ async def list_kudos_users(
     rows = res.data
     if not rows:
         return []
-    briefs = await profile_service.get_profile_briefs([r["user_id"] for r in rows])
+    kudoser_ids = [r["user_id"] for r in rows]
+    # v3.6: 차단 관계 유저는 명단에서 제외(크루 피드 카드와 동형). kudos_count는
+    # 전역 유지(뷰어별 카운트화는 전 소비처 재작업 — 목록만 필터, count 정합 주석 참고).
+    briefs, blocked = await asyncio.gather(
+        profile_service.get_profile_briefs(kudoser_ids),
+        profile_service.blocked_ids_batch(caller_id, kudoser_ids),
+    )
     return [
         KudosUserItem(
             user_id=row["user_id"],
@@ -909,7 +915,7 @@ async def list_kudos_users(
             avatar_url=briefs.get(row["user_id"], {}).get("avatar_url"),
             created_at=row["created_at"],
         )
-        for row in rows
+        for row in rows if row["user_id"] not in blocked
     ]
 
 
@@ -948,14 +954,20 @@ async def list_run_comments(
     rows = res.data
     if not rows:
         return []
-    briefs = await profile_service.get_profile_briefs([r["user_id"] for r in rows])
+    commenter_ids = [r["user_id"] for r in rows]
+    # v3.6: 차단 발신자 댓글은 목록에서 제외(마스킹 아닌 제외 — 댓글은 독립 항목이라
+    # 제거가 자연스럽고 인스타도 제외). comment_count는 전역 유지(정합 주석 참고).
+    briefs, blocked = await asyncio.gather(
+        profile_service.get_profile_briefs(commenter_ids),
+        profile_service.blocked_ids_batch(caller_id, commenter_ids),
+    )
     return [
         RunCommentResponse(
             **row,
             nickname=briefs.get(row["user_id"], {}).get("nickname"),
             avatar_url=briefs.get(row["user_id"], {}).get("avatar_url"),
         )
-        for row in rows
+        for row in rows if row["user_id"] not in blocked
     ]
 
 

@@ -1016,10 +1016,12 @@ async def create_comment(route_id: str, user_id: str, content: str) -> CommentRe
                            avatar_url=brief.get("avatar_url"))
 
 
-async def list_comments(route_id: str, limit: int = 50) -> list[CommentResponse]:
-    """Return comments on a public route, oldest first.
+async def list_comments(route_id: str, viewer_id: str, limit: int = 50) -> list[CommentResponse]:
+    """Return comments on a public route, oldest first (차단 발신자 제외 — v3.6).
 
-    Raises RouteNotFound if the route doesn't exist or is not public.
+    Raises RouteNotFound if the route doesn't exist or is not public. owner
+    잠금 게이트는 미적용 유지(공개 코스 = 공개 콘텐츠, 감사 3차 L 수용). 차단
+    필터만: viewer와 차단 관계인 작성자 댓글은 목록에서 제외.
     """
     limit = max(1, min(limit, 100))
     supabase = get_supabase_admin()
@@ -1045,11 +1047,15 @@ async def list_comments(route_id: str, limit: int = 50) -> list[CommentResponse]
     if not rows:
         return []
 
-    briefs = await profile_service.get_profile_briefs([r["user_id"] for r in rows])
+    commenter_ids = [r["user_id"] for r in rows]
+    briefs, blocked = await asyncio.gather(
+        profile_service.get_profile_briefs(commenter_ids),
+        profile_service.blocked_ids_batch(viewer_id, commenter_ids),
+    )
     return [CommentResponse(**row,
                             nickname=briefs.get(row["user_id"], {}).get("nickname"),
                             avatar_url=briefs.get(row["user_id"], {}).get("avatar_url"))
-            for row in rows]
+            for row in rows if row["user_id"] not in blocked]
 
 
 async def delete_comment(route_id: str, comment_id: str, caller_id: str) -> None:

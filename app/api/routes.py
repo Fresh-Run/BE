@@ -1001,9 +1001,9 @@ async def list_comments(
     limit: int = 50,
     user: CurrentUser = Depends(get_current_user),
 ) -> list[CommentResponse]:
-    """Return comments for a public route, oldest first."""
+    """Return comments for a public route, oldest first (차단 발신자 제외)."""
     try:
-        return await route_service.list_comments(route_id, limit=limit)
+        return await route_service.list_comments(route_id, viewer_id=user.user_id, limit=limit)
     except route_service.RouteNotFound:
         raise HTTPException(status_code=404, detail="Route not found or not public")
     except Exception as exc:  # noqa: BLE001
