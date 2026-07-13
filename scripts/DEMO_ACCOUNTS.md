@@ -31,7 +31,7 @@
 
 ### 신기능 데모 (2026-07-13 리프레시 — §13~18)
 - **지역 배정**: test1=한강로동(신용산/용산, `runs.area`), test2=청라동(인천). 정기런 참여자 데모는 **성수 demo 계정끼리**(test1/test2는 지역이 달라 안 묶임 — 각자 지역 개인런).
-- **month_rank 타일**: test1이 같은 6km 거리대 **verified 3회**(페이스 상이) → `GET /me/insights/monthly`의 `month_rank`("이번 달 N번째로 빠른 …") 뜸.
+- **month_rank 타일**: test1이 **거리 분산 verified 3회**(8·6.5·5km — 최근 5km 빠른 페이스) + §8 GPS 2회 → `GET /me/insights/monthly`의 `month_rank`가 **`best_5k` rank 2**("이번 달 2번째로 빠른 5K"). ※ 잔재 러닝이 있으면 longest_distance로 오염되니 `wipe_demo_data.py --reset-test-data`로 정리 후 재시딩.
 - **크루 채팅**: 한강 크루에 text 3 + 반응 1 + **공지 생성 시 system 메시지 자동**(정기런 공지).
 - **정기런 세션 태깅**: demo2·demo3(성수동)가 같은 날 `crew_id` 태그 러닝 → `session_key` 그룹 → 크루 피드 카드에 **`is_crew_session` 배지 + `session_participant_count`=2**.
 - **세부 권한**: demo1을 한강 크루 **admin 승격**(기본 announcements·challenges ON, edit_crew·kick·manage_admins OFF).

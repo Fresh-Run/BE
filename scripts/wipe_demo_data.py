@@ -139,5 +139,93 @@ def main() -> None:
     print("  다음: python scripts/seed_demo_data.py 로 재생성.")
 
 
+# ── test1/test2 데이터 재정리 (별도 모드 — demo 삭제와 독립) ─────────────────
+# 삭제만 하는 테이블 화이트리스트. crews·crew_members·crew_messages·blocks·
+# crew_announcements는 절대 포함 안 됨(구조적 self-assert).
+_RESET_DELETE_TABLES = frozenset({
+    "runs", "run_kudos", "route_comments", "run_comments", "follows", "monthly_insights"})
+_RESET_PROTECT_TABLES = frozenset({
+    "crews", "crew_members", "crew_messages", "blocks", "crew_announcements"})
+_RESET_EMAILS = frozenset({"test1@freshrun.com", "test2@freshrun.com"})
+
+
+def _cnt(c, table, q) -> int:
+    r = c.get(f"{_SB}/rest/v1/{table}", headers={**_ADM, "Prefer": "count=exact"},
+              params={**q, "select": "*", "limit": 1})
+    return int(r.headers.get("content-range", "?/0").split("/")[-1])
+
+
+def reset_test_data(c, execute: bool) -> None:
+    """test1·test2의 **본인 러닝·소셜·팔로우만** 삭제 — 계정·크루·크루멤버십·
+    crew_messages·blocks·route_generations·body_info는 무접촉. 재시딩 §13이 유일한
+    지역 러닝이 되게 정리(month_rank 정합)."""
+    # 구조적 self-assert: 삭제 테이블에 보호 테이블 부재
+    assert _RESET_DELETE_TABLES.isdisjoint(_RESET_PROTECT_TABLES), "FATAL: 삭제/보호 테이블 겹침"
+
+    users = _all_auth_users(c)
+    by_email = {u.get("email"): u["id"] for u in users if u.get("email")}
+    uids = {e: by_email[e] for e in _RESET_EMAILS if e in by_email}
+    assert set(uids) == _RESET_EMAILS, "FATAL: test1/test2 uid 해석 실패"
+    uid_list = list(uids.values())
+    in_uids = f"({','.join(uid_list)})"
+
+    # 보존 대상 BEFORE 스냅샷 (사후 불변 검증용)
+    before = {
+        "crews": sum(_cnt(c, "crews", {"owner_id": f"eq.{u}"}) for u in uid_list),
+        "crew_members": sum(_cnt(c, "crew_members", {"user_id": f"eq.{u}"}) for u in uid_list),
+        "crew_messages": sum(_cnt(c, "crew_messages", {"sender_id": f"eq.{u}"}) for u in uid_list),
+        "blocks": _cnt(c, "blocks", {}),
+        "route_generations": sum(_cnt(c, "route_generations", {"user_id": f"eq.{u}"}) for u in uid_list),
+    }
+    print("=" * 60)
+    print(f"test1/test2 데이터 재정리 {'(실제 삭제)' if execute else '(DRY-RUN)'}")
+    print("=" * 60)
+    print(f"\n대상: {sorted(uids)}")
+    print("\n▼ 삭제 대상 (본인 러닝·소셜·팔로우):")
+    print(f"  runs: {sum(_cnt(c,'runs',{'user_id':f'eq.{u}'}) for u in uid_list)} (+cascade run_tracks·남의 kudos/댓글·photos)")
+    print(f"  준 run_kudos: {_cnt(c,'run_kudos',{'user_id':f'in.{in_uids}'})}")
+    print(f"  준 route_comments: {_cnt(c,'route_comments',{'user_id':f'in.{in_uids}'})} · run_comments: {_cnt(c,'run_comments',{'user_id':f'in.{in_uids}'})}")
+    print(f"  follows(양방향): follower {_cnt(c,'follows',{'follower_id':f'in.{in_uids}'})} + following {_cnt(c,'follows',{'following_id':f'in.{in_uids}'})}")
+    print(f"  monthly_insights: {_cnt(c,'monthly_insights',{'user_id':f'in.{in_uids}'})}")
+    print(f"\n▼ 보존(무접촉): 계정·소유크루 {before['crews']}·크루멤버십 {before['crew_members']}·"
+          f"crew_messages {before['crew_messages']}·blocks {before['blocks']}·route_generations {before['route_generations']}·body_info·coach")
+
+    if not execute:
+        print("\n[DRY-RUN] 실제 삭제:  python scripts/wipe_demo_data.py --reset-test-data --yes")
+        return
+
+    print("\n실행 중…")
+    def d(table, params):
+        assert table in _RESET_DELETE_TABLES, f"FATAL: 허용 안 된 테이블 삭제 시도 {table}"
+        c.delete(f"{_SB}/rest/v1/{table}", headers=_ADM, params=params)
+    d("run_kudos", {"user_id": f"in.{in_uids}"})          # 준 kudos(남의 run)
+    d("route_comments", {"user_id": f"in.{in_uids}"})
+    d("run_comments", {"user_id": f"in.{in_uids}"})
+    d("follows", {"follower_id": f"in.{in_uids}"})        # 양방향
+    d("follows", {"following_id": f"in.{in_uids}"})
+    d("monthly_insights", {"user_id": f"in.{in_uids}"})
+    d("runs", {"user_id": f"in.{in_uids}"})               # 마지막 — cascade 파생
+    print("  삭제 완료")
+
+    # 사후 검증: 삭제 대상 0 + 보존 대상 불변
+    after = {
+        "crews": sum(_cnt(c, "crews", {"owner_id": f"eq.{u}"}) for u in uid_list),
+        "crew_members": sum(_cnt(c, "crew_members", {"user_id": f"eq.{u}"}) for u in uid_list),
+        "crew_messages": sum(_cnt(c, "crew_messages", {"sender_id": f"eq.{u}"}) for u in uid_list),
+        "blocks": _cnt(c, "blocks", {}),
+        "route_generations": sum(_cnt(c, "route_generations", {"user_id": f"eq.{u}"}) for u in uid_list),
+    }
+    assert before == after, f"FATAL: 보존 데이터 변동! before={before} after={after}"
+    remain = sum(_cnt(c, "runs", {"user_id": f"eq.{u}"}) for u in uid_list)
+    assert remain == 0, f"FATAL: test1/test2 run 잔존 {remain}"
+    alive = {u.get("email") for u in _all_auth_users(c)}
+    assert _RESET_EMAILS <= alive, "FATAL: test1/test2 계정 소실!"
+    print(f"\n✓ 완료. test1/test2 러닝·소셜·팔로우 삭제 · 크루 데이터 불변({after}) · 계정 보존.")
+    print("  다음: python scripts/seed_demo_data.py 로 지역 러닝 재생성.")
+
+
 if __name__ == "__main__":
-    main()
+    if "--reset-test-data" in sys.argv:
+        reset_test_data(httpx.Client(timeout=30), "--yes" in sys.argv)
+    else:
+        main()

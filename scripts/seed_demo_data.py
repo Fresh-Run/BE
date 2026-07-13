@@ -696,13 +696,21 @@ def main():
         t1_runs = api(c, "GET", "/runs", t1, params={"limit": 50}).json()
         if not any(r.get("area") == "한강로동" for r in t1_runs):
             now = datetime.now(timezone.utc)
-            # 같은 6km 거리대 verified 3회(페이스 상이) → month_rank 타일(best_5k/pace)
-            for d, pace in [(1, 345), (3, 330), (5, 360)]:
-                ran = (now - timedelta(days=d)).astimezone(_KST).replace(hour=6, minute=10, second=0, microsecond=0)
-                _insert_run_ex(uid1, ran.astimezone(timezone.utc).isoformat(), 6.0,
-                               area="한강로동", verification="verified", pace=pace)
+            # month_rank = best_5k 노림: 거리 분산 + **최근(d=0)이 짧고 빠름**.
+            # (days_ago, km, pace) — 8km느림·6.5km빠름·5km(최근)빠름. best_5k 환산에서
+            # 최근 5km@320(t5k 1600)이 6.5km@305(t5k 1525)에만 뒤져 **rank 2**,
+            # longest_distance는 최근 5km가 하위 → best_5k(동순위 우선순위상)로 선정.
+            # 최근 run은 d=0(now)이라 §8 GPS run(now())보다도 나중 = "이번 기록".
+            for d, km, pace in [(4, 8.0, 400), (2, 6.5, 305), (0, 5.0, 320)]:
+                if d == 0:
+                    ran_utc = datetime.now(timezone.utc).isoformat()   # §8 이후 = 최근
+                else:
+                    ran_utc = ((now - timedelta(days=d)).astimezone(_KST)
+                               .replace(hour=6, minute=10, second=0, microsecond=0)
+                               .astimezone(timezone.utc).isoformat())
+                _insert_run_ex(uid1, ran_utc, km, area="한강로동", verification="verified", pace=pace)
             made["runs"] += 3
-            log("  test1 한강로동 6km verified 3회 (month_rank 타일용)")
+            log("  test1 한강로동 verified 3회(8·6.5·5km, 최근 5km 빠름) → month_rank best_5k")
         else:
             log("  test1 한강로동 러닝 이미 있음 — 스킵")
         t2_runs = api(c, "GET", "/runs", t2, params={"limit": 50}).json()
