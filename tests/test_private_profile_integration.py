@@ -81,7 +81,7 @@ def run_tests():
         for i, vis in enumerate(("public", "followers", "private")):
             d = api(c, "POST", "/runs", tk["o"], json={
                 "distance_km": 2.0, "duration_sec": 720, "visibility": vis,
-                "gps_track": _track(2.0), "ran_at": (now - timedelta(hours=3 - i)).isoformat()}).json()
+                "gps_track": _track(2.0)}).json()
             runs[vis] = d["id"]
         ok("유저 4명 + F팔로우·M크루 + run public/followers/private")
 

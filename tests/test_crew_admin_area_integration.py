@@ -160,7 +160,7 @@ def run_tests():
         step("5. run.area — 저장·편집·타인 상세·크루 피드·검증")
         r = api(c, "POST", "/runs", tok["m"], json={
             "distance_km": 3.0, "duration_sec": 1200, "visibility": "public",
-            "area": "성수동", "ran_at": (now - timedelta(hours=2)).isoformat()})
+            "area": "성수동"})
         assert r.status_code == 200 and r.json()["area"] == "성수동", r.text[:200]
         rid = r.json()["id"]
         assert api(c, "GET", f"/runs/{rid}", tok["o"]).json()["area"] == "성수동", \
@@ -171,14 +171,13 @@ def run_tests():
         card = next(x for x in feed if x["run_id"] == rid)
         assert card["area"] == "뚝섬", f"크루 피드 카드 area: {card.get('area')}"
         assert api(c, "POST", "/runs", tok["m"], json={
-            "distance_km": 1.0, "duration_sec": 400, "area": "가" * 51,
-            "ran_at": now.isoformat()}).status_code == 422, "51자 422"
+            "distance_km": 1.0, "duration_sec": 400, "area": "가" * 51}).status_code == 422, "51자 422"
         ok("저장→타인 상세→편집→크루 카드 + 51자 422 ✓")
 
         step("6. 트랙 거리 수정 — 0.2km 미만 server_distance_km > 0")
         r = api(c, "POST", "/runs", tok["m"], json={
             "distance_km": 0.17, "duration_sec": 60, "visibility": "public",
-            "gps_track": short_track(), "ran_at": now.isoformat()})
+            "gps_track": short_track()})
         assert r.status_code == 200, r.text[:250]
         d = r.json()
         assert d["has_track"], "짧은 트랙도 저장"

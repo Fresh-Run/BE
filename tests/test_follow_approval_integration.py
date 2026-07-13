@@ -74,8 +74,7 @@ def run_tests():
         assert api(c, "POST", f"/users/{uids['o']}/follow", tk["e"]).status_code == 204
         # O 러닝 (followers 공개 — 승인된 팔로워만 봄)
         run = api(c, "POST", "/runs", tk["o"], json={
-            "distance_km": 2.0, "duration_sec": 720, "visibility": "followers",
-            "ran_at": datetime.now(timezone.utc).isoformat()}).json()["id"]
+            "distance_km": 2.0, "duration_sec": 720, "visibility": "followers"}).json()["id"]
         ok("유저 4명 + E 선팔로우 + O followers run")
 
         step("1. 승인제 OFF일 때 — 즉시 204 (현행)")

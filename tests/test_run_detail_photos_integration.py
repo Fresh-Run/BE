@@ -86,7 +86,7 @@ def run_tests():
         for i, vis in enumerate(("public", "followers", "private")):
             r = api(c, "POST", "/runs", tok_a, json={
                 "distance_km": 5.0, "duration_sec": 1800, "visibility": vis,
-                "notes": SECRET_NOTE, "ran_at": iso_hours_ago(3 - i)})
+                "notes": SECRET_NOTE})
             assert r.status_code == 200, r.text[:200]
             runs[vis] = r.json()["id"]
         ok("유저 3명 + run 3종(전부 비밀 메모 포함)")

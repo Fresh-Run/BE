@@ -956,6 +956,10 @@ class GpsPoint(BaseModel):
     """gps_track 한 포인트 — 좌표는 느슨하게 받고(서비스 bbox 밖은 파이프라인이
     조용히 제거) 검증은 서버 파이프라인의 몫."""
 
+    # 오타/미지 키는 422 — 값(bbox)은 느슨하되 **키는 엄격**. 중첩 gps_track 원소의
+    # 오타(latitide 등)로 좌표가 조용히 누락되던 갭 봉쇄(RunRequest forbid와 짝).
+    model_config = ConfigDict(extra="forbid")
+
     lat: float
     lng: float
     t: int = Field(..., description="epoch milliseconds")
@@ -974,6 +978,11 @@ class RunSplit(BaseModel):
 
 class RunRequest(BaseModel):
     """Input from the client to log an actual run."""
+
+    # 오타/미지 키는 422 — M-7 확장(코어 패스라 지연됐던 최고위험 모델). visibilty
+    # 오타로 private 의도가 public(기본)으로 저장되던 프라이버시 갭 봉쇄. RunUpdate·
+    # ProfileUpdate·Crew*와 정합. 중첩 gps_track 원소(GpsPoint)도 forbid.
+    model_config = ConfigDict(extra="forbid")
 
     route_id: Optional[str] = Field(
         None,

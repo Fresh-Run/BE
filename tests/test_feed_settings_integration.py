@@ -75,7 +75,7 @@ def run_tests():
         now = datetime.now(timezone.utc)
         run = api(c, "POST", "/runs", tk["o"], json={
             "distance_km": 2.0, "duration_sec": 720, "visibility": "public",
-            "gps_track": _track(2.0), "ran_at": now.isoformat()}).json()["id"]
+            "gps_track": _track(2.0)}).json()["id"]
         route = c.post(f"{_SB}/rest/v1/routes", headers={**_ADM, "Prefer": "return=representation"},
                        json={"user_id": uids["o"], "summary": f"FS코스{TS}", "target_distance_km": 3.0,
                              "total_distance_km": 3.0, "estimated_duration_min": 20, "waypoints": [],
@@ -121,8 +121,7 @@ def run_tests():
 
         step("5. 가시성 우선 — 안 보이는 run은 설정 게이트 전에 404")
         priv = api(c, "POST", "/runs", tk["o"], json={
-            "distance_km": 1.0, "duration_sec": 400, "visibility": "private",
-            "ran_at": now.isoformat()}).json()["id"]
+            "distance_km": 1.0, "duration_sec": 400, "visibility": "private"}).json()["id"]
         # V는 private run 못 봄 → likes_disabled(403)가 아니라 404 (은닉 우선)
         r = api(c, "POST", f"/runs/{priv}/kudos", tk["v"])
         assert r.status_code == 404, f"가시성 404 우선, got {r.status_code}"
@@ -131,10 +130,10 @@ def run_tests():
         step("6. auto_publish OFF — 미지정 private·명시 존중")
         assert api(c, "PATCH", "/me/settings", tk["o"], json={"feed": {"auto_publish": False}}).status_code == 200
         r1 = api(c, "POST", "/runs", tk["o"], json={
-            "distance_km": 1.5, "duration_sec": 600, "ran_at": now.isoformat()})  # visibility 미지정
+            "distance_km": 1.5, "duration_sec": 600})  # visibility 미지정
         assert r1.json()["visibility"] == "private", f"미지정 → private: {r1.json()['visibility']}"
         r2 = api(c, "POST", "/runs", tk["o"], json={
-            "distance_km": 1.5, "duration_sec": 600, "visibility": "public", "ran_at": now.isoformat()})
+            "distance_km": 1.5, "duration_sec": 600, "visibility": "public"})
         assert r2.json()["visibility"] == "public", "명시 public 존중"
         ok("auto_publish OFF: 미지정 private · 명시 public 존중")
 

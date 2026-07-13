@@ -73,10 +73,12 @@ def make_track(distance_km: float, pace_s_per_km: int = 360):
              "t": t0 + i * dt_ms, "acc": 5.0} for i in range(n)]
 
 
-def post_run(c, token, distance_km, duration_sec, ran_at, visibility="public",
+def post_run(c, token, distance_km, duration_sec, ran_at=None, visibility="public",
              with_track=True, pace_s_per_km=None):
+    # ran_at는 서버가 now()로 강제(create_run) — 바디로 보내면 forbid 422. 파라미터는
+    # 호출부 시그니처 보존용으로 남기되 body에 넣지 않는다(전송해도 무시되던 dead payload).
     body = {"distance_km": distance_km, "duration_sec": duration_sec,
-            "visibility": visibility, "ran_at": ran_at}
+            "visibility": visibility}
     if with_track:
         pace = pace_s_per_km or round(duration_sec / distance_km)
         body["gps_track"] = make_track(distance_km, pace)

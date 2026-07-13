@@ -110,7 +110,7 @@ def run_tests():
         rest_insert(c, "preferences", {"user_id": a_uid, "distance_pref": 5})
         r = api(c, "POST", "/runs", tok_a, json={
             "distance_km": 2.0, "duration_sec": 480, "visibility": "public",
-            "ran_at": "2026-07-08T10:00:00+09:00", "gps_track": make_track()})
+            "gps_track": make_track()})
         assert r.status_code in (200, 201), r.text[:300]
         run_a = r.json()["id"]
         assert rest_count(c, "run_tracks", {"run_id": f"eq.{run_a}"}) == 1, "GPS 궤적 저장 확인"

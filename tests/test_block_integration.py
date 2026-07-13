@@ -81,7 +81,7 @@ def run_tests():
                   "acc": 5.0} for i in range(20)]
         run = api(c, "POST", "/runs", tk["b"], json={
             "distance_km": 2.0, "duration_sec": 720, "visibility": "public",
-            "gps_track": track, "ran_at": now.isoformat()}).json()["id"]
+            "gps_track": track}).json()["id"]
         summ = f"BLK코스{TS}"
         c.post(f"{_SB}/rest/v1/routes", headers=_ADM, json={
             "user_id": uids["b"], "summary": summ, "target_distance_km": 3.0,

@@ -62,7 +62,7 @@ def make_run(c, token, n_points, duration_sec):
               "acc": 5.0} for i in range(n_points)]
     r = api(c, "POST", "/runs", token, json={
         "distance_km": 1.0, "duration_sec": duration_sec, "visibility": "public",
-        "gps_track": track, "ran_at": now.isoformat()})
+        "gps_track": track})
     assert r.status_code == 200, r.text[:200]
     return r.json()
 

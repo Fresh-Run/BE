@@ -82,11 +82,11 @@ def run_tests():
         now = datetime.now(timezone.utc)
         run_b = api(c, "POST", "/runs", tok_b, json={
             "distance_km": 3.0, "duration_sec": 1200, "visibility": "public",
-            "gps_track": _track(3.0), "ran_at": (now - timedelta(hours=2)).isoformat()
+            "gps_track": _track(3.0)
         }).json()["id"]
         api(c, "POST", "/runs", tok_a, json={
             "distance_km": 2.0, "duration_sec": 800, "visibility": "public",
-            "gps_track": _track(2.0), "ran_at": (now - timedelta(hours=1)).isoformat()})
+            "gps_track": _track(2.0)})
         ok("유저 2명(아바타 유/무) + 크루 + verified run 2개")
 
         step("1. run 댓글 목록 — 작성자별 avatar_url")

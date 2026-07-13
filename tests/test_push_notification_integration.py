@@ -198,8 +198,7 @@ def run_tests():
         # 2-3. 비차단: mock 500이어도 본 요청 정상 + 인앱 알림 존재
         MockExpo.mode, MockExpo.received = "boom", []
         r = api(c, "POST", f"/runs", toks["b"], base=B8001, json={
-            "distance_km": 3.0, "duration_sec": 1200, "visibility": "public",
-            "ran_at": "2026-07-11T10:00:00+09:00"})
+            "distance_km": 3.0, "duration_sec": 1200, "visibility": "public"})
         run_id = r.json()["id"]
         r = api(c, "POST", f"/runs/{run_id}/kudos", toks["a"], base=B8001)
         assert r.status_code == 204, f"Expo 500이어도 kudos 정상: {r.status_code}"

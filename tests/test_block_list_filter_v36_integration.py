@@ -78,7 +78,7 @@ def run_tests():
                   "acc": 5.0} for i in range(20)]
         run = api(c, "POST", "/runs", tk["a"], json={
             "distance_km": 2.0, "duration_sec": 720, "visibility": "public",
-            "gps_track": track, "ran_at": now.isoformat()}).json()["id"]
+            "gps_track": track}).json()["id"]
         route = c.post(f"{_SB}/rest/v1/routes", headers={**_ADM, "Prefer": "return=representation"},
                        json={"user_id": uids["a"], "summary": f"BLF코스{TS}", "target_distance_km": 3.0,
                              "total_distance_km": 3.0, "estimated_duration_min": 20, "waypoints": [],

@@ -61,7 +61,7 @@ def make_run(c, token, distance_km, visibility, notes=None):
     track = [{"lat": 37.5445 + i * 0.0002, "lng": 127.0374, "t": int(now.timestamp() * 1000) + i * 8000,
               "acc": 5.0} for i in range(20)]
     body = {"distance_km": distance_km, "duration_sec": dur, "visibility": visibility,
-            "gps_track": track, "ran_at": now.isoformat(), "title": f"런{TS}"}
+            "gps_track": track, "title": f"런{TS}"}
     if notes:
         body["notes"] = notes
     r = api(c, "POST", "/runs", token, json=body)
