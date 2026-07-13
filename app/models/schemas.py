@@ -1223,6 +1223,10 @@ def _short_day_items(value: Optional[list[str]]) -> Optional[list[str]]:
 class CrewCreate(BaseModel):
     """Input to create a crew. owner_id comes from the token, not the body."""
 
+    # 오타/미지 키는 422 — is_public·join_policy 같은 보안 필드가 오타로 silent
+    # swallow(200)되던 갭 봉쇄(M-7 확장, 크루 계열 정합). ProfileUpdate 선례.
+    model_config = ConfigDict(extra="forbid")
+
     name: str = Field(..., min_length=1, max_length=50, description="크루 이름")
     description: Optional[str] = Field(None, max_length=500, description="한 줄 소개")
     area: Optional[str] = Field(None, max_length=50, description="활동 지역")
@@ -1445,6 +1449,11 @@ class CrewRankingEntry(BaseModel):
 
 class CrewUpdate(BaseModel):
     """Partial-update input for a crew. Only provided (non-None) fields are written."""
+
+    # 오타/미지 키는 422 — is_public·join_policy 같은 보안 필드가 오타로 silent
+    # swallow(200)되던 갭 봉쇄(M-7 확장). CrewCreate와 정합. 명시 null=삭제
+    # (sido/sigungu/lat/lng·cover/icon)는 update_crew가 model_fields_set으로 구분.
+    model_config = ConfigDict(extra="forbid")
 
     name: Optional[str] = Field(None, min_length=1, max_length=50, description="크루 이름")
     description: Optional[str] = Field(None, max_length=500, description="한 줄 소개")
