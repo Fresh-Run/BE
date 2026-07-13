@@ -1261,6 +1261,11 @@ class CrewCreate(BaseModel):
         default_factory=list, max_length=5,
         description="카드 태그 (서버 정의 어휘, 최대 5개 저장·카드엔 2개 노출).",
     )
+    # 상설 집결지 (CREW_MEET_PLACE_DESIGN) — 공지의 일회성 place_*와 독립.
+    # 길이·bbox는 공지 place_* 규칙 복제(≤100자·한국 bbox, 앱 검증만).
+    meet_place_name: Optional[str] = Field(None, max_length=100, description="상설 집결지 표시명.")
+    meet_lat: Optional[float] = Field(None, ge=33.0, le=39.0, description="집결 좌표 위도.")
+    meet_lng: Optional[float] = Field(None, ge=124.0, le=132.0, description="집결 좌표 경도.")
 
     _days = field_validator("active_days")(staticmethod(_short_day_items))
 
@@ -1315,6 +1320,12 @@ class CrewResponse(BaseModel):
         None, description="운영진(role=admin) 수 — 크루 상세(GET /crews/{id})에서만 채움"
                          "(관리 화면 통계). 목록/기타 응답은 null.",
     )
+    # 상설 집결지 (2026-07-14 additive, CREW_MEET_PLACE_DESIGN) — 카드 장소 라인.
+    # 셋 다 null이면 프론트가 장소 라인 숨김. _to_response의 **crew 스프레드로
+    # 10개 소비 경로(browse·mine·상세·preview·join 등)에 자동 노출.
+    meet_place_name: Optional[str] = Field(None, description="상설 집결지 표시명 — null이면 카드 장소 라인 숨김.")
+    meet_lat: Optional[float] = Field(None, description="집결 좌표 위도 (지도 진입용).")
+    meet_lng: Optional[float] = Field(None, description="집결 좌표 경도.")
 
 
 class CrewMemberResponse(BaseModel):
@@ -1483,6 +1494,11 @@ class CrewUpdate(BaseModel):
     lat: Optional[float] = Field(None, ge=33.0, le=39.0)
     lng: Optional[float] = Field(None, ge=124.0, le=132.0)
     tags: Optional[list[CrewTag]] = Field(None, max_length=5)
+    # 상설 집결지 (CREW_MEET_PLACE_DESIGN) — 명시 null=삭제(_NULL_DELETABLE),
+    # 생략=유지, 값=설정. 검증은 공지 place_* 규칙 복제(≤100자·한국 bbox).
+    meet_place_name: Optional[str] = Field(None, max_length=100, description="상설 집결지 표시명. 명시 null=삭제.")
+    meet_lat: Optional[float] = Field(None, ge=33.0, le=39.0, description="집결 좌표 위도. 명시 null=삭제.")
+    meet_lng: Optional[float] = Field(None, ge=124.0, le=132.0, description="집결 좌표 경도. 명시 null=삭제.")
     # 크루 이미지 — 업로드(3-step) 후 public_url을 여기에 저장. 명시 null=삭제
     # (Storage 파일도 정리 — update_crew가 model_fields_set으로 구분). ""는 422.
     cover_url: Optional[str] = Field(None, min_length=1, max_length=500, description="커버 URL. 명시 null=삭제.")
