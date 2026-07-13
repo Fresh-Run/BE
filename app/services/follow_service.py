@@ -359,7 +359,11 @@ async def _needs_approval(target_id: str, follower_id: str) -> bool:
 async def _create_follow_request(target_id: str, follower_id: str) -> str:
     """pending 요청 생성 (멱등). PK 충돌(23505)=이미 pending → 409 신호.
 
-    거절됐던 행이면 status를 pending으로 되살린다(재신청 허용). 반환 "requested".
+    거절(rejected)·과거 승인(approved) 잔존 행이면 status를 pending으로 되살린다
+    (재신청 허용). approved 포함 이유: 승인 후 언팔로우/팔로워제거로 follows 엣지가
+    사라져도 행이 approved로 남아, rejected만 revive하면 재팔로우가 409로 영구
+    스턱(2026-07-14 프론트 리포트 실사례 — 이 경로는 _needs_approval이 "현재
+    비팔로워"일 때만 오므로 approved 행 revive가 안전). 반환 "requested".
     """
     supabase = get_supabase_admin()
     try:
@@ -371,12 +375,12 @@ async def _create_follow_request(target_id: str, follower_id: str) -> str:
     except APIError as exc:
         if exc.code != _UNIQUE_VIOLATION:  # PK (requester,target) 이미 존재
             raise
-        # 기존 행: rejected면 pending 부활, pending이면 이미 요청됨(멱등 409)
+        # 기존 행: rejected/approved(잔존)면 pending 부활, pending이면 이미 요청됨(409)
         upd = await asyncio.to_thread(
             lambda: supabase.table("follow_requests")
             .update({"status": "pending", "created_at": _now_iso(), "decided_at": None})
             .eq("requester_id", follower_id).eq("target_id", target_id)
-            .eq("status", "rejected").execute()
+            .in_("status", ["rejected", "approved"]).execute()
         )
         if not upd.data:
             raise FollowRequestPending()  # 이미 pending — 멱등이나 명시 409
