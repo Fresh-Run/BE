@@ -1,7 +1,7 @@
 # CREW_FEED_FIXES_DESIGN — 크루 피드 2건 설계
 
-> 작성 2026-07-13. 상태: **Part 2 구현 완료(배포 대기)** · **Part 1 미착수**.
-> 스키마 변경 없음(양 Part). Part 2는 분리 배포 확정 — 먼저 반영.
+> 작성 2026-07-13. 상태: **Part 2 구현·배포 완료** · **Part 1 구현 완료(배포 대기)**.
+> 스키마 변경 없음(양 Part). Part 1·2 분리 배포.
 > 전제(진단 완료, 실조회): `GET /crews/{id}/runs`는 크루원 전원의 non-private
 > run 파이어호스(`crew_service.py:846-951`, crew_id 필터 없음) · 태그런 식별 =
 > `crew_id NOT NULL`(session_key와 동치, DB 실측 3/37건) · 배지

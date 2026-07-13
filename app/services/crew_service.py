@@ -844,7 +844,8 @@ async def join_by_code(code: str, user_id: str) -> CrewResponse:
 
 
 async def list_crew_runs(
-    crew_id: str, caller_id: str, limit: int = 20, offset: int = 0
+    crew_id: str, caller_id: str, limit: int = 20, offset: int = 0,
+    session_only: bool = False,
 ) -> list[CrewRunItem]:
     """Crew activity feed: current members' runs, newest ran_at first.
 
@@ -852,6 +853,13 @@ async def list_crew_runs(
     larger crews the IN-list URL gets long — switch to a Postgres RPC then.
     Departed members drop out automatically (current-members semantics, same
     as the ranking). Personal fields (notes/feedback) are never selected.
+
+    session_only=True(정기런 전용 뷰, additive)면 이 크루로 태그된 정기런만
+    반환한다 — 기존 필터(현재 멤버·private 제외·차단 제외)에 crew_id=이 크루 AND
+    session_key IS NOT NULL을 추가. 이 뷰는 전부 태그런이라 **is_crew_session이
+    전부 true**가 되는데, 뷰 자체가 정기런 필터이므로 의도된 동작이다. 태그런이
+    없으면 빈 배열(404 아님). 기본값 False는 현행 파이어호스 동작 완전 불변.
+    탈퇴 멤버 태그런은 현재-멤버 필터를 공유해 미포함(v3.6 카운트-목록 비대칭 일관).
     """
     await ensure_member(crew_id, caller_id)
     limit = max(1, min(limit, 100))
@@ -875,17 +883,23 @@ async def list_crew_runs(
     if not member_ids:
         return []
 
-    runs_res = await asyncio.to_thread(
-        lambda: supabase.table("runs")
-        .select("id, user_id, ran_at, distance_km, duration_sec, "
-                "avg_pace_sec_per_km, route_id, title, area, photos, crew_id, session_key")
-        .in_("user_id", member_ids)
-        # 크루 피드는 private만 제외 (public·followers는 크루원에게 노출 — 기존 동작 보존)
-        .neq("visibility", "private")
-        .order("ran_at", desc=True)
-        .range(offset, offset + limit - 1)
-        .execute()
-    )
+    def _runs_query():
+        q = (supabase.table("runs")
+             .select("id, user_id, ran_at, distance_km, duration_sec, "
+                     "avg_pace_sec_per_km, route_id, title, area, photos, crew_id, session_key")
+             .in_("user_id", member_ids)
+             # 크루 피드는 private만 제외 (public·followers는 크루원에게 노출 — 기존 동작 보존)
+             .neq("visibility", "private"))
+        if session_only:
+            # 정기런 전용 뷰: 이 크루로 태그된 run만. crew_id를 이 크루로 명시해
+            # 다른 크루 태그런이 섞이지 않게 하고, session_key NOT NULL로 방어(진단상
+            # crew_id/session_key는 동치지만 둘 다 조건에 둠).
+            q = q.eq("crew_id", crew_id).not_.is_("session_key", "null")
+        return (q.order("ran_at", desc=True)
+                .range(offset, offset + limit - 1)
+                .execute())
+
+    runs_res = await asyncio.to_thread(_runs_query)
     rows = runs_res.data
     if not rows:
         return []

@@ -2222,13 +2222,18 @@ async def list_crew_runs(
     crew_id: str,
     limit: int = 20,
     offset: int = 0,
+    session_only: bool = False,
     user: CurrentUser = Depends(get_current_user),
 ) -> list[CrewRunItem]:
     """Current members' recent runs. Personal notes/feedback are never included;
-    route_summary appears only for public courses."""
+    route_summary appears only for public courses.
+
+    session_only=true면 이 크루의 정기런(태그런)만 반환(additive — 기본 false는
+    현행 파이어호스). 태그런 뷰라 is_crew_session이 전부 true, 태그런 없으면 빈 배열."""
     try:
         return await crew_service.list_crew_runs(
-            crew_id, caller_id=user.user_id, limit=limit, offset=offset
+            crew_id, caller_id=user.user_id, limit=limit, offset=offset,
+            session_only=session_only,
         )
     except crew_service.CrewNotFound:
         raise HTTPException(status_code=404, detail="Crew not found")
