@@ -682,6 +682,110 @@ def main():
                     made["public_runs"] += 1
         log(f"public 승격 {made['public_runs']}건 (수정 API 경유)")
 
+        # ── 13. 지역 배정 러닝 (test1 한강로동 month_rank·test2 청라동) ────────
+        section("13. 지역 배정 + month_rank (test1 한강로동 verified 3회 / test2 청라동)")
+        def _insert_run_ex(uid, ran_at, km, **extra):
+            pace = extra.pop("pace", random.randint(320, 420))
+            body = {"user_id": uid, "ran_at": ran_at, "distance_km": km,
+                    "duration_sec": round(km * pace), "avg_pace_sec_per_km": pace,
+                    "visibility": extra.pop("visibility", "public")}
+            body.update(extra)
+            r = c.post(f"{_SB}/rest/v1/runs", headers={**_ADM, "Prefer": "return=minimal"}, json=body)
+            if r.status_code not in (200, 201): die("run(ex) insert 실패", r.text)
+        # 멱등: test1이 한강로동 러닝 이미 있으면 스킵
+        t1_runs = api(c, "GET", "/runs", t1, params={"limit": 50}).json()
+        if not any(r.get("area") == "한강로동" for r in t1_runs):
+            now = datetime.now(timezone.utc)
+            # 같은 6km 거리대 verified 3회(페이스 상이) → month_rank 타일(best_5k/pace)
+            for d, pace in [(1, 345), (3, 330), (5, 360)]:
+                ran = (now - timedelta(days=d)).astimezone(_KST).replace(hour=6, minute=10, second=0, microsecond=0)
+                _insert_run_ex(uid1, ran.astimezone(timezone.utc).isoformat(), 6.0,
+                               area="한강로동", verification="verified", pace=pace)
+            made["runs"] += 3
+            log("  test1 한강로동 6km verified 3회 (month_rank 타일용)")
+        else:
+            log("  test1 한강로동 러닝 이미 있음 — 스킵")
+        t2_runs = api(c, "GET", "/runs", t2, params={"limit": 50}).json()
+        if not any(r.get("area") == "청라동" for r in t2_runs):
+            now = datetime.now(timezone.utc)
+            for d, km in [(2, 5.0), (6, 8.0)]:
+                ran = (now - timedelta(days=d)).astimezone(_KST).replace(hour=19, minute=0, second=0, microsecond=0)
+                _insert_run_ex(uid2, ran.astimezone(timezone.utc).isoformat(), km,
+                               area="청라동", verification="verified", visibility="followers")
+            made["runs"] += 2
+            log("  test2 청라동 개인런 2회")
+        else:
+            log("  test2 청라동 러닝 이미 있음 — 스킵")
+
+        # ── 14. 크루 채팅 (한강 크루) + system 메시지 유입용 신규 공지 ────────
+        section("14. 크루 채팅 — text 메시지 + 반응 + system(공지)")
+        # 보존 크루라 기존 공지는 멱등 스킵 → system 훅 미발동. 신규 공지 1건으로
+        # 공지→system 메시지 유입 데모(v1.5). 멱등: 제목 존재 시 스킵.
+        SYS_ANN = "번개 러닝 ☕ 목요일 저녁 성수"
+        existing_anns = {a["title"] for a in
+                         api(c, "GET", f"/crews/{CREW}/announcements", t1, params={"limit": 50}).json()}
+        if SYS_ANN not in existing_anns:
+            r = api(c, "POST", f"/crews/{CREW}/announcements", t1, json={
+                "title": SYS_ANN, "body": "목요일 19시 성수 뚝섬. 가볍게 5km + 커피 ☕",
+                "place_name": "뚝섬유원지역 3번 출구", "place_lat": 37.5311, "place_lng": 127.0668})
+            if r.status_code == 201:
+                made["announcements"] += 1
+                log("  신규 공지 1건 → 크루 채팅에 system 메시지 자동 유입")
+        msgs = api(c, "GET", f"/crews/{CREW}/chat/messages", t1, params={"limit": 50}).json()
+        if len([m for m in msgs if m["type"] == "text"]) < 3:
+            m1 = api(c, "POST", f"/crews/{CREW}/chat/messages", t1,
+                     json={"content": "이번 주 토요일 뚝섬 6시! 다들 참석 투표 부탁해요 🙌"}).json()
+            api(c, "POST", f"/crews/{CREW}/chat/messages", users["demo1"][1],
+                json={"content": "저 갑니다! 10km 그룹이요"})
+            api(c, "POST", f"/crews/{CREW}/chat/messages", users["demo2"][1],
+                json={"content": "5km 그룹 합류할게요~"})
+            # 반응(데모1이 크루장 메시지에 🔥)
+            api(c, "POST", f"/crews/{CREW}/chat/messages/{m1['id']}/react",
+                users["demo1"][1], json={"emoji": "🔥"})
+            log("  채팅 text 3 + 반응 1 (공지 생성 시 system 메시지는 §3에서 자동)")
+        else:
+            log("  채팅 메시지 이미 있음 — 스킵")
+
+        # ── 15. 정기런 세션 태깅 (한강 크루, 성수 demos) ────────────────────
+        section("15. 정기런 세션 — demo2·demo3 crew_id 태그 (같은 날 → N명 참여)")
+        tagged = c.get(f"{_SB}/rest/v1/runs", headers=_ADM,
+                       params={"crew_id": f"eq.{CREW}", "select": "id", "limit": 1}).json()
+        if not tagged:
+            today_kst = datetime.now(_KST).date().isoformat()
+            skey = f"c:{CREW}:{today_kst}"
+            ran = datetime.now(_KST).replace(hour=6, minute=20, second=0, microsecond=0)
+            for key in ("demo2", "demo3"):
+                _insert_run_ex(users[key][0], ran.astimezone(timezone.utc).isoformat(), 8.0,
+                               area="성수동", verification="verified",
+                               crew_id=CREW, session_key=skey, visibility="public")
+            made["runs"] += 2
+            log(f"  정기런 세션 태깅 2인(demo2·demo3, 성수동) → 크루 피드 'N명 참여' 배지")
+        else:
+            log("  정기런 태그 run 이미 있음 — 스킵")
+
+        # ── 16. 세부 권한 (demo1을 운영진 승격 — 기본 announcements·challenges) ──
+        section("16. 세부 권한 — demo1 admin 승격")
+        members = api(c, "GET", f"/crews/{CREW}/members", t1).json()
+        demo1_role = next((m["role"] for m in members if m["user_id"] == users["demo1"][0]), None)
+        if demo1_role == "member":
+            r = api(c, "PATCH", f"/crews/{CREW}/members/{users['demo1'][0]}/role", t1,
+                    json={"role": "admin"})
+            log("  demo1 → admin (기본 권한: announcements·challenges ON)" if r.status_code == 200
+                else f"  demo1 승격 실패 {r.status_code}")
+        else:
+            log(f"  demo1 이미 {demo1_role} — 스킵")
+
+        # ── 17. 차단 관계 (demo4 ↔ demo5) ─────────────────────────────────
+        section("17. 차단 — demo4가 demo5 차단 (양방향 필터 데모)")
+        r = api(c, "POST", f"/users/{users['demo5'][0]}/block", users["demo4"][1])
+        log("  demo4 → demo5 차단(멱등)" if r.status_code == 204 else f"  차단 {r.status_code}")
+
+        # ── 18. 프로필 샘플 (승인제·비공개) ────────────────────────────────
+        section("18. 프로필 샘플 — demo2 승인제 · demo3 비공개")
+        api(c, "PATCH", "/me/profile", users["demo2"][1], json={"follow_approval": True})
+        api(c, "PATCH", "/me/profile", users["demo3"][1], json={"visibility": "private"})
+        log("  demo2 follow_approval=true · demo3 visibility=private")
+
         # ── 요약 ─────────────────────────────────────────────────────────
         section("시딩 요약 (이번 실행에서 새로 만든 것)")
         for k, v in made.items():

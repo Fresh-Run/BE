@@ -1,0 +1,143 @@
+"""데모 데이터 초기화 — demo1~5만 삭제(파괴적). test1·test2·미지 계정 절대 미접촉.
+
+시드 리프레시 1단계. crews.owner_id는 CASCADE라(2026-07-08 실증) demo auth.user
+삭제 한 방에 소유 크루·러닝·팔로우·크루멤버·알림·채팅 전부 연쇄 소멸. 앱
+delete_account은 데모 이메일을 거부(시드 보호)하므로 **admin API로 직접 삭제**.
+
+안전 장치:
+  ① dry-run 기본 — `--yes` 없으면 대상만 출력하고 아무것도 안 지운다.
+  ② 대상 = demo1~5@freshrun.com **정확히 5개 이메일**로 하드코딩. 그 외 절대 안 봄.
+  ③ self-assert — 대상 uid가 test1·test2 uid와 겹치지 않음 + 전 auth.users에서
+     데모 5개 외 계정이 대상에 없음을 검증(하나라도 어긋나면 abort).
+  ④ 보존 크루(test 소유 등)에 남은 demo-작성 공지는 명시 삭제(author_id set-null
+     익명 잔재 방지) — demo 소유 크루 공지는 cascade로 자동 소멸.
+
+실행:  python scripts/wipe_demo_data.py          # dry-run (대상 출력만)
+       python scripts/wipe_demo_data.py --yes    # 실제 삭제
+"""
+from __future__ import annotations
+
+import os
+import sys
+
+import httpx
+
+_SB = "https://jlmmqnpddkokyintlawd.supabase.co"
+
+# ⚠️ 삭제 대상은 이 5개 이메일로 고정. 절대 확장 금지.
+_DEMO_EMAILS = frozenset(f"demo{i}@freshrun.com" for i in range(1, 6))
+# 절대 삭제 불가 — self-assert 대조용.
+_PROTECTED_EMAILS = frozenset({"test1@freshrun.com", "test2@freshrun.com"})
+
+
+def _svc_key() -> str:
+    env = os.path.join(os.path.dirname(__file__), "..", ".env")
+    with open(env) as f:
+        for line in f:
+            line = line.strip()
+            if line.startswith("SUPABASE_SERVICE_ROLE_KEY="):
+                return line.split("=", 1)[1]
+    sys.exit("SUPABASE_SERVICE_ROLE_KEY 없음")
+
+
+_ADM = {"apikey": _svc_key(), "Authorization": f"Bearer {_svc_key()}",
+        "Content-Type": "application/json"}
+
+
+def _all_auth_users(c) -> list[dict]:
+    users, page = [], 1
+    while True:
+        b = c.get(f"{_SB}/auth/v1/admin/users", headers=_ADM,
+                  params={"page": page, "per_page": 200}).json().get("users", [])
+        if not b:
+            break
+        users += b
+        if len(b) < 200:
+            break
+        page += 1
+    return users
+
+
+def _count(c, table, col, uid) -> int:
+    r = c.get(f"{_SB}/rest/v1/{table}", headers={**_ADM, "Prefer": "count=exact"},
+              params={col: f"eq.{uid}", "select": col, "limit": 1})
+    return int(r.headers.get("content-range", "?/0").split("/")[-1])
+
+
+def main() -> None:
+    execute = "--yes" in sys.argv
+    c = httpx.Client(timeout=30)
+
+    users = _all_auth_users(c)
+    by_email = {u.get("email"): u["id"] for u in users if u.get("email")}
+
+    # 대상·보호 uid 해석
+    target = {e: by_email[e] for e in _DEMO_EMAILS if e in by_email}
+    protected = {e: by_email[e] for e in _PROTECTED_EMAILS if e in by_email}
+    target_uids = set(target.values())
+    protected_uids = set(protected.values())
+
+    # ── self-assert (하나라도 어긋나면 즉시 중단) ──────────────────────────
+    assert target_uids.isdisjoint(protected_uids), \
+        "FATAL: 대상 uid가 test1/test2 uid와 겹침 — 중단"
+    demo_only = {by_email[e] for e in _DEMO_EMAILS if e in by_email}
+    assert target_uids == demo_only, "FATAL: 대상이 데모 5개 외를 포함 — 중단"
+    # 대상 이메일이 정확히 데모 패턴인지 재확인
+    for e in target:
+        assert e in _DEMO_EMAILS, f"FATAL: 비데모 이메일 {e} — 중단"
+
+    print("=" * 60)
+    print(f"데모 데이터 초기화 {'(실제 삭제)' if execute else '(DRY-RUN — 아무것도 안 지움)'}")
+    print("=" * 60)
+    print(f"\n총 auth.users {len(users)}명 · 보호 계정 {len(protected_uids)}명(test1/test2) "
+          f"· 데모 외 {len(users) - len(target_uids) - len(protected_uids)}명(미접촉)")
+
+    if not target:
+        print("\n삭제할 데모 계정 없음(이미 정리됨). 종료.")
+        return
+
+    print(f"\n▼ 삭제 대상 {len(target)}명 (cascade로 소유 크루·러닝·크루멤버·알림 등 연쇄 소멸):")
+    for e, uid in sorted(target.items()):
+        crews = _count(c, "crews", "owner_id", uid)
+        runs = _count(c, "runs", "user_id", uid)
+        cm = _count(c, "crew_members", "user_id", uid)
+        print(f"  {e:22} {uid}  (소유크루 {crews}·러닝 {runs}·크루멤버 {cm})")
+
+    # 보존 크루에 남는 demo-작성 공지 — 명시 삭제 대상(demo 소유 크루 공지는 cascade)
+    demo_crew_ids = set()
+    for uid in target_uids:
+        r = c.get(f"{_SB}/rest/v1/crews", headers=_ADM,
+                  params={"owner_id": f"eq.{uid}", "select": "id"})
+        demo_crew_ids |= {row["id"] for row in r.json()}
+    orphan_anns = []
+    for uid in target_uids:
+        r = c.get(f"{_SB}/rest/v1/crew_announcements", headers=_ADM,
+                  params={"author_id": f"eq.{uid}", "select": "id,crew_id"})
+        orphan_anns += [a for a in r.json() if a["crew_id"] not in demo_crew_ids]
+    print(f"\n▼ 보존 크루의 demo-작성 공지 {len(orphan_anns)}건 (명시 삭제 — 익명 잔재 방지)")
+
+    if not execute:
+        print("\n[DRY-RUN] 실제 삭제하려면:  python scripts/wipe_demo_data.py --yes")
+        return
+
+    # ── 실제 삭제 ────────────────────────────────────────────────────────
+    print("\n실행 중…")
+    for a in orphan_anns:
+        c.delete(f"{_SB}/rest/v1/crew_announcements", headers=_ADM,
+                 params={"id": f"eq.{a['id']}"})
+    print(f"  보존 크루 demo 공지 {len(orphan_anns)}건 삭제")
+    for e, uid in sorted(target.items()):
+        r = c.delete(f"{_SB}/auth/v1/admin/users/{uid}", headers=_ADM)
+        assert r.status_code in (200, 204), f"{e} 삭제 실패: {r.text[:200]}"
+        print(f"  삭제: {e} ({uid}) — cascade 완료")
+
+    # ── 사후 검증 ────────────────────────────────────────────────────────
+    after = {u.get("email") for u in _all_auth_users(c)}
+    assert not (_DEMO_EMAILS & after), "FATAL: 데모 계정 잔존 — 확인 필요"
+    assert _PROTECTED_EMAILS <= after, "FATAL: 보호 계정(test1/test2) 소실 — 즉시 확인!"
+    print(f"\n✓ 완료. 데모 5명 삭제됨 · test1/test2 보존 확인 · 데모 외 미접촉.")
+    print("  다음: python scripts/seed_demo_data.py 로 재생성.")
+
+
+if __name__ == "__main__":
+    main()

@@ -29,6 +29,17 @@
 
 ## 시딩된 세상
 
+### 신기능 데모 (2026-07-13 리프레시 — §13~18)
+- **지역 배정**: test1=한강로동(신용산/용산, `runs.area`), test2=청라동(인천). 정기런 참여자 데모는 **성수 demo 계정끼리**(test1/test2는 지역이 달라 안 묶임 — 각자 지역 개인런).
+- **month_rank 타일**: test1이 같은 6km 거리대 **verified 3회**(페이스 상이) → `GET /me/insights/monthly`의 `month_rank`("이번 달 N번째로 빠른 …") 뜸.
+- **크루 채팅**: 한강 크루에 text 3 + 반응 1 + **공지 생성 시 system 메시지 자동**(정기런 공지).
+- **정기런 세션 태깅**: demo2·demo3(성수동)가 같은 날 `crew_id` 태그 러닝 → `session_key` 그룹 → 크루 피드 카드에 **`is_crew_session` 배지 + `session_participant_count`=2**.
+- **세부 권한**: demo1을 한강 크루 **admin 승격**(기본 announcements·challenges ON, edit_crew·kick·manage_admins OFF).
+- **차단 관계**: demo4 → demo5 차단(양방향 필터·목록 제외 데모).
+- **프로필 샘플**: demo2 `follow_approval=true`·demo3 `visibility=private` + demo5 pending(기존).
+- **커버/러닝 사진 미시드**: 커버는 기본 그라데이션, 러닝 사진 없음(실파일 필요 — 실기기 직접 데모).
+
+### 기존 세계
 - **크루**: "한강 새벽 러닝 크루" (승인제, 멤버 6명 + pending 1명)
 - **공지 2개**: 토요 정기런(러닝 일시·장소·RSVP 마감 有, 참석3/불참1/미정1 투표됨) + 일반 공지
 - **러닝 기록**: 멤버들에게 최근 2주 분산 (3~10km) → 크루 피드·주간 랭킹·통계 살아있음
