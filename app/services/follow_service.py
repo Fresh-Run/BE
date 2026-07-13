@@ -110,6 +110,35 @@ async def unfollow_user(target_id: str, follower_id: str) -> None:
     )
 
 
+async def remove_follower(follower_id: str, remover_id: str) -> None:
+    """Remove `follower_id` from remover_id's followers (Instagram 'remove follower').
+
+    unfollow_user와 **정반대 방향**의 엣지를 지운다: 여기서 지우는 행은
+    (follower_id=follower_id, following_id=remover_id) — 상대가 나를 팔로우하는
+    관계다(unfollow는 follower=me). 무알림(unfollow·block 관성). 차단(block)과
+    구분 — 관계만 끊고 재팔로우는 막지 않는다.
+
+    게이트 순서는 follow_user와 동형: self(400) → 존재(404) → 차단(404 은닉).
+    멱등 — 이미 내 팔로워가 아니면 no-op(부수효과 0).
+    """
+    if follower_id == remover_id:
+        raise SelfFollowNotAllowed()
+    await _ensure_user_exists(follower_id)
+    # 차단 게이트 — 양방향 차단이면 존재 은닉(404). follow_user와 동일하게 삭제보다
+    # 앞이라 차단 관계에선 어떤 행도 건드리지 않는다(존재 은닉 우선).
+    if await profile_service.is_blocked_either(follower_id, remover_id):
+        raise UserNotFound()
+
+    supabase = get_supabase_admin()
+    await asyncio.to_thread(
+        lambda: supabase.table("follows")
+        .delete()
+        .eq("follower_id", follower_id)      # 상대(제거 대상)가
+        .eq("following_id", remover_id)      # 나를 팔로우하던 엣지
+        .execute()
+    )
+
+
 async def _follow_count(column: str, user_id: str) -> int:
     """Count follows rows where `column` = user_id.
 

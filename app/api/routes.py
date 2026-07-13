@@ -518,6 +518,29 @@ async def list_my_blocks(
 
 
 @router.delete(
+    "/me/followers/{user_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="팔로워 제거 (내 팔로워 목록에서 상대 떼기, 멱등)",
+)
+async def remove_follower(
+    user_id: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> Response:
+    """내 팔로워 목록에서 `user_id`를 제거 — 상대가 나를 팔로우하던 관계를 끊는다.
+    언팔로우(내가 남 팔로우 취소)와 **정반대 방향**. 무알림. 재팔로우 허용(차단과
+    구분). 이미 내 팔로워가 아니면 멱등 204, self 400, 없는 유저·차단 관계 404."""
+    try:
+        await follow_service.remove_follower(user_id, remover_id=user.user_id)
+    except follow_service.SelfFollowNotAllowed:
+        raise HTTPException(status_code=400, detail="Cannot remove yourself")
+    except follow_service.UserNotFound:
+        raise HTTPException(status_code=404, detail="User not found")
+    except Exception as exc:  # noqa: BLE001
+        raise _bad_gateway("Failed to remove follower", exc)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.delete(
     "/users/{user_id}/follow",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="언팔로우",
