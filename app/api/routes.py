@@ -1039,6 +1039,8 @@ async def create_run(
     """Save a completed run (under the caller's user_id) and return the record."""
     try:
         return await run_service.create_run(req, user_id=user.user_id)
+    except run_service.CrewTagNotAllowed:
+        raise HTTPException(status_code=400, detail="Cannot tag a crew you are not a member of")
     except Exception as exc:  # noqa: BLE001
         raise _bad_gateway("Failed to save run", exc)
 

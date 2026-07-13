@@ -39,7 +39,40 @@ class RunNotFound(Exception):
 class SelfKudos(Exception):
     """A user tried to kudos their own run (not allowed, Strava-style)."""
 
+
+class CrewTagNotAllowed(Exception):
+    """비멤버가 남의 크루 정기런 태그 시도 — 400 (핸들러가 매핑)."""
+
 logger = logging.getLogger(__name__)
+
+
+async def _resolve_crew_session(
+    user_id: str | None, crew_id: str | None, announcement_id: str | None
+) -> tuple[str | None, str | None]:
+    """크루 러닝 세션 태깅 L1 — (crew_id, session_key) 파생.
+
+    crew_id 없으면 (None, None) — 일반 러닝. 있으면 caller 멤버십 검증(비멤버·
+    없는 크루 → CrewTagNotAllowed=400, 남의 크루 태그 방지). session_key: 유효한
+    announcement_id(그 크루 소속)면 'a:{ann}'(정밀 세션), 아니면 'c:{crew}:{KST date}'
+    (즉흥런 날짜 버킷). ran_at은 저장 시각(now)이라 KST 오늘 날짜로 그룹.
+    """
+    if not crew_id:
+        return None, None
+    if user_id is None:
+        raise CrewTagNotAllowed()
+    from app.services import crew_service  # local: run_service↔crew_service 순환 회피
+    if not await crew_service._is_member(crew_id, user_id):
+        raise CrewTagNotAllowed()   # 비멤버·없는 크루 → 태그 거부(400)
+    supabase = get_supabase_admin()
+    if announcement_id:
+        ann = await asyncio.to_thread(
+            lambda: supabase.table("crew_announcements").select("id")
+            .eq("id", announcement_id).eq("crew_id", crew_id).limit(1).execute()
+        )
+        if ann.data:
+            return crew_id, f"a:{announcement_id}"   # 공지 연결 = 정밀 세션
+    today_kst = datetime.now(_KST).date().isoformat()
+    return crew_id, f"c:{crew_id}:{today_kst}"       # 크루+날짜 버킷
 
 
 async def create_run(req: RunRequest, user_id: str | None = None) -> RunResponse:
@@ -117,6 +150,11 @@ async def create_run(req: RunRequest, user_id: str | None = None) -> RunResponse
         except Exception:  # noqa: BLE001
             logger.warning("페이스 비교 계산 실패", exc_info=True)
 
+    # 크루 러닝 세션 태깅 L1 — crew_id 있으면 멤버십 검증 후 session_key 파생.
+    crew_id, session_key = await _resolve_crew_session(
+        user_id, req.crew_id, req.announcement_id
+    )
+
     record = {
         "user_id": user_id,
         "route_id": req.route_id,
@@ -130,6 +168,8 @@ async def create_run(req: RunRequest, user_id: str | None = None) -> RunResponse
         "verification": verification,
         "distance_km_reported": reported,
         "is_flagged": is_flagged,
+        "crew_id": crew_id,
+        "session_key": session_key,
     }
 
     supabase = get_supabase_admin()

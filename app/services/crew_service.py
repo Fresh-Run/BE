@@ -878,7 +878,7 @@ async def list_crew_runs(
     runs_res = await asyncio.to_thread(
         lambda: supabase.table("runs")
         .select("id, user_id, ran_at, distance_km, duration_sec, "
-                "avg_pace_sec_per_km, route_id, title, area, photos")
+                "avg_pace_sec_per_km, route_id, title, area, photos, crew_id, session_key")
         .in_("user_id", member_ids)
         # 크루 피드는 private만 제외 (public·followers는 크루원에게 노출 — 기존 동작 보존)
         .neq("visibility", "private")
@@ -912,12 +912,16 @@ async def list_crew_runs(
         _signed_photo_urls,
     )
     firsts = {r["id"]: (r.get("photos") or [None])[0] for r in rows}
-    briefs, summaries, comment_counts, signed, thumbs = await asyncio.gather(
+    # 정기런 세션 참여자 수 — 이 크루 태그(crew_id==this) run들의 session_key만 집계.
+    session_keys = [r["session_key"] for r in rows
+                    if r.get("crew_id") == crew_id and r.get("session_key")]
+    briefs, summaries, comment_counts, signed, thumbs, participants = await asyncio.gather(
         profile_service.get_profile_briefs([r["user_id"] for r in rows]),
         _public_route_summaries(),
         _comment_counts([r["id"] for r in rows]),
         _signed_photo_urls([p for p in firsts.values() if p]),
         _polyline_thumbs([r["id"] for r in rows]),
+        _session_participant_counts(session_keys),
     )
     return [
         CrewRunItem(
@@ -936,9 +940,36 @@ async def list_crew_runs(
             comment_count=comment_counts.get(row["id"], 0),
             photo_thumb=signed.get(firsts.get(row["id"])),
             polyline_thumb=thumbs.get(row["id"]),
+            # L1: 이 크루의 정기런 태그면 배지 + 세션 참여자 수
+            is_crew_session=(row.get("crew_id") == crew_id and bool(row.get("session_key"))),
+            session_participant_count=(
+                participants.get(row["session_key"])
+                if row.get("crew_id") == crew_id and row.get("session_key") else None
+            ),
         )
         for row in rows
     ]
+
+
+async def _session_participant_counts(session_keys: list[str]) -> dict[str, int]:
+    """{session_key: distinct 참여자 수} — 정기런 세션별. 배치 1쿼리(N+1 방지).
+
+    참여자 = 그 session_key를 가진 **non-private** run의 distinct user(attendance —
+    verified 무관, private 제외로 "숨긴 참석" 미노출). 차단은 전역 카운트(v3.6 —
+    숫자는 전역, 명단은 L2에서 필터).
+    """
+    keys = list({k for k in session_keys if k})
+    if not keys:
+        return {}
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("runs").select("session_key, user_id")
+        .in_("session_key", keys).neq("visibility", "private").execute()
+    )
+    buckets: dict[str, set] = defaultdict(set)
+    for r in res.data:
+        buckets[r["session_key"]].add(r["user_id"])
+    return {k: len(v) for k, v in buckets.items()}
 
 
 async def decide_join_request(

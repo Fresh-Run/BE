@@ -18,6 +18,7 @@
 | 구독 등급 | `profiles.tier` | 구독 변경 시 | free/premium |
 | 앱 설정(언어 등) | `profiles.settings` (jsonb, 화이트리스트 필터) | 설정 변경 시 | AI 생성물 언어 결정에 사용 |
 | 계정 공개범위 | `profiles.visibility` (public/followers/private, 2026-07-12~) | 프로필 설정 | 비공개면 비팔로워·비크루원에게 프로필·러닝 전면 잠금(run visibility와 AND 합성). 승인제·차단은 후속 사이클 |
+| 크루 정기런 참석 맥락 (2026-07-13~) | `runs.crew_id`·`runs.session_key` | 저장 시 "크루 러닝" 태그 | "이 사람이 이 크루 정기런에 나왔다"를 크루 피드에 노출(배지·참여자 수). **동의 범위 내**: 크루 멤버십(A′ 크루 서피스) + 유저 명시 태그(이중 동의). 숨기려면 **private 저장**(피드·참여자 카운트 양쪽 제외). 크루 삭제 시 crew_id set null(태그 소거). 참여자 수는 verified 무관·private 제외·차단 전역 |
 | 러닝 취향 | `preferences.distance_pref/vibe_pref` | 온보딩/설정 | |
 | **푸시 기기 토큰** (2026-07-11~) | `push_tokens` (Expo token·플랫폼·갱신 시각) | 로그인 후 앱이 등록(선택 — OS 권한 거부 시 미수집) | **기기 식별자 성격.** 로그아웃 시 해제 + 죽은 토큰 자동 정리 + **탈퇴 시 cascade 삭제**(테스트 검증). 토큰은 발송 외 용도 없음 |
 

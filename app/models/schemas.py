@@ -1002,6 +1002,15 @@ class RunRequest(BaseModel):
             "최대 5000pt). 있으면 서버가 검증·스플릿·경로를 계산한다. optional."
         ),
     )
+    # 크루 러닝 세션 태깅 L1 (2026-07-13) — "이 러닝은 OO크루 정기런"
+    crew_id: Optional[str] = Field(
+        None, description="크루 정기런 태그 — '크루 러닝 시작'으로 진입 시 동봉. "
+        "서버가 caller 멤버십 검증(비멤버 400). 없으면 일반 러닝.",
+    )
+    announcement_id: Optional[str] = Field(
+        None, description="집결 공지 연결(선택) — 있으면 session_key가 그 공지 "
+        "기준(정밀 세션), 없으면 크루+날짜 버킷.",
+    )
 
     @model_validator(mode="after")
     def _pace_sanity(self) -> "RunRequest":
@@ -1486,6 +1495,14 @@ class CrewRunItem(BaseModel):
     # 좋아요/댓글 버튼 렌더 생략(403은 레이스 폴백). ActivityFeedItem에 자동 전파.
     allow_likes: Optional[bool] = Field(None, description="소유자에게 kudos 가능?")
     allow_comments: Optional[bool] = Field(None, description="소유자에게 댓글 가능?")
+    # 크루 러닝 세션 태깅 L1 (2026-07-13) — 이 크루의 정기런이면 배지+참여자 수.
+    is_crew_session: bool = Field(
+        False, description="이 run이 **이 크루의 정기런** 태그면 true → '정기런' 배지.",
+    )
+    session_participant_count: Optional[int] = Field(
+        None, description="같은 정기런 세션 참여자 수(distinct, private 제외·차단 전역). "
+        "정기런 아니면 null.",
+    )
 
 
 class ActivityFeedItem(CrewRunItem):
