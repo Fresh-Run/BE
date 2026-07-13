@@ -128,9 +128,13 @@ fetch(`${API_BASE}/api/me/profile`, {
 >     { "year": 2026, "month": 4, "avg_pace_sec_per_km": null },   // run 없는 달은 null → 라인 결측(끊김) 표시, 0으로 그리지 말 것
 >     { "year": 2026, "month": 5, "avg_pace_sec_per_km": 331 },
 >     { "year": 2026, "month": 6, "avg_pace_sec_per_km": 326 } ],  // 마지막 값 == stats.avg_pace_sec_per_km (같은 기준 보장)
+>   "month_rank": { "type": "best_5k", "rank": 2, "total": 5,     // 이번 달 가장 최근 러닝의 순위 (2026-07-13) — null 가능
+>                   "value": 1725, "distance_km": 6.0, "ran_at": "…", "run_id": "…" },
 >   "ai": null   // ⚠️ 항상 null (2026-07-09 AI 코칭·추천 플랜 생성 중단 — 비용/로딩. 필드는 하위 호환용 유지, 타입은 지우지 말 것)
 > }
 > ```
+>
+> **`month_rank` 소비 규칙 (2026-07-13)** — "이번 달 {rank}번째로 빠른/긴 {거리대}" 타일 재료. **`type`**으로 문구 축 결정: `best_pace`=빠른 페이스 / `best_5k`=빠른 **5K(환산)** / `longest_distance`=긴 거리 / `longest_duration`=긴 시간. **`rank`**=이번 달 가장 최근 러닝의 순위(1=최고). **`rank==1`이면 "가장 빠른/긴"**, 아니면 "{rank}번째". `total`=그 종목 이번 달 러닝 수("총 {total}회 중"). **⚠️ `month_rank`가 `null`이면 타일 미표시** — 각 종목 verified 러닝이 2회 미만(1회뿐인 "가장 빠른"은 정보량 0이라 서버가 생략) 또는 verified run 없음. **거리대는 기존 4개 기록 차원 재사용**(별도 5k/10k 버킷 없음 — best_5k는 페이스 환산 5K). **verified run만 집계**(PB·랭킹과 동일 — 트랙 없는 수동 기록 제외). 서버가 4차원 중 가장 인상적 1개 선정(순위 낮을수록·동순위면 거리/지구력 차원 우선).
 >
 > 수치 블록은 매 요청 최신 계산. **`ai`는 항상 null** — AI 코칭 카드·추천 플랜은 렌더하지 않음(생성 중단, 완전 제거는 출시기). **시안 중 심박 존·평균/최대 심박·누적 고도·칼로리·지형 분석·월 목표 링은 백엔드 데이터가 없어 미제공** — 헬스킷 등 로컬 데이터로 채우거나 숨기고, 월 목표는 목표 설정 기능 후속 시 추가 예정. 꾸준함 지표는 `pattern.run_days`(러닝 일수)·`longest_streak_days`(연속)·`weekday_counts`(요일 분포) 조합 사용.
 

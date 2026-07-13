@@ -788,6 +788,23 @@ class MonthRecordEntry(BaseModel):
     )
 
 
+class MonthRankEntry(BaseModel):
+    """이번 달 가장 최근 러닝의 종목별 순위 (시안 '이번 달 N번째로 빠른 …' 타일).
+
+    4개 기록 차원(best_pace·best_5k 환산·longest_distance·longest_duration) 중
+    가장 인상적인 1개를 서버가 선정. verified run만 대상. 프론트 조립:
+    rank==1이면 "가장 빠른/긴", 아니면 "{rank}번째로 빠른/긴". 총 {total}회 중.
+    """
+
+    type: Literal["best_pace", "best_5k", "longest_distance", "longest_duration"]
+    rank: int = Field(..., description="이번 run의 순위(1=최고). 빠름(pace·5k)은 낮을수록·거리·시간은 클수록 상위.")
+    total: int = Field(..., description="이 차원의 이번 달 verified 러닝 수(≥2 — 1회뿐이면 타일 미생성).")
+    value: float = Field(..., description="이 run의 해당 지표 값(단위는 type별).")
+    ran_at: str = Field(..., description="랭크 대상 run(가장 최근)의 시각.")
+    distance_km: float = Field(..., description="랭크 대상 run의 거리.")
+    run_id: str
+
+
 class InsightPattern(BaseModel):
     """러닝 패턴 (시안 '러닝 패턴' 카드) — 전부 KST 기준."""
 
@@ -843,6 +860,11 @@ class MonthlyInsightResponse(BaseModel):
     pace_trend: list[PaceTrendPoint] = Field(
         default_factory=list,
         description="조회 월 포함 최근 3개월 평균 페이스 (오래된 달부터).",
+    )
+    month_rank: Optional[MonthRankEntry] = Field(
+        None,
+        description="이번 달 가장 최근 러닝의 종목별 순위(가장 인상적 1개). 랭크할 "
+                    "차원이 없으면(각 차원 verified 러닝 <2회 등) null → 타일 미표시.",
     )
     ai: Optional[InsightAi] = None
 

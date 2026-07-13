@@ -19,17 +19,21 @@ from app.models.schemas import (
     InsightPattern,
     InsightPlanItem,
     MonthlyInsightResponse,
+    MonthRankEntry,
     MonthRecordEntry,
     PaceTrendPoint,
     WeekStat,
 )
 from app.services import openai_service, profile_service
 from app.services.run_service import (
+    _FIVE_K_KM,
     _KST,
+    _MIN_PACE_DISTANCE_KM,
     _aggregate,
     _compute_records,
     _fetch_runs_range,
     _month_range_utc,
+    _run_pace,
 )
 
 logger = logging.getLogger(__name__)
@@ -109,6 +113,64 @@ def _month_records(
             all_time_best=bool(at_entry and _in_month(at_entry.ran_at)),
         ))
     return out
+
+
+# 순위 종목 = records와 동일 4차원 재사용(새 거리 버킷 신설 없음).
+# (type, 자격 판정, 지표, lower_is_better, 동순위 우선순위[낮을수록 우선 — "긴 거리"])
+_RANK_DIMS = [
+    ("longest_distance", lambda x: True,
+     lambda x: x["dist"], False, 0),
+    ("longest_duration", lambda x: True,
+     lambda x: x["dur"], False, 1),
+    ("best_5k", lambda x: x["dist"] >= _FIVE_K_KM,
+     lambda x: round(x["dur"] * _FIVE_K_KM / x["dist"]), True, 2),
+    ("best_pace", lambda x: x["pace"] is not None and x["dist"] >= _MIN_PACE_DISTANCE_KM,
+     lambda x: x["pace"], True, 3),
+]
+
+
+def _month_rank(month_rows: list[dict]) -> MonthRankEntry | None:
+    """이번 달 가장 최근 verified run의 종목별 순위 → 가장 인상적 1개.
+
+    거리대는 records의 4차원 재사용(임의 반올림 신설 없음). verified만 대상
+    (PB·랭킹과 동일). 각 차원 러닝이 2회 미만이면 스킵(1회뿐인 "가장 빠른"은
+    무의미 — 랭킹 정보량 0). 랭크 대상은 가장 최근 verified run("이번 기록").
+    가장 인상적: 순위 낮을수록 우선, 동순위면 거리/지구력 차원 우선("긴 거리").
+    month_rows 편승 — 추가 쿼리 0.
+    """
+    pool = []
+    for r in month_rows:
+        if r.get("verification") != "verified":
+            continue
+        pool.append({"id": r["id"], "ran_at": r["ran_at"],
+                     "dist": r["distance_km"], "dur": r["duration_sec"],
+                     "pace": _run_pace(r)})
+    if not pool:
+        return None
+    recent = max(pool, key=lambda x: x["ran_at"])
+
+    candidates = []
+    for type_, qualifies, metric, lower, tie in _RANK_DIMS:
+        if not qualifies(recent):
+            continue
+        dim_runs = [x for x in pool if qualifies(x)]
+        if len(dim_runs) < 2:            # 1회뿐 → 무의미, 타일 미생성
+            continue
+        rv = metric(recent)
+        # 순위 = 1 + (더 나은 run 수). 동률은 같은 순위(공동 N번째).
+        better = sum(1 for x in dim_runs
+                     if (metric(x) < rv if lower else metric(x) > rv))
+        candidates.append((better + 1, tie, type_, rv, len(dim_runs)))
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda c: (c[0], c[1]))   # rank asc, 동순위면 tie 우선
+    rank, _tie, type_, rv, total = candidates[0]
+    return MonthRankEntry(
+        type=type_, rank=rank, total=total, value=float(rv),
+        ran_at=recent["ran_at"], distance_km=round(recent["dist"], 1),
+        run_id=recent["id"],
+    )
 
 
 def _compute_pattern(rows: list[dict]) -> InsightPattern:
@@ -249,6 +311,7 @@ async def get_monthly_insight(
     weeks = _split_weeks(month_rows, year, month)
     records = _month_records(month_rows, rows_until_end, year, month)
     pattern = _compute_pattern(month_rows)
+    month_rank = _month_rank(month_rows)   # 이번 달 최근 run 종목별 순위 (편승)
     # 페이스 추이(최근 3개월, 오래된 달부터) — 기준을 stats와 단일 소스로
     # 맞추기 위해 같은 _aggregate를 재사용 (마지막 값 == stats.avg_pace 보장).
     pace_trend = [
@@ -267,5 +330,6 @@ async def get_monthly_insight(
 
     return MonthlyInsightResponse(
         year=year, month=month, stats=stats, weeks=weeks,
-        records=records, pattern=pattern, pace_trend=pace_trend, ai=ai,
+        records=records, pattern=pattern, pace_trend=pace_trend,
+        month_rank=month_rank, ai=ai,
     )
