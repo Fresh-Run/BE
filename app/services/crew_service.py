@@ -1435,7 +1435,16 @@ async def update_crew(crew_id: str, caller_id: str, req: CrewUpdate) -> CrewResp
     crew = await _crew_row(crew_id, "*")
 
     # mode='json' serialises enums (e.g. CrewLevel) to their string values.
+    # exclude_none은 값 있는 필드만 담는다("생략=유지"·"값=설정"). "명시 null=삭제"는
+    # exclude_none이 떨구므로 아래에서 model_fields_set으로 되살린다(avatar_url 선례).
     data = req.model_dump(mode="json", exclude_none=True)
+    # 지역 필드 명시 null=삭제 — 화이트리스트 4개만(name·tags 등 필수·배열 필드는
+    # 제외: name은 삭제 불가, tags는 []로 비우기). 생략(fields_set 없음)은 유지.
+    # 검증(sido enum·lat/lng bbox)은 값이 있을 때만 Pydantic이 이미 발동 — null
+    # 삭제 경로는 검증을 우회하지 않는다(None은 Optional로 통과).
+    for field in ("sido", "sigungu", "lat", "lng"):
+        if field in req.model_fields_set and getattr(req, field) is None:
+            data[field] = None
     # 이미지 명시 null=삭제 — exclude_none이 떨군 걸 되살려 DB null 기록 +
     # Storage 파일 정리(아바타 삭제 선례와 동형, best-effort).
     image_deletes: list[str] = []
