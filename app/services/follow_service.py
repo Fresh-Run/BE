@@ -338,16 +338,20 @@ async def get_public_profile(target_id: str, viewer_id: str) -> PublicProfileRes
 
 
 async def _needs_approval(target_id: str, follower_id: str) -> bool:
-    """target이 승인제이고 follower가 아직 팔로워가 아닐 때만 True.
+    """target이 비공개 계정이고 follower가 아직 팔로워가 아닐 때만 True.
 
-    기존 팔로워는 approval 무관하게 관계 유지 — 소급 무영향(요청 경로 안 탐).
+    승인제 통합(FOLLOW_CHANGES_DESIGN.md Part B): 별도 토글(follow_approval)을
+    제거하고 **visibility='private'이면 무조건 요청제**로 통합. followers·public은
+    즉시 팔로우(private만 요청제 확정). 기존 팔로워는 소급 무영향 — 이미 follows에
+    있으면 요청 경로를 안 탄다(_follows 재확인).
     """
     supabase = get_supabase_admin()
     res = await asyncio.to_thread(
-        lambda: supabase.table("profiles").select("follow_approval")
+        lambda: supabase.table("profiles").select("visibility")
         .eq("user_id", target_id).limit(1).execute()
     )
-    if not (res.data and res.data[0].get("follow_approval")):
+    vis = res.data[0]["visibility"] if res.data else "public"
+    if vis != "private":
         return False
     return not await _follows(follower_id, target_id)
 

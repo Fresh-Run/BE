@@ -71,8 +71,17 @@ avatar_url, visibility:"private", is_following, follow_requested, locked:true}`
 
 ## 2. 팔로우 승인제 — crew join_requests 패턴 재사용
 
-- `profiles.follow_approval boolean default false`. ON이면 팔로우가 즉시가 아닌
-  요청.
+> **⚠️ 2026-07-13 통합(FOLLOW_CHANGES_DESIGN.md Part B)**: 별도 토글
+> `follow_approval`을 폐지하고 **요청제 진입 조건을 `visibility='private'`로
+> 통합**했다. 비공개 계정이면 무조건 요청제, `public`·`followers`는 즉시 팔로우.
+> `_needs_approval()`는 이제 `follow_approval`이 아니라 `visibility`를 조회한다.
+> `follow_approval` 컬럼·필드는 **deprecate 유예**(요청 no-op·응답 false 고정,
+> drop은 build #1). 아래 원래 설계는 요청/승인/거절 플로우 부분만 유효하고,
+> "토글로 켠다"는 부분은 위 통합으로 대체됐다. follow_requests 테이블·플로우·
+> 알림 type(follow_requested/approved)은 그대로.
+
+- ~~`profiles.follow_approval boolean default false`. ON이면 팔로우가 즉시가 아닌
+  요청.~~ → **통합**: `visibility='private'`이면 요청, 그 외 즉시(위 박스).
 - **테이블 재사용 불가·신규**: crew_join_requests는 (crew_id,user_id)라 팔로우
   (follower→following)엔 안 맞음. **동형 신규 테이블**:
   ```sql

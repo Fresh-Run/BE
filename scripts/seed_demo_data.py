@@ -788,11 +788,13 @@ def main():
         r = api(c, "POST", f"/users/{users['demo5'][0]}/block", users["demo4"][1])
         log("  demo4 → demo5 차단(멱등)" if r.status_code == 204 else f"  차단 {r.status_code}")
 
-        # ── 18. 프로필 샘플 (승인제·비공개) ────────────────────────────────
-        section("18. 프로필 샘플 — demo2 승인제 · demo3 비공개")
-        api(c, "PATCH", "/me/profile", users["demo2"][1], json={"follow_approval": True})
+        # ── 18. 프로필 샘플 (비공개=요청제) ────────────────────────────────
+        # 승인제 통합(FOLLOW_CHANGES_DESIGN.md Part B): visibility='private'이면
+        # 무조건 팔로우 요청제. demo2·demo3 둘 다 비공개로 요청제 데모.
+        section("18. 프로필 샘플 — demo2·demo3 비공개(팔로우 요청제)")
+        api(c, "PATCH", "/me/profile", users["demo2"][1], json={"visibility": "private"})
         api(c, "PATCH", "/me/profile", users["demo3"][1], json={"visibility": "private"})
-        log("  demo2 follow_approval=true · demo3 visibility=private")
+        log("  demo2·demo3 visibility=private (비공개 → 팔로우 요청제)")
 
         # ── 요약 ─────────────────────────────────────────────────────────
         section("시딩 요약 (이번 실행에서 새로 만든 것)")

@@ -114,8 +114,10 @@ async def upsert_profile(user_id: str, req: ProfileUpdate) -> ProfileResponse:
             record[body_field] = value
     if req.visibility is not None:   # 계정 공개범위 (v1)
         record["visibility"] = req.visibility
-    if req.follow_approval is not None:   # 팔로우 승인제 (v2)
-        record["follow_approval"] = req.follow_approval
+    # follow_approval: DEPRECATED (FOLLOW_CHANGES_DESIGN.md Part B). 승인제는
+    # visibility='private'로 통합됨 — 이 필드는 **받되 저장 안 함(no-op)**. 필드
+    # 자체를 지우면 extra="forbid"라 기존 프론트 PATCH가 422로 깨지므로 유예. 컬럼
+    # drop·필드 제거는 build #1. 응답은 ProfileResponse가 항상 false로 고정.
 
     try:
         if is_new:   # 최초 생성 — nickname 보장됨(위 분기). M-12: upsert(on_conflict=

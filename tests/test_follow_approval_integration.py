@@ -83,10 +83,11 @@ def run_tests():
         api(c, "DELETE", f"/users/{uids['o']}/follow", tk["a"])  # 원복
         ok("승인제 OFF: 즉시 팔로우 204")
 
-        step("2. 승인제 ON — A 팔로우 시 202 + pending + O에게 알림")
+        step("2. 요청제(비공개) ON — A 팔로우 시 202 + pending + O에게 알림")
+        # 승인제 통합(Part B): 요청제 진입 = visibility='private'(구 follow_approval 토글 제거).
         assert api(c, "PATCH", "/me/profile", tk["o"],
-                   json={"nickname": f"FAo{TS}", "follow_approval": True}).status_code == 200
-        assert api(c, "GET", "/me/profile", tk["o"]).json()["follow_approval"] is True
+                   json={"nickname": f"FAo{TS}", "visibility": "private"}).status_code == 200
+        assert api(c, "GET", "/me/profile", tk["o"]).json()["visibility"] == "private"
         r = api(c, "POST", f"/users/{uids['o']}/follow", tk["a"])
         assert r.status_code == 202, f"승인제 팔로우 202, got {r.status_code}"
         # 아직 팔로워 아님 (follows 없음)

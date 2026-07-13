@@ -115,13 +115,14 @@ def run_tests():
         assert count(c, "follow_requests", requester_id=uids["b"], target_id=uids["a"]) == 0, "요청 행 없음"
         ok("차단 상대 팔로우 404 + follows·follow_requests 행 미생성")
 
-        step("5. 승인제 분기도 차단 선행 — pending 요청 미생성")
+        step("5. 요청제(비공개) 분기도 차단 선행 — pending 요청 미생성")
+        # 승인제 통합(Part B): 요청제 진입 = visibility='private'. (구 follow_approval 토글 제거)
         assert api(c, "DELETE", f"/users/{uids['b']}/block", tk["a"]).status_code == 204  # 해제
-        assert api(c, "PATCH", "/me/profile", tk["a"], json={"follow_approval": True}).status_code == 200
+        assert api(c, "PATCH", "/me/profile", tk["a"], json={"visibility": "private"}).status_code == 200
         assert api(c, "POST", f"/users/{uids['b']}/block", tk["a"]).status_code == 204  # 재차단
-        assert api(c, "POST", f"/users/{uids['a']}/follow", tk["b"]).status_code == 404, "승인제+차단 → 404"
+        assert api(c, "POST", f"/users/{uids['a']}/follow", tk["b"]).status_code == 404, "비공개+차단 → 404"
         assert count(c, "follow_requests", requester_id=uids["b"], target_id=uids["a"]) == 0, "pending 미생성"
-        ok("승인제 계정 차단 시 팔로우 404 + pending 미생성")
+        ok("비공개(요청제) 계정 차단 시 팔로우 404 + pending 미생성")
 
         step("6. approve×block 레이스 봉쇄 (M-8) — pending 잔존 시뮬레이션 후 approve 404")
         # 차단(A,B) 존재 상태에서 pending 요청 행을 직접 삽입(레이스로 살아남은 상황 재현)

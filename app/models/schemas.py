@@ -89,9 +89,17 @@ class ProfileResponse(BaseModel):
     height_cm: Optional[float] = None
     gender: Optional[Literal["female", "male", "undisclosed"]] = None
     visibility: str = Field("public", description="계정 공개범위 public/followers/private.")
-    follow_approval: bool = Field(False, description="팔로우 승인제 (ON이면 신규 팔로우가 요청).")
+    # DEPRECATED (FOLLOW_CHANGES_DESIGN.md Part B): 승인제가 visibility='private'로
+    # 통합되어 이 필드는 **항상 false 고정 반환**(DB 실값 무시 — 구 True 유저의
+    # 설정 토글이 ON으로 남아 UI-동작 불일치를 만드는 것을 방지). build #1에 제거.
+    follow_approval: bool = Field(False, description="[DEPRECATED] 항상 false. 승인제는 visibility='private'로 통합.")
     created_at: str
     updated_at: str
+
+    @field_validator("follow_approval")
+    @classmethod
+    def _follow_approval_always_false(cls, _v: bool) -> bool:
+        return False  # Part B 유예: DB 실값 무시하고 응답은 항상 false 고정
 
 
 class ProfileUpdate(BaseModel):
@@ -120,8 +128,10 @@ class ProfileUpdate(BaseModel):
     visibility: Optional[Literal["public", "followers", "private"]] = Field(
         None, description="계정 공개범위. 비공개면 비팔로워에게 잠금 화면."
     )
+    # DEPRECATED (Part B): 받되 저장 안 함(no-op). 필드 유지 이유는 extra="forbid"
+    # — 지우면 기존 프론트가 보내던 follow_approval이 422로 깨진다. build #1에 제거.
     follow_approval: Optional[bool] = Field(
-        None, description="팔로우 승인제 토글 (ON이면 신규 팔로우가 pending 요청)."
+        None, description="[DEPRECATED] no-op. 승인제는 visibility='private'로 통합."
     )
 
     @model_validator(mode="after")

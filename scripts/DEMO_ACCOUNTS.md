@@ -36,7 +36,7 @@
 - **정기런 세션 태깅**: demo2·demo3(성수동)가 같은 날 `crew_id` 태그 러닝 → `session_key` 그룹 → 크루 피드 카드에 **`is_crew_session` 배지 + `session_participant_count`=2**.
 - **세부 권한**: demo1을 한강 크루 **admin 승격**(기본 announcements·challenges ON, edit_crew·kick·manage_admins OFF).
 - **차단 관계**: demo4 → demo5 차단(양방향 필터·목록 제외 데모).
-- **프로필 샘플**: demo2 `follow_approval=true`·demo3 `visibility=private` + demo5 pending(기존).
+- **프로필 샘플**: demo2·demo3 `visibility=private`(비공개 → **팔로우 요청제**, 승인제 통합 Part B) + demo5 pending(기존).
 - **커버/러닝 사진 미시드**: 커버는 기본 그라데이션, 러닝 사진 없음(실파일 필요 — 실기기 직접 데모).
 
 ### 기존 세계

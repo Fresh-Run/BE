@@ -1,6 +1,7 @@
 # FOLLOW_CHANGES_DESIGN — 팔로우 2종 변경 설계
 
-> 작성 2026-07-13. 상태: **설계 초안 (승인 대기)** — SQL·코드·마이그레이션 미실행.
+> 작성 2026-07-13. 상태: **Part A 구현·배포 완료** · **Part B 구현 완료(배포 대기)**.
+> 스키마 변경 없음(A·B 모두). Part B는 컬럼 유예 — follow_approval drop은 build #1.
 > 전제(진단 완료, 실조회): `follows`(상태 없는 확정 엣지) / `follow_requests`
 > (`status` pending·approved·rejected) / `profiles.visibility`
 > (`text default 'public' check in (public,followers,private)`) /

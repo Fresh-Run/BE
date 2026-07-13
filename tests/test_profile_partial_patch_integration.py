@@ -7,7 +7,7 @@ Integration test: PATCH /me/profile 부분 갱신 시맨틱 (nickname Optional�
 
 검증:
 - visibility 단독 PATCH 200 + DB 저장 확인
-- follow_approval 단독 PATCH 200 + DB 저장 확인
+- follow_approval 단독 PATCH 200 + no-op 확인 (Part B: DEPRECATED, DB 미저장·응답 false 고정)
 - nickname 생략 시 기존값 유지(덮어쓰기 안 됨)
 - 신규 유저 nickname 없이 PATCH → 422 (생성 분기)
 - nickname 명시 null → 422 / "" → 422
@@ -96,14 +96,17 @@ def run_tests():
         assert p["nickname"] == nick_a, f"nickname 유지(덮어쓰기 없음), got {p['nickname']!r}"
         ok("visibility 단독 200 + DB private + nickname 보존")
 
-        step("3. A — follow_approval 단독 PATCH → 200 + 저장")
+        step("3. A — follow_approval 단독 PATCH → 200 + no-op (Part B 통합)")
+        # 승인제 통합(Part B): follow_approval은 DEPRECATED — 받되 저장 안 함(no-op),
+        # 응답은 항상 false 고정. 필드 자체는 유지(extra=forbid라 지우면 422).
         r = api(c, "PATCH", "/me/profile", tk["a"], json={"follow_approval": True})
         assert r.status_code == 200, r.text[:200]
-        assert r.json()["follow_approval"] is True
+        assert r.json()["follow_approval"] is False, "응답 follow_approval 항상 false 고정"
         p = db_profile(c, uids["a"])
-        assert p["follow_approval"] is True and p["nickname"] == nick_a and p["visibility"] == "private", \
-            f"follow_approval 저장 + 다른 필드 보존, got {p}"
-        ok("follow_approval 단독 200 + DB 저장 + visibility·nickname 보존")
+        assert p["follow_approval"] is False, f"DB follow_approval no-op(미저장, default false), got {p}"
+        assert p["nickname"] == nick_a and p["visibility"] == "private", \
+            f"다른 필드 보존(no-op가 덮어쓰지 않음), got {p}"
+        ok("follow_approval 단독 200 + no-op(DB false 유지·응답 false) + 타필드 보존")
 
         step("4. nickname 명시 null → 422 / \"\" → 422")
         r = api(c, "PATCH", "/me/profile", tk["a"], json={"nickname": None})
