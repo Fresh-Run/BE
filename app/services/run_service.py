@@ -590,6 +590,67 @@ async def _polyline_thumbs(run_ids: list[str]) -> dict[str, list]:
         return {}
 
 
+async def delete_run(run_id: str, user_id: str) -> None:
+    """본인 run 하드 삭제 (docs/RUN_DELETE_DESIGN.md). 복구 없음.
+
+    소유 확인(타인/없음/기삭제 전부 404 은닉 — 존재 숨김 표준) → 행 삭제
+    (run_kudos·run_comments·run_tracks는 FK cascade, 유일한 커밋 지점) →
+    best-effort 정리(Storage 사진·run 대상 알림 — 실패해도 로그만).
+
+    정리를 행 삭제 **뒤에** 두는 이유: 반대 순서면 "정리 성공 + 삭제 실패" 시
+    run은 살아있는데 사진 파일만 소멸하는 사용자 가시 손상이 남는다. 이 순서면
+    최악이 고아 파일(private 버킷 — 접근 불가)·stale 알림(탭 404)뿐.
+
+    집계(PB·주간/월간 통계·세션 카운트·챌린지 achieved_km)는 전부 라이브 계산
+    이라 재계산 코드가 없다 — 다음 조회가 자동 반영(PB 차순위 승계 포함).
+    """
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("runs")
+        .select("id, photos")
+        .eq("id", run_id)
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+    if not res.data:
+        raise RunNotFound()  # 타인/없음/기삭제 — 동일 404(은닉)
+    photos: list[str] = res.data[0].get("photos") or []
+
+    deleted = await asyncio.to_thread(
+        lambda: supabase.table("runs")
+        .delete()
+        .eq("id", run_id)
+        .eq("user_id", user_id)
+        .execute()
+    )
+    if not deleted.data:
+        raise RunNotFound()  # 동시 삭제 레이스 — 패자는 반환행 0 → 404 (L8 패턴)
+
+    # best-effort 정리 (CLAUDE.md — 실패는 치명 처리하지 않고 로그만)
+    if photos:
+        try:
+            await asyncio.to_thread(
+                lambda: supabase.storage.from_(_PHOTO_BUCKET).remove(photos)
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("run %s 사진 Storage 정리 실패 — 고아 파일(무해)",
+                           run_id, exc_info=True)
+    try:
+        # run을 target으로 한 알림 전부(run_kudoed·run_commented·pb_achieved,
+        # 수신자 무관) — 방치 시 stale 404 탭이라 함께 정리(설계 §8 확정).
+        await asyncio.to_thread(
+            lambda: supabase.table("notifications")
+            .delete()
+            .eq("target_type", "run")
+            .eq("target_id", run_id)
+            .execute()
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("run %s 알림 정리 실패 — stale 알림 잔존(탭 404)",
+                       run_id, exc_info=True)
+
+
 async def get_run(run_id: str, user_id: str) -> RunResponse | None:
     """Return one run — 본인은 전체, 타인은 공개범위 내에서 정제된 필드만.
 

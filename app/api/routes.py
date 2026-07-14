@@ -1166,6 +1166,28 @@ async def update_run(
     return run
 
 
+@router.delete(
+    "/runs/{run_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="러닝 기록 삭제 (본인만 — 복구 없음)",
+)
+async def delete_run(
+    run_id: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> Response:
+    """하드 삭제 — kudos·댓글·GPS트랙(cascade)·사진(Storage)·run 대상 알림이
+    함께 소멸. 타인/없음/**재삭제 모두 404 은닉**(프론트는 404를 '이미 삭제됨'
+    처리 — 연타 안전). 크루 채팅에 공유된 카드는 스냅샷이라 잔존, 탭 시 404
+    (기존 계약). PB·통계·세션 카운트는 라이브 계산이라 자동 반영."""
+    try:
+        await run_service.delete_run(run_id, user.user_id)
+    except run_service.RunNotFound:
+        raise HTTPException(status_code=404, detail="Run not found")
+    except Exception as exc:  # noqa: BLE001
+        raise _bad_gateway("Failed to delete run", exc)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.post(
     "/runs/{run_id}/photos/upload-url",
     response_model=RunPhotoUploadUrlResponse,
