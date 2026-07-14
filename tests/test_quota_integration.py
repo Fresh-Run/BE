@@ -115,14 +115,16 @@ def run():
             ok("tier=free ✓ 0/3 ✓ reset_at 미래 ✓")
 
             # ── 3. tier 자가 승급 차단 ───────────────────────────────────
-            step("3. PATCH /me/profile에 tier 끼워넣기 → 무시돼야 함")
+            # M-7(ProfileUpdate extra="forbid") 이후 계약 강화: 미지 필드 tier는
+            # silent 무시(200)가 아니라 422로 명시 거부 — 차단은 더 강해짐.
+            step("3. PATCH /me/profile에 tier 끼워넣기 → 422 거부(forbid)")
             r = api(c, "PATCH", "/me/profile", tok1,
                     json={"nickname": f"쿼터u1-{ts%100000}", "tier": "premium"})
-            assert r.status_code == 200, r.text[:200]
+            assert r.status_code == 422, f"tier 미지 필드 422 기대, got {r.status_code}"
             assert get_quota(c, tok1)["tier"] == "free", "tier 자가 승급이 막혀야 함"
             r = api(c, "GET", "/me/profile", tok1)
             assert r.json()["tier"] == "free"
-            ok("자가 승급 차단 ✓ /me/profile에 tier 노출 ✓")
+            ok("자가 승급 422 거부 ✓ tier free 유지 ✓")
 
             # ── 4. 실제 생성 1회 → used=1 (소모 기록 경로) ───────────────
             step("4. u1 실제 AI 생성 1회 → used 증가 (OpenAI 호출)")

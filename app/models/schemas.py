@@ -607,6 +607,13 @@ class RouteResponse(BaseModel):
         description="True면 초기 반경으로 실패해 반경을 넓혀 찾은 결과 — "
         "프론트가 '반경을 넓혀 찾았어요' 안내 가능.",
     )
+    # ±500m 보장 (2026-07-14 additive, ROUTE_DISTANCE_GUARANTEE_DESIGN)
+    target_missed: bool = Field(
+        False,
+        description="True면 목표 ±0.5km를 4회 시도에도 못 맞춘 최선 후보 — "
+        "프론트는 '요청 거리와 조금 달라요' 안내 권장. 오차 수치는 "
+        "total_distance_km − 요청 target으로 프론트가 계산.",
+    )
 
 
 class CoachCue(BaseModel):

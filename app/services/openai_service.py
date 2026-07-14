@@ -146,6 +146,14 @@ def _prefs_text(prefs: AiCourseSettings | None) -> str:
     return "\nRunner's saved preferences: " + "; ".join(phrases) + "."
 
 
+# 도보 스냅 팽창 보정 (docs/ROUTE_DISTANCE_GUARANTEE_DESIGN.md §3).
+# 실측 3건(2026-07-14, 4km 목표): 팽창비 1.13(뚝섬)/1.50(여의도)/1.74(서울숲),
+# 중앙값 1.50 → 1.45 채택(저팽창 격자 도로망에서 미달을 덜 만들도록 소폭 하향 —
+# 오버슈트는 ±0.5km 게이트+재시도가 잡음). ⚠️ 표본 3건 한계: route_gen 계측
+# 로그가 20건 이상 쌓이면 ratio 중앙값을 재산정해 이 상수를 갱신할 것.
+_SNAP_INFLATION = 1.45
+
+
 def _build_prompt(
     target_distance_km: float,
     start: Coordinate,
@@ -189,20 +197,32 @@ def _build_prompt(
             )
 
     # 탐색 반경: 수치가 오면 "near the start"를 명시적 반경 제약으로 교체.
+    # (구 문구의 "avoid overshooting"은 과소 기하를 유도해 삭제 — ±0.5km 보장 설계)
     if radius_km is not None:
         area_text = (
             f"Keep every waypoint within {radius_km} km (straight-line) of the "
-            "start point, and design the route so its total length closely "
-            "matches the target distance (avoid overshooting). Provide ordered "
-            "waypoints with realistic WGS84 coordinates, "
+            "start point. Provide ordered waypoints with realistic WGS84 "
+            "coordinates, "
         )
     else:
         area_text = (
             "Provide ordered waypoints with realistic WGS84 coordinates near the start, "
         )
 
+    # ±500m 보장: 도보 스냅 팽창(실측 1.3~1.7x)을 프롬프트가 선보정 — 모델에게
+    # 어림이 아닌 계산 가능한 직선 체인 목표(target/_SNAP_INFLATION)를 준다.
+    chain_target = round(target_distance_km / _SNAP_INFLATION, 1)
+    distance_text = (
+        f"Design a running route in South Korea whose final on-road length is "
+        f"about {target_distance_km} km. Note: the route will be snapped to real "
+        f"pedestrian roads, which typically makes it 1.3-1.7x longer than the "
+        f"straight lines between waypoints. Therefore place the waypoints so that "
+        f"the SUM OF STRAIGHT-LINE distances between consecutive waypoints "
+        f"(including the return to start for loops) is about {chain_target} km. "
+    )
+
     return (
-        f"Design a running route in South Korea of about {target_distance_km} km. "
+        f"{distance_text}"
         f"Start at ({start.lat}, {start.lng}) and {end_text}. "
         f"{pitstop_text} "
         f"{area_text}"

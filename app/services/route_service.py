@@ -93,8 +93,24 @@ def _resolve_course_prefs(
 
 # ── 동적 탐색 반경 ─────────────────────────────────────────────────────────────
 
-_SHORT_RATIO = 0.6      # 실측이 목표×0.6 미만이면 SHORT (미달 방향만 판정)
+# ±500m 보장 (docs/ROUTE_DISTANCE_GUARANTEE_DESIGN.md): |실측−목표| ≤ 0.5km만
+# 합격. 구 _SHORT_RATIO=0.6(하한만, 상한 없음 — "4km→2.5km"도 통과하던 갭)을
+# 양방향 게이트로 완전 대체. 불합격은 후보 보관 후 반경 루프 재시도(cap 4 불변),
+# 전패 시 |오차| 최소 후보 채택 + target_missed=True(반려 대신 최선+정직한 표시).
+_TOLERANCE_KM = 0.5
 _MAX_RADIUS_KM = 8.0
+
+
+def _waypoint_chain_km(route: RouteResponse) -> float:
+    """웨이포인트 직선 체인 길이(km) — 팽창비 계측 로그용 (haversine 합)."""
+    pts = [wp.coordinate for wp in route.waypoints]
+    total = 0.0
+    for a, b in zip(pts, pts[1:]):
+        p1, p2 = math.radians(a.lat), math.radians(b.lat)
+        dp, dl = math.radians(b.lat - a.lat), math.radians(b.lng - a.lng)
+        x = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+        total += 2 * 6371.0 * math.asin(math.sqrt(x))
+    return total
 
 
 def _radius_schedule(target_km: float) -> list[float]:
@@ -167,7 +183,7 @@ async def create_running_route(
     # Step 1~3을 동적 탐색 반경 루프로: 좁은 반경에서 시작해 실패(경로 연결
     # 불가 / 실측 미달)하면 반경을 넓혀 재시도. 출발지는 고정.
     best: RouteResponse | None = None
-    short_candidates: list[tuple[float, RouteResponse]] = []  # (실측 km, route)
+    miss_candidates: list[tuple[float, RouteResponse]] = []  # (실측 km, route) — 미달·초과 양쪽
     nopath_candidate: RouteResponse | None = None
     pitstop_places: list | None = None  # Kakao 검색은 결정적 — 첫 성공 결과 재사용
 
@@ -196,7 +212,7 @@ async def create_running_route(
         except OpenAIAPIError:
             # ①-a API 장애: 반경과 무관 — 확장 재시도는 낭비. 이미 확보한
             # 후보가 있으면 그걸로 마무리, 없으면 그대로 실패.
-            if short_candidates or nopath_candidate is not None:
+            if miss_candidates or nopath_candidate is not None:
                 logger.warning("Gemini API 장애 (radius=%skm) — 기존 후보로 마무리", radius_km)
                 break
             raise
@@ -235,12 +251,15 @@ async def create_running_route(
         route.search_radius_km = radius_km
         route.radius_expanded = i > 0
 
-        # Step 3: 보행 경로 연결 + 실측 거리로 성공 판정.
-        #   OK      — 연결됐고 실측 >= 목표×0.6 → 즉시 채택
-        #   SHORT   — 연결됐지만 실측 미달       → 후보 보관, 반경 확장
+        # Step 3: 보행 경로 연결 + 실측 거리로 성공 판정 (±0.5km 양방향).
+        #   OK      — 연결됐고 |실측−목표| ≤ 0.5km → 즉시 채택
+        #   MISS    — 연결됐지만 허용 오차 밖(미달·초과) → 후보 보관, 재시도
         #   NO_PATH — 연결 실패(또는 waypoint<2) → AI 추정 폴백 보관, 반경 확장
+        # (반경 확장은 미달에 유효 — 초과 케이스도 스케줄 그대로 진행: 프롬프트가
+        #  체인 목표를 고정하므로 반경이 커져도 오버슈트를 키우지 않고 재추첨 효과만)
         status = "NO_PATH"
         actual_km = route.total_distance_km
+        chain_km = _waypoint_chain_km(route)  # 계측: Gemini 기하 의도(팽창비 재료)
         if len(route.waypoints) >= 2:
             try:
                 via = [wp.coordinate for wp in route.waypoints[1:-1]] or None
@@ -257,7 +276,7 @@ async def create_running_route(
                 route.total_distance_km = round(pedestrian.distance_m / 1000.0, 1)
                 route.estimated_duration_min = float(round(pedestrian.duration_s / 60.0))
                 actual_km = route.total_distance_km
-                status = "OK" if actual_km >= _SHORT_RATIO * target_km else "SHORT"
+                status = "OK" if abs(actual_km - target_km) <= _TOLERANCE_KM else "MISS"
             except Exception:  # noqa: BLE001 - keep AI estimates if routing fails
                 logger.warning(
                     "Pedestrian routing (%s) failed; falling back to AI distance "
@@ -266,25 +285,37 @@ async def create_running_route(
                     exc_info=True,
                 )
 
+        # 시도별 계측 1줄 — 팽창비 재보정 재료(_SNAP_INFLATION, 20건 축적 시
+        # 중앙값 재산정). 좌표·유저 id 미기록(위치 프라이버시), 키 없음.
+        logger.info(
+            "route_gen attempt=%d radius=%.1f chain_km=%.2f snapped_km=%.2f "
+            "ratio=%.2f target=%.1f verdict=%s",
+            i + 1, radius_km, chain_km,
+            actual_km if status != "NO_PATH" else 0.0,
+            (actual_km / chain_km) if (chain_km > 0 and status != "NO_PATH") else 0.0,
+            target_km, status.lower(),
+        )
+
         if status == "OK":
             best = route
             break
-        if status == "SHORT":
-            short_candidates.append((actual_km, route))
+        if status == "MISS":
+            miss_candidates.append((actual_km, route))
         else:
             nopath_candidate = route
-        logger.info(
-            "코스 생성 %s (radius=%skm, 실측 %.2f / 목표 %skm) — 반경 확장 재시도",
-            status, radius_km, actual_km, target_km,
-        )
 
     if best is None:
-        # 루프 소진: "짧지만 이거라도" — 연결된 후보 중 목표에 가장 가까운 것,
-        # 없으면 마지막 AI 추정 폴백. 유효 응답이 한 번도 없었으면 실패.
-        if short_candidates:
-            best = min(short_candidates, key=lambda t: abs(t[0] - target_km))[1]
+        # 루프 소진: |오차| 최소 후보 채택 + target_missed 플래그(반려 대신
+        # 최선+정직한 표시 — 프론트가 "요청 거리와 달라요" 안내). 연결 후보가
+        # 없으면 AI 추정 폴백(동일 기준으로 플래그). 유효 응답 0이면 실패.
+        if miss_candidates:
+            best = min(miss_candidates, key=lambda t: abs(t[0] - target_km))[1]
+            best.target_missed = True
         elif nopath_candidate is not None:
             best = nopath_candidate
+            best.target_missed = (
+                abs(best.total_distance_km - target_km) > _TOLERANCE_KM
+            )
         else:
             raise RouteGenerationFailed()
 
