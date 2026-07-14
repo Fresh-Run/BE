@@ -3,6 +3,11 @@
 시드 스크립트(`scripts/seed_demo_data.py`)가 만드는 데모 세상입니다.
 비밀번호는 **전부 `test1234`**.
 
+> **베타 운영(방식 A)**: 테스터 합류 시 `python scripts/grant_beta_premium.py --apply`
+> 실행 — tier=free 실계정 전원 premium 승급(시드·운영진 제외, 멱등, 기본 dry-run).
+> 출시 전 리셋은 `--revoke --apply`(IAP 구매자는 subscriptions 행으로 자동 보호).
+> premium 무제한 근거: 모든 게이트가 get_tier 경유, 수동 premium은 lazy 강등이 존중.
+
 ## 계정
 
 | 이메일 | 닉네임 | 역할 |
