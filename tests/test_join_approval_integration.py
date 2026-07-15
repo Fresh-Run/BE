@@ -133,10 +133,16 @@ def run():
             # ── 5. 크루장: 목록 + 승인 + 거절 ────────────────────────────
             step("5. 목록(비크루장 403) → u2 승인 → u3 거절")
             assert api(c, "GET", f"/crews/{APPR}/join-requests", tok3).status_code == 403
+            # u2에 아바타 심기 — 신청 목록 avatar_url 배치(2026-07-15 additive) 검증
+            ava2 = f"https://example.com/ava-u2-{ts}.png"
+            assert api(c, "PATCH", "/me/profile", tok2,
+                       json={"avatar_url": ava2}).status_code == 200
             r = api(c, "GET", f"/crews/{APPR}/join-requests", tok1)
             items = r.json()
             assert [i["id"] for i in items] == [req_u3, req_u2], "최신순 [u3, u2]"
             assert items[1]["nickname"] == f"승인u2-{ts%100000}", "닉네임 배치"
+            assert items[1]["avatar_url"] == ava2, "avatar_url 배치"
+            assert items[0]["avatar_url"] is None, "아바타 미설정은 null(이니셜 폴백)"
             # 승인
             joined_before = len(notis(c, tok1, "crew_joined"))
             assert api(c, "POST", f"/crews/{APPR}/join-requests/{req_u2}/approve", tok1).status_code == 204

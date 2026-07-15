@@ -267,7 +267,7 @@ async def get_announcement(
         profile_service.get_profile_briefs([row.get("author_id")]),
     )
     going_ids = [r["user_id"] for r in going_res.data]
-    going_nicknames = await profile_service.get_nicknames(going_ids)
+    going_briefs = await profile_service.get_profile_briefs(going_ids)
 
     base = _to_response(
         row,
@@ -278,7 +278,11 @@ async def get_announcement(
     return AnnouncementDetailResponse(
         **base.model_dump(),
         going_members=[
-            RsvpMember(user_id=uid, nickname=going_nicknames.get(uid))
+            RsvpMember(
+                user_id=uid,
+                nickname=going_briefs.get(uid, {}).get("nickname"),
+                avatar_url=going_briefs.get(uid, {}).get("avatar_url"),
+            )
             for uid in going_ids
         ],
     )

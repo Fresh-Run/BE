@@ -149,6 +149,10 @@ def run():
                 r = api(c, "GET", f"/crews/{crew_id}/announcements/{ann}", tok)
                 assert r.status_code == 200, r.text[:200]
                 return r.json()
+            # u3에 아바타 심기 — 참석자 명단 avatar_url(2026-07-15 additive) 검증
+            ava3 = f"https://example.com/ava-u3-{ts}.png"
+            assert api(c, "PATCH", "/me/profile", tok3,
+                       json={"avatar_url": ava3}).status_code == 200
             assert put_rsvp(tok3, "going").status_code == 204     # u3 참석 (먼저)
             assert put_rsvp(tok2, "going").status_code == 204     # u2 참석
             assert put_rsvp(tok2, "maybe").status_code == 204     # u2 재투표 → 미정 (덮어쓰기)
@@ -161,6 +165,8 @@ def run():
             names = [m["nickname"] for m in d["going_members"]]
             assert names == [f"공지u3-{ts%100000}", f"공지u1-{ts%100000}"], \
                 f"참석자 명단(투표순) 불일치: {names}"
+            avatars = [m["avatar_url"] for m in d["going_members"]]
+            assert avatars == [ava3, None], f"참석자 avatar_url 배치: {avatars}"
             ok("재투표 덮어쓰기 ✓ 집계 2/0/1 ✓ my_rsvp ✓ 명단(u3,u1) ✓ 비멤버 403 ✓")
 
             # ── 6. 마감·불가 케이스 ───────────────────────────────────────

@@ -1635,6 +1635,9 @@ class JoinRequestItem(BaseModel):
     id: str
     user_id: str
     nickname: Optional[str] = None
+    avatar_url: Optional[str] = Field(
+        None, description="신청자 아바타 (없으면 null → 이니셜 폴백)."
+    )
     created_at: str
 
 
@@ -1712,6 +1715,9 @@ class RsvpMember(BaseModel):
 
     user_id: str
     nickname: Optional[str] = None
+    avatar_url: Optional[str] = Field(
+        None, description="참석자 아바타 (없으면 null → 이니셜 폴백)."
+    )
 
 
 class AnnouncementResponse(BaseModel):

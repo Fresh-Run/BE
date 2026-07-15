@@ -732,9 +732,13 @@ async def list_join_requests(
     rows = res.data
     if not rows:
         return []
-    nicknames = await profile_service.get_nicknames([r["user_id"] for r in rows])
+    briefs = await profile_service.get_profile_briefs([r["user_id"] for r in rows])
     return [
-        JoinRequestItem(**row, nickname=nicknames.get(row["user_id"]))
+        JoinRequestItem(
+            **row,
+            nickname=briefs.get(row["user_id"], {}).get("nickname"),
+            avatar_url=briefs.get(row["user_id"], {}).get("avatar_url"),
+        )
         for row in rows
     ]
 
