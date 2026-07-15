@@ -73,6 +73,8 @@ _TEMPLATES: dict[str, dict[str, str]] = {
                          "en": "{nickname} requested to follow you"},
     "follow_request_approved": {"ko": "{nickname}님이 팔로우 요청을 수락했어요",
                                 "en": "{nickname} accepted your follow request"},
+    "crew_chat": {"ko": "{nickname}님이 크루 채팅에 메시지를 보냈어요",
+                  "en": "{nickname} sent a message in crew chat"},
     "crew_joined": {"ko": "{nickname}님이 크루에 가입했어요",
                     "en": "{nickname} joined your crew"},
     "join_requested": {"ko": "{nickname}님이 크루 가입을 신청했어요",

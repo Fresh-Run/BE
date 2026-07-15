@@ -19,6 +19,7 @@ async def create_notification(
     target_type: str,
     allow_self: bool = False,
     payload: dict | None = None,
+    skip_push: bool = False,
 ) -> None:
     """Insert one notification row.
 
@@ -28,6 +29,11 @@ async def create_notification(
 
     payload: 딥링크 보조 데이터(jsonb). 예: crew_announcement는
     {"crew_id": ...}로 공지가 속한 크루로 이동. target_id로 충분한 타입은 None.
+
+    skip_push=True면 인앱 알림만 저장하고 푸시는 발송하지 않는다(크루 뮤트·
+    채팅 스로틀처럼 호출측이 발송 여부를 이미 판단한 경우 — 인앱은 항상 기록,
+    푸시만 억제하는 이 프로젝트의 알림 철학과 정합). 설정(crewChat/master) 게이트는
+    skip_push=False일 때 send_for_notification 내부에서 별도로 적용된다.
     """
     if not allow_self and recipient_id == actor_id:
         return
@@ -46,6 +52,9 @@ async def create_notification(
     await asyncio.to_thread(
         lambda: supabase.table("notifications").insert(record).execute()
     )
+
+    if skip_push:
+        return  # 호출측이 뮤트/스로틀로 푸시 억제 판단 — 인앱만 저장하고 종료
 
     # 원격 푸시 — fire-and-forget (요청 경로가 Expo 왕복을 기다리지 않음,
     # 실패는 태스크 내부에서 전부 삼킴). 인앱 알림은 위에서 이미 저장됨.

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from app.core.supabase_client import get_supabase_admin
 from app.models.schemas import (
@@ -16,9 +16,15 @@ from app.models.schemas import (
     ChatMessageResponse,
     ChatUnreadResponse,
 )
-from app.services import crew_service, profile_service
+from app.services import crew_service, notification_service, profile_service
 
 logger = logging.getLogger(__name__)
+
+# 크루 채팅 푸시 스로틀 창 (크루×수신자) — 이 시간 내 이미 crew_chat 알림이
+# 있으면 푸시만 억제(인앱은 전부 기록). notifications 조회 기반이라 스키마·워커
+# 무관·재시작 견고. "마지막 인앱 시각" 근사(정확한 "마지막 푸시 시각" 아님 —
+# 채팅 푸시 억제는 best-effort로 충분: 정상 유저는 정확, 뮤트/설정OFF는 어차피 스킵).
+_CHAT_PUSH_THROTTLE_MIN = 5
 
 
 class MessageNotFound(Exception):
@@ -124,12 +130,60 @@ async def post_message(crew_id: str, sender_id: str, content: str) -> ChatMessag
         }).execute()
     )
     row = res.data[0]
+    await _dispatch_chat_push(crew_id, sender_id)  # best-effort — 내부에서 삼킴
     brief = (await profile_service.get_profile_briefs([sender_id])).get(sender_id, {})
     return ChatMessageResponse(
         id=row["id"], crew_id=crew_id, sender_id=sender_id,
         sender_nickname=brief.get("nickname"), sender_avatar_url=brief.get("avatar_url"),
         type="text", content=content, created_at=row["created_at"],
     )
+
+
+async def _dispatch_chat_push(crew_id: str, sender_id: str) -> None:
+    """크루 채팅 알림 팬아웃 (채팅 v2). 게이트 순서: 멤버십(발신자 사전 검증) →
+    수신자=크루원−발신자 → 뮤트 → 설정(crewChat, send_for_notification 내부) →
+    스로틀. 인앱 알림은 전 수신자에게 항상 생성(뮤트/설정/스로틀은 푸시만 억제).
+    딥링크: target_type='crew', target_id=crew_id → 크루 채팅 화면. 본문은 미포함
+    (푸시 문구는 닉네임+행위만 — 기존 계약). 전 구간 best-effort(메시지 전송 불방해).
+    """
+    try:
+        supabase = get_supabase_admin()
+        members = await asyncio.to_thread(
+            lambda: supabase.table("crew_members").select("user_id")
+            .eq("crew_id", crew_id).execute()
+        )
+        recipients = [m["user_id"] for m in members.data if m["user_id"] != sender_id]
+        if not recipients:
+            return
+
+        # 뮤트 집합 (배치) — crew_read_state.muted=true
+        muted_res = await asyncio.to_thread(
+            lambda: supabase.table("crew_read_state").select("user_id")
+            .eq("crew_id", crew_id).eq("muted", True).in_("user_id", recipients).execute()
+        )
+        muted = {r["user_id"] for r in muted_res.data}
+
+        # 스로틀 집합 (배치) — 최근 N분 내 이 크루 crew_chat 알림 있는 수신자.
+        # ⚠️ insert 전에 조회해야 방금 만든 알림에 의한 오판을 피한다.
+        cutoff = (datetime.now(timezone.utc)
+                  - timedelta(minutes=_CHAT_PUSH_THROTTLE_MIN)).isoformat()
+        recent = await asyncio.to_thread(
+            lambda: supabase.table("notifications").select("user_id")
+            .eq("type", "crew_chat").eq("target_id", crew_id)
+            .in_("user_id", recipients).gte("created_at", cutoff).execute()
+        )
+        throttled = {r["user_id"] for r in recent.data}
+
+        await asyncio.gather(*[
+            notification_service.create_notification(
+                recipient_id=r, actor_id=sender_id, type="crew_chat",
+                target_id=crew_id, target_type="crew",
+                skip_push=(r in muted or r in throttled),
+            )
+            for r in recipients
+        ])
+    except Exception:  # noqa: BLE001 — 알림 팬아웃 실패가 메시지 전송을 막지 않음
+        logger.warning("crew_chat 알림 팬아웃 실패 (crew=%s)", crew_id, exc_info=True)
 
 
 # run_share 스냅샷에 박제할 필드(화이트리스트) — 타인 상세 정제와 동일 기준.
