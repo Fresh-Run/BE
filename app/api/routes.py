@@ -845,6 +845,38 @@ async def activity_feed(
         raise _bad_gateway("Failed to fetch activity feed", exc)
 
 
+@router.get(
+    "/feed/nearby",
+    response_model=list[ActivityFeedItem],
+    summary="위치 기반 public run 탐색 피드 (홈 '전체' 탭, 반경 N km)",
+)
+async def nearby_feed(
+    lat: float | None = None,
+    lng: float | None = None,
+    radius_km: float = 10.0,
+    limit: int = 20,
+    offset: int = 0,
+    user: CurrentUser = Depends(get_current_user),
+) -> list[ActivityFeedItem]:
+    """내 위치 반경 내 public run(본인·팔로우·비공개 계정 제외), 최신순.
+
+    홈 "전체" 탭 데이터소스(NEARBY_FEED_DESIGN). lat/lng 필수(누락 400),
+    한국 bbox 밖 400. radius_km 기본 10·상한 20(서비스에서 clamp).
+    """
+    if lat is None or lng is None:
+        raise HTTPException(status_code=400, detail="lat, lng are required")
+    # 한국 bbox 검증 (Coordinate 모델과 동일 범위) — 극점 좌표 차단
+    if not (33.0 <= lat <= 39.0 and 124.0 <= lng <= 132.0):
+        raise HTTPException(status_code=400, detail="lat/lng out of Korea bounds")
+    try:
+        return await run_service.list_nearby_feed(
+            user.user_id, lat=lat, lng=lng,
+            radius_km=radius_km, limit=limit, offset=offset,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise _bad_gateway("Nearby feed failed", exc)
+
+
 # NOTE: /routes/search and /routes/public must be declared BEFORE /routes/{route_id}.
 @router.get(
     "/routes/search",

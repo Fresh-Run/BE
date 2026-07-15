@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from datetime import datetime, timedelta, timezone
 
 from postgrest.exceptions import APIError
@@ -155,6 +156,13 @@ async def create_run(req: RunRequest, user_id: str | None = None) -> RunResponse
         user_id, req.crew_id, req.announcement_id
     )
 
+    # 위치 피드용 출발 좌표 — 트랙 첫 점에서 파생(NEARBY_FEED_DESIGN §1). run insert와
+    # 원자적으로 박음(별도 UPDATE 불요). 트랙 없으면 null → /feed/nearby 자연 미노출.
+    start_lat = start_lng = None
+    if processed is not None and processed.polyline:
+        start_lat = processed.polyline[0]["lat"]
+        start_lng = processed.polyline[0]["lng"]
+
     record = {
         "user_id": user_id,
         "route_id": req.route_id,
@@ -170,6 +178,8 @@ async def create_run(req: RunRequest, user_id: str | None = None) -> RunResponse
         "is_flagged": is_flagged,
         "crew_id": crew_id,
         "session_key": session_key,
+        "start_lat": start_lat,
+        "start_lng": start_lng,
     }
 
     supabase = get_supabase_admin()
@@ -1141,6 +1151,76 @@ async def delete_run_comment(run_id: str, comment_id: str, caller_id: str) -> No
     )
 
 
+# 활동 피드 카드 select 컬럼 — list_activity_feed·list_nearby_feed 공유(같은 shape).
+_ACTIVITY_SELECT = ("id, user_id, ran_at, distance_km, duration_sec, "
+                    "avg_pace_sec_per_km, route_id, title, area, photos")
+
+
+async def _build_activity_items(
+    rows: list[dict], viewer_id: str
+) -> list[ActivityFeedItem]:
+    """runs 행 목록(_ACTIVITY_SELECT) → ActivityFeedItem[] (배치 집계, N+1 없음).
+
+    활동 피드/위치 피드 공유 빌더 — 카드 shape·프라이버시 규칙 단일 소스.
+    rows는 이미 가시성·순서·페이지네이션이 적용된 최종 목록이어야 함.
+    """
+    if not rows:
+        return []
+    supabase = get_supabase_admin()
+    run_ids = [r["id"] for r in rows]
+    route_ids = list({r["route_id"] for r in rows if r.get("route_id")})
+
+    async def _public_route_summaries() -> dict[str, str]:
+        """Public courses only — private ones must not leak into the feed."""
+        if not route_ids:
+            return {}
+        r = await asyncio.to_thread(
+            lambda: supabase.table("routes")
+            .select("id, summary")
+            .in_("id", route_ids)
+            .eq("is_public", True)
+            .execute()
+        )
+        return {row["id"]: row["summary"] for row in r.data}
+
+    firsts = {r["id"]: (r.get("photos") or [None])[0] for r in rows}
+    briefs, summaries, kudos_counts, my_kudos, comment_counts, signed, thumbs, flags = await asyncio.gather(
+        profile_service.get_profile_briefs([r["user_id"] for r in rows]),
+        _public_route_summaries(),
+        _kudos_counts(run_ids),
+        _my_kudos_set(run_ids, viewer_id),
+        _comment_counts(run_ids),
+        _signed_photo_urls([p for p in firsts.values() if p]),
+        _polyline_thumbs(run_ids),
+        profile_service.feed_flags_batch([r["user_id"] for r in rows]),
+    )
+    return [
+        ActivityFeedItem(
+            run_id=row["id"],
+            user_id=row["user_id"],
+            nickname=briefs.get(row["user_id"], {}).get("nickname"),
+            avatar_url=briefs.get(row["user_id"], {}).get("avatar_url"),
+            ran_at=row["ran_at"],
+            title=row.get("title"),
+            area=row.get("area"),
+            distance_km=row["distance_km"],
+            duration_sec=row["duration_sec"],
+            avg_pace_sec_per_km=row.get("avg_pace_sec_per_km"),
+            route_id=row.get("route_id"),
+            route_summary=summaries.get(row.get("route_id")),
+            comment_count=comment_counts.get(row["id"], 0),
+            is_mine=(row["user_id"] == viewer_id),
+            kudos_count=kudos_counts.get(row["id"], 0),
+            my_kudos=row["id"] in my_kudos,
+            photo_thumb=signed.get(firsts.get(row["id"])),
+            polyline_thumb=thumbs.get(row["id"]),
+            allow_likes=flags.get(row["user_id"], {}).get("allow_likes", True),
+            allow_comments=flags.get(row["user_id"], {}).get("allow_comments", True),
+        )
+        for row in rows
+    ]
+
+
 async def list_activity_feed(
     user_id: str, limit: int = 20, offset: int = 0
 ) -> list[ActivityFeedItem]:
@@ -1165,8 +1245,7 @@ async def list_activity_feed(
 
     runs_res = await asyncio.to_thread(
         lambda: supabase.table("runs")
-        .select("id, user_id, ran_at, distance_km, duration_sec, "
-                "avg_pace_sec_per_km, route_id, title, area, photos")
+        .select(_ACTIVITY_SELECT)
         .in_("user_id", audience)
         # private run은 본인 것만 (팔로우 대상의 private는 활동 피드에서 제외)
         .or_(f"visibility.neq.private,user_id.eq.{user_id}")
@@ -1174,62 +1253,90 @@ async def list_activity_feed(
         .range(offset, offset + limit - 1)
         .execute()
     )
-    rows = runs_res.data
-    if not rows:
+    return await _build_activity_items(runs_res.data, user_id)
+
+
+def _haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """두 좌표 간 대권 거리(km) — bbox 정사각형을 원형으로 컷하는 후필터용."""
+    r = 6371.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dl = math.radians(lng2 - lng1)
+    h = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(h))
+
+
+# 위치 피드 후보 안전 상한 — bbox 범위 스캔 후 haversine·가시성 후필터 대상.
+# 베타 소규모(수십 run)라 넉넉. 초과 시 로그(스케일 트리거 신호 → PostGIS 전환).
+_NEARBY_CANDIDATE_CAP = 500
+
+
+async def list_nearby_feed(
+    user_id: str, lat: float, lng: float,
+    radius_km: float = 10.0, limit: int = 20, offset: int = 0,
+) -> list[ActivityFeedItem]:
+    """홈 "전체" 탭 — 내 위치 반경 내 public run 탐색 피드 (NEARBY_FEED_DESIGN).
+
+    필터 합성(순서): visibility='public' → bbox 범위 → 본인 제외 → 팔로우 유저
+    제외 → visible_owners(차단 양방향+비공개 계정 제외) → haversine 원형 후필터.
+    최신순(ran_at desc), 반경 내 0건이면 []. 서버 자동 반경 확장 없음.
+    """
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+    radius_km = max(0.1, min(radius_km, 20.0))  # 상한 20 (크루 선례 정합, 확답 B)
+
+    # bounding box (위도 1도≈111km, 경도는 cos(lat) 보정)
+    dlat = radius_km / 111.0
+    coslat = math.cos(math.radians(lat))
+    dlng = radius_km / (111.0 * coslat) if coslat > 1e-9 else 180.0
+
+    supabase = get_supabase_admin()
+
+    # 팔로우 중 유저 + 본인 → 제외 집합 (본인 포함이라 항상 비지 않음)
+    fol = await asyncio.to_thread(
+        lambda: supabase.table("follows")
+        .select("following_id").eq("follower_id", user_id).execute()
+    )
+    exclude_ids = {row["following_id"] for row in fol.data} | {user_id}
+
+    # bbox 범위 스캔 (부분 인덱스) + public + 제외 집합. 후필터로 줄어드므로
+    # range() 없이 후보를 모아(cap) haversine·가시성 필터 후 파이썬에서 페이지네이션.
+    cand_res = await asyncio.to_thread(
+        lambda: supabase.table("runs")
+        .select(_ACTIVITY_SELECT + ", start_lat, start_lng")
+        .eq("visibility", "public")
+        .gte("start_lat", lat - dlat).lte("start_lat", lat + dlat)
+        .gte("start_lng", lng - dlng).lte("start_lng", lng + dlng)
+        .not_.in_("user_id", list(exclude_ids))
+        .order("ran_at", desc=True)
+        .limit(_NEARBY_CANDIDATE_CAP)
+        .execute()
+    )
+    cand = cand_res.data
+    if len(cand) >= _NEARBY_CANDIDATE_CAP:
+        logger.warning("nearby feed 후보 상한(%d) 도달 — PostGIS 전환 검토 신호",
+                       _NEARBY_CANDIDATE_CAP)
+    if not cand:
         return []
 
-    run_ids = [r["id"] for r in rows]
-    route_ids = list({r["route_id"] for r in rows if r.get("route_id")})
-
-    async def _public_route_summaries() -> dict[str, str]:
-        """Public courses only — private ones must not leak into the feed."""
-        if not route_ids:
-            return {}
-        r = await asyncio.to_thread(
-            lambda: supabase.table("routes")
-            .select("id, summary")
-            .in_("id", route_ids)
-            .eq("is_public", True)
-            .execute()
-        )
-        return {row["id"]: row["summary"] for row in r.data}
-
-    firsts = {r["id"]: (r.get("photos") or [None])[0] for r in rows}
-    briefs, summaries, kudos_counts, my_kudos, comment_counts, signed, thumbs, flags = await asyncio.gather(
-        profile_service.get_profile_briefs([r["user_id"] for r in rows]),
-        _public_route_summaries(),
-        _kudos_counts(run_ids),
-        _my_kudos_set(run_ids, user_id),
-        _comment_counts(run_ids),
-        _signed_photo_urls([p for p in firsts.values() if p]),
-        _polyline_thumbs(run_ids),
-        profile_service.feed_flags_batch([r["user_id"] for r in rows]),
-    )
-    return [
-        ActivityFeedItem(
-            run_id=row["id"],
-            user_id=row["user_id"],
-            nickname=briefs.get(row["user_id"], {}).get("nickname"),
-            avatar_url=briefs.get(row["user_id"], {}).get("avatar_url"),
-            ran_at=row["ran_at"],
-            title=row.get("title"),
-            area=row.get("area"),
-            distance_km=row["distance_km"],
-            duration_sec=row["duration_sec"],
-            avg_pace_sec_per_km=row.get("avg_pace_sec_per_km"),
-            route_id=row.get("route_id"),
-            route_summary=summaries.get(row.get("route_id")),
-            comment_count=comment_counts.get(row["id"], 0),
-            is_mine=(row["user_id"] == user_id),
-            kudos_count=kudos_counts.get(row["id"], 0),
-            my_kudos=row["id"] in my_kudos,
-            photo_thumb=signed.get(firsts.get(row["id"])),
-            polyline_thumb=thumbs.get(row["id"]),
-            allow_likes=flags.get(row["user_id"], {}).get("allow_likes", True),
-            allow_comments=flags.get(row["user_id"], {}).get("allow_comments", True),
-        )
-        for row in rows
+    # haversine 원형 후필터 (bbox 정사각형 모서리 컷 — 확답 A)
+    in_circle = [
+        r for r in cand
+        if r.get("start_lat") is not None
+        and _haversine_km(lat, lng, r["start_lat"], r["start_lng"]) <= radius_km
     ]
+    if not in_circle:
+        return []
+
+    # visible_owners: 차단 양방향 제외 + 비공개 계정 제외 (프라이버시 핵심).
+    # 팔로우 유저는 이미 제외됐으므로 여기서 남는 건 공개계정·비팔로우·비차단.
+    owner_ids = list({r["user_id"] for r in in_circle})
+    visible = await profile_service.visible_owners(user_id, owner_ids)
+    visible_rows = [r for r in in_circle if r["user_id"] in visible]
+
+    # 최신순 유지(쿼리 order 보존) → 파이썬 페이지네이션
+    page = visible_rows[offset:offset + limit]
+    return await _build_activity_items(page, user_id)
 
 
 async def list_user_runs(
