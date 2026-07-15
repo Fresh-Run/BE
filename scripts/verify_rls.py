@@ -63,6 +63,12 @@ def main() -> None:
             ok.append(t)
 
     print(f"전 {len(tables)}개 테이블 검증")
+    # 확장 소유 시스템 테이블 — PostGIS가 소유해 우리가 RLS를 못 켠다(소유권 없음).
+    # Advisor에 'rls_disabled'로 뜨지만 유저 데이터 무관(공개 좌표계 참조). anon
+    # 쓰기 권한은 REVOKE로 차단(db/2026-07-15_spatial_ref_sys_revoke.sql). 우리
+    # 앱은 이 테이블·PostGIS 함수를 직접 쓰지 않음 → 제외해도 커버리지 손실 0.
+    print(f"⚙️  _SYS_TABLES 제외(확장 소유, RLS enable 불가·무해): "
+          f"{', '.join(sorted(_SYS_TABLES))}")
     print(f"🟢 RLS deny 확정 (svc 데이터 有 & anon 0/차단): {len(ok)}")
     if empty:
         print(f"⚪ 빈 테이블 (판정 보류 — 데이터 없어 0): {', '.join(empty)}")
