@@ -704,7 +704,15 @@ def main():
         section("12. 공개 프로필용 public run 승격 (PATCH /runs, 멱등)")
         # {유저키: 공개로 둘 run 목표 개수} — 개수 기반이라 실제 run 분포와
         # 무관하게 견고. GPS(has_track) 우선 승격해 카드 다양성 확보.
-        PUBLIC_PLAN = {"test1": 4, "test2": 1, "demo1": 2, "demo2": 1, "demo4": 1}
+        # 2026-07-15 재배분(Part 2): followers 위주 → **public 위주**로 전환.
+        # demo 계정 public 목표를 올려 "비팔로워도 살아있는 세계"를 시연.
+        # followers는 소수만 남겨 Part 1(followers_run_count "팔로우하면 N개 더")
+        # 시연을 성립시킴 — demo1·demo4(공개 계정)에 followers run 1건씩 잔존.
+        # §13(청라동 followers)은 이 섹션 후행이라 승격 후보에서 자동 제외(순서 안전).
+        # ⚠️ 재시드는 "public 위주"를 정성적으로 재현할 뿐, 스테이징 실데이터의
+        # 정확한 분포(public 27·followers 6·private 1)는 핀포인트 PATCH가 진실.
+        PUBLIC_PLAN = {"test1": 4, "test2": 2, "demo1": 3, "demo2": 3,
+                       "demo3": 2, "demo4": 2}
         for key, want in PUBLIC_PLAN.items():
             uid, tok = users[key]
             runs = api(c, "GET", "/runs", tok, params={"limit": 50}).json()
@@ -723,6 +731,17 @@ def main():
                 if api(c, "PATCH", f"/runs/{r['id']}", tok, json=body).status_code == 200:
                     made["public_runs"] += 1
         log(f"public 승격 {made['public_runs']}건 (수정 API 경유)")
+
+        # demo3(비공개 계정): 완전 비공개(private) run 1건 시연 — 카운트에도
+        # 안 잡히는 "나만 보는 기록". 멱등: 이미 private run 있으면 스킵.
+        d3_uid, d3_tok = users["demo3"]
+        d3_runs = api(c, "GET", "/runs", d3_tok, params={"limit": 50}).json()
+        if not any(r.get("visibility") == "private" for r in d3_runs):
+            _cand = [r for r in d3_runs if r.get("visibility") == "followers"]
+            if _cand:
+                api(c, "PATCH", f"/runs/{_cand[0]['id']}", d3_tok,
+                    json={"visibility": "private"})
+                log("  demo3 private run 1건 (완전 비공개 시연)")
 
         # ── 13. 지역 배정 러닝 (test1 한강로동 month_rank·test2 청라동) ────────
         section("13. 지역 배정 + month_rank (test1 한강로동 verified 3회 / test2 청라동)")

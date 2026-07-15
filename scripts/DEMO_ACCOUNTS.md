@@ -53,8 +53,9 @@
 - **크루**: "한강 새벽 러닝 크루" (승인제, 멤버 6명 + pending 1명)
 - **공지 2개**: 토요 정기런(러닝 일시·장소·RSVP 마감 有, 참석3/불참1/미정1 투표됨) + 일반 공지
 - **러닝 기록**: 멤버들에게 최근 2주 분산 (3~10km) → 크루 피드·주간 랭킹·통계 살아있음
-- **run 공개 범위 (visibility)**: 대부분 `followers`(팔로워·크루원만), 일부 `public`으로 승격(수정 API `PATCH /runs` 경유) → **공개 프로필 데모용 자연스러운 mix**. 분포: test1 4개 공개(GPS 2 + 일반 2)·test2 1·demo1 2·demo2 1·demo4 1, demo3은 0(비공개만). 공개 run엔 시간대 기반 제목(새벽/아침/한낮/저녁/야간 러닝)
-- **공개 프로필 화면** (`GET /users/{id}/profile` + `/users/{id}/runs`): **비팔로워 시점엔 그 유저의 public run만** 보임 (예: test1을 팔로우 안 하는 demo4가 보면 게시 러닝 4개 = `public_run_count` 일치). 팔로우하면 `followers` run까지 노출. 본인 프로필에선 각 카드에 `visibility` 뱃지, 타인 프로필은 null
+- **run 공개 범위 (visibility) — 2026-07-15 재배분(Part 2): `public` 위주**. 비팔로워도 "살아있는 세계"를 보게 public을 다수로, `followers`는 소수만 남겨 **Part 1(`followers_run_count` "팔로우하면 N개 더") 시연**을 성립. **스테이징 실분포: public 27 · followers 6 · private 1**(시드 34건 중). 계정별: **demo1**(공개) pub3·**fol1**·**demo4**(공개) pub2·**fol1** → 비팔로워 프로필에 `followers_run_count=1` "팔로우하면 1개 더" CTA 시연 / **demo2·demo3**(비공개) pub·fol1 유지(비공개 스토리) + **demo3 private 1건**(카운트에도 안 잡히는 완전 비공개 시연) / **test2**(비공개) pub6·fol2(청라동 지역 개인런 followers 유지, §13) / **test1** pub11. 공개 run엔 시간대 기반 제목
+  - ⚠️ **재시드 재현성(판단 플래그)**: `seed_demo_data.py` §12 `PUBLIC_PLAN`을 public 위주로 갱신해 **정성적으로** 재현(demo3 private 1건도 §12 직후 멱등 처리). 단 개수-기반 PLAN + 실행순서 의존이라 **정확한 27/6/1 재현은 스테이징 핀포인트 PATCH가 진실** — 재시드는 근사만.
+- **공개 프로필 화면** (`GET /users/{id}/profile` + `/users/{id}/runs`): **비팔로워 시점엔 그 유저의 public run만** 목록에 보이고, 열림 프로필이면 **`followers_run_count`로 팔로워 공개 run "존재"를 사실값 노출**(A′ "숫자는 사실값, 리스트는 잠금" — 목록엔 미노출). 팔로우하면 `followers` run까지 목록 노출. **잠금 계정(비공개·비팔로워)엔 `followers_run_count=0`**. 본인 프로필에선 각 카드에 `visibility` 뱃지, 타인 프로필은 null
 - **GPS 검증 run**: test1 2개(5km·8km)·demo1 1개 — 서울숲 궤적으로 서버 파이프라인을 태운 **verification=verified + splits(km별 랩·고도)** run. 활동/크루 피드의 run 상세(`GET /runs/{id}`)에 `splits`·`has_track`, `GET /runs/{id}/track`에 폴리라인
 - **코스**: 공개 12개+ (좋아요·댓글 달림) + 비공개 1개(크루 피드에서 route_summary null 확인용). 서울 각지(성수·여의도·강남·잠실·반포·마포·남산 등) 3~8km 다양
 - **홈 '전체' 탭** (`GET /routes/public?sort=popular|newest`): 공개 코스가 풍성하게 노출. **인기순**(copy_count)은 "성수 서울숲 야경 5km 루프"(♥6·💬2·복사2) 등 상위, **최신순**은 방금 만든 신규 코스. test1/test2 소유 공개 코스도 좋아요·댓글·복사 받음(본인 콘텐츠 반응 확인용). '이 코스 달리기' 복사 이력 4건 → copy_count 살아있음

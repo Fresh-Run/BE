@@ -495,6 +495,11 @@ class PublicProfileResponse(BaseModel):
     public_run_count: int = Field(
         0, description="이 유저가 '전체 공개'로 게시한 러닝 수 (시안 '게시한 러닝 · 공개 N')."
     )
+    followers_run_count: int = Field(
+        0, description="'팔로워 공개(followers)'로 게시한 러닝 수 (2026-07-15 additive). "
+        "비팔로워에게도 사실값 노출(A′ '숫자는 사실값') — 프론트는 '팔로우하면 M개 더' "
+        "유도. **목록엔 이 run들 미노출**(리스트 잠금). 잠금 계정(locked=true)엔 0."
+    )
     visibility: str = Field("public", description="계정 공개범위 (잠금 화면 판단용).")
     locked: bool = Field(
         False, description="True면 비공개 계정을 볼 권한 없음 — 🔒 화면. "

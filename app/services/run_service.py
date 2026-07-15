@@ -1344,6 +1344,24 @@ async def public_run_count(target_id: str) -> int:
     return res.count or 0
 
 
+async def followers_run_count(target_id: str) -> int:
+    """target이 'followers 공개'로 게시한 run 수 (공개 프로필 — "팔로워 공개 M개").
+
+    A′ "숫자는 사실값, 리스트는 잠금"의 숫자 축: 비팔로워에게도 이 카운트는
+    노출해 "팔로우하면 M개를 더 볼 수 있다"를 성립시킨다. 목록(GET /users/{id}/runs)은
+    현행대로 public만 — followers run 내용(트랙·제목·날짜)은 절대 미노출.
+    """
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("runs")
+        .select("id", count="exact")
+        .eq("user_id", target_id)
+        .eq("visibility", "followers")
+        .execute()
+    )
+    return res.count or 0
+
+
 async def _check_challenge_completion(user_id: str) -> None:
     """After a run is saved, check if any active crew challenge just hit its goal.
 
