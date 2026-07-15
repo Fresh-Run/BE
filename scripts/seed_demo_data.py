@@ -230,19 +230,49 @@ def ensure_route(c, tok, uid, summary, is_public, lat, lng, dist) -> str:
     return sb_insert_route(c, uid, summary, is_public, lat, lng, dist)
 
 
-def sb_insert_run(c, uid, ran_at, km, route_id=None, notes=None, visibility="followers"):
-    # baseline은 followers (신규 환경에서도 대부분 followers, 일부만 public 승격 →
-    # 자연스러운 mix). 공개 프로필 데모용 public 전환은 섹션 12에서 수정 API 경유.
-    pace = random.randint(320, 420)
-    body = {"user_id": uid, "ran_at": ran_at, "distance_km": km,
-            "duration_sec": round(km * pace), "avg_pace_sec_per_km": pace,
-            "visibility": visibility}
-    if route_id: body["route_id"] = route_id
-    if notes: body["notes"] = notes
-    r = c.post(f"{_SB}/rest/v1/runs", headers={**_ADM, "Prefer": "return=minimal"}, json=body)
-    if r.status_code not in (200, 201):
-        die("run insert 실패", r.text)
+# 서울 실측 출발지 풀 — 트랙형 시드 run의 시작점 로테이션(순번 결정론)
+_SEOUL_STARTS = [
+    (37.5445, 127.0374),  # 서울숲
+    (37.5265, 126.9335),  # 여의도공원
+    (37.5299, 127.0703),  # 뚝섬유원지
+    (37.5109, 126.9956),  # 반포 한강공원
+    (37.5512, 126.9882),  # 남산 북측순환로 입구
+    (37.5206, 127.1214),  # 올림픽공원
+    (37.5061, 127.1063),  # 석촌호수
+    (37.5580, 126.9250),  # 경의선숲길
+]
+
+
+def insert_tracked_run(c, tok, ran_at_iso, km, pace=None, visibility="followers",
+                       start=None, **extra):
+    """트랙 생성형 run 시딩 (2026-07-15 — 트랙 없는 옛 시드 정리, 단일 경로).
+
+    API POST /runs에 make_gps_track 궤적 동봉 → 서버 파이프라인이 run_tracks·
+    verification·splits·polyline_thumb를 실물로 산출(§8 GPS 시딩과 동일 경로 —
+    모든 시드 run이 진짜 트랙을 갖는다). create_run은 ran_at을 now()로 강제하므로
+    (백데이트 불가 함정) 직후 admin PATCH로 과거 시각 배정. crew_id 동봉 시
+    session_key는 서버가 파생(생성일 버킷 — 당일 시각이면 그대로 정합).
+    baseline visibility는 followers(§12가 일부 public 승격 → 자연스러운 mix).
+    """
+    pace = pace or random.randint(320, 420)
+    start = start or _SEOUL_STARTS[made["runs"] % len(_SEOUL_STARTS)]
+    body = {"distance_km": km, "duration_sec": round(km * pace),
+            "avg_pace_sec_per_km": pace, "visibility": visibility,
+            "gps_track": make_gps_track(km, pace, seed=random.randint(1, 10 ** 6),
+                                        start=start)}
+    for k in ("route_id", "notes", "title", "area", "crew_id"):
+        if extra.get(k) is not None:
+            body[k] = extra[k]
+    r = api(c, "POST", "/runs", tok, json=body)
+    if r.status_code != 200:
+        die("run(tracked) insert 실패", r.text)
+    rid = r.json()["id"]
+    pr = c.patch(f"{_SB}/rest/v1/runs?id=eq.{rid}", headers=_ADM,
+                 json={"ran_at": ran_at_iso})
+    if pr.status_code not in (200, 204):
+        die("run ran_at 백데이트 실패", pr.text)
     made["runs"] += 1
+    return rid
 
 
 def _title_for_hour(ran_at_iso):
@@ -267,7 +297,8 @@ def seed_runs_if_absent(c, tok, uid, specs):
     for days_ago, hour_kst, km, route_id, notes in specs:
         ran = (now - timedelta(days=days_ago)).astimezone(_KST).replace(
             hour=hour_kst, minute=random.randint(0, 50), second=0, microsecond=0)
-        sb_insert_run(c, uid, ran.astimezone(timezone.utc).isoformat(), km, route_id, notes)
+        insert_tracked_run(c, tok, ran.astimezone(timezone.utc).isoformat(), km,
+                           route_id=route_id, notes=notes)
 
 
 def next_saturday_kst(hour=6):
@@ -684,14 +715,14 @@ def main():
 
         # ── 13. 지역 배정 러닝 (test1 한강로동 month_rank·test2 청라동) ────────
         section("13. 지역 배정 + month_rank (test1 한강로동 verified 3회 / test2 청라동)")
-        def _insert_run_ex(uid, ran_at, km, **extra):
-            pace = extra.pop("pace", random.randint(320, 420))
-            body = {"user_id": uid, "ran_at": ran_at, "distance_km": km,
-                    "duration_sec": round(km * pace), "avg_pace_sec_per_km": pace,
-                    "visibility": extra.pop("visibility", "public")}
-            body.update(extra)
-            r = c.post(f"{_SB}/rest/v1/runs", headers={**_ADM, "Prefer": "return=minimal"}, json=body)
-            if r.status_code not in (200, 201): die("run(ex) insert 실패", r.text)
+        # 트랙 생성형(2026-07-15): admin insert → insert_tracked_run으로 교체.
+        # verification은 서버 파이프라인이 verified 산출(명시 세팅 불필요),
+        # pace는 month_rank best_5k 수학 유지를 위해 명시 전달.
+        def _insert_run_ex(tok_, ran_at, km, **extra):
+            insert_tracked_run(c, tok_, ran_at, km,
+                               pace=extra.pop("pace", None),
+                               visibility=extra.pop("visibility", "public"),
+                               **extra)
         # 멱등: test1이 한강로동 러닝 이미 있으면 스킵
         t1_runs = api(c, "GET", "/runs", t1, params={"limit": 50}).json()
         if not any(r.get("area") == "한강로동" for r in t1_runs):
@@ -708,8 +739,7 @@ def main():
                     ran_utc = ((now - timedelta(days=d)).astimezone(_KST)
                                .replace(hour=6, minute=10, second=0, microsecond=0)
                                .astimezone(timezone.utc).isoformat())
-                _insert_run_ex(uid1, ran_utc, km, area="한강로동", verification="verified", pace=pace)
-            made["runs"] += 3
+                _insert_run_ex(t1, ran_utc, km, area="한강로동", pace=pace)
             log("  test1 한강로동 verified 3회(8·6.5·5km, 최근 5km 빠름) → month_rank best_5k")
         else:
             log("  test1 한강로동 러닝 이미 있음 — 스킵")
@@ -718,9 +748,8 @@ def main():
             now = datetime.now(timezone.utc)
             for d, km in [(2, 5.0), (6, 8.0)]:
                 ran = (now - timedelta(days=d)).astimezone(_KST).replace(hour=19, minute=0, second=0, microsecond=0)
-                _insert_run_ex(uid2, ran.astimezone(timezone.utc).isoformat(), km,
-                               area="청라동", verification="verified", visibility="followers")
-            made["runs"] += 2
+                _insert_run_ex(t2, ran.astimezone(timezone.utc).isoformat(), km,
+                               area="청라동", visibility="followers")
             log("  test2 청라동 개인런 2회")
         else:
             log("  test2 청라동 러닝 이미 있음 — 스킵")
@@ -759,14 +788,12 @@ def main():
         tagged = c.get(f"{_SB}/rest/v1/runs", headers=_ADM,
                        params={"crew_id": f"eq.{CREW}", "select": "id", "limit": 1}).json()
         if not tagged:
-            today_kst = datetime.now(_KST).date().isoformat()
-            skey = f"c:{CREW}:{today_kst}"
+            # crew_id를 API로 동봉 — session_key는 서버 파생(c:{crew}:{오늘 KST}).
+            # ran_at 백데이트가 당일 06:20이라 날짜 버킷 정합 유지.
             ran = datetime.now(_KST).replace(hour=6, minute=20, second=0, microsecond=0)
             for key in ("demo2", "demo3"):
-                _insert_run_ex(users[key][0], ran.astimezone(timezone.utc).isoformat(), 8.0,
-                               area="성수동", verification="verified",
-                               crew_id=CREW, session_key=skey, visibility="public")
-            made["runs"] += 2
+                _insert_run_ex(users[key][1], ran.astimezone(timezone.utc).isoformat(), 8.0,
+                               area="성수동", crew_id=CREW, visibility="public")
             log(f"  정기런 세션 태깅 2인(demo2·demo3, 성수동) → 크루 피드 'N명 참여' 배지")
         else:
             log("  정기런 태그 run 이미 있음 — 스킵")
@@ -795,6 +822,53 @@ def main():
         api(c, "PATCH", "/me/profile", users["demo2"][1], json={"visibility": "private"})
         api(c, "PATCH", "/me/profile", users["demo3"][1], json={"visibility": "private"})
         log("  demo2·demo3 visibility=private (비공개 → 팔로우 요청제)")
+
+        # ── 19. 실 GPS 시드런 5종 (scripts/seed_real_tracks.json) ────────────
+        # 반포·서울숲·여의도·뚝섬·남산 — 실도로 좌표 라이브러리(시뮬레이션
+        # make_gps_track와 구분, 출처는 json _provenance). 멱등: 소유자에게 같은
+        # title run 있으면 스킵. 여의도 세션 태그는 크루명으로 해석 — 크루가
+        # 없거나 비멤버(400)면 무태그 폴백(재시드 견고성).
+        section("19. 실 GPS 시드런 5종 (반포·서울숲·여의도·뚝섬·남산)")
+        import json as _json
+        _lib = _json.load(open(os.path.join(os.path.dirname(__file__),
+                                            "seed_real_tracks.json")))["tracks"]
+        _crew_by_name = {cr["name"]: cr["id"] for cr in
+                         c.get(f"{_SB}/rest/v1/crews", headers=_ADM,
+                               params={"select": "id,name"}).json()}
+        for _title, _spec in _lib.items():
+            _key = "test1" if _spec["owner_email"].startswith("test1") else "test2"
+            _uid, _tok = users[_key]
+            _mine = api(c, "GET", "/runs", _tok, params={"limit": 50}).json()
+            if any(r.get("title") == _title for r in _mine):
+                log(f"  {_title} 이미 있음 — 스킵")
+                continue
+            _n = len(_spec["points"])
+            _step_ms = int(_spec["duration_sec"] * 1000 / max(_n - 1, 1))
+            _gps = [{"lat": p["lat"], "lng": p["lng"],
+                     "t": 1_783_300_000_000 + i * _step_ms, "acc": 8.0}
+                    for i, p in enumerate(_spec["points"])]
+            _body = {"distance_km": _spec["distance_km"],
+                     "duration_sec": _spec["duration_sec"],
+                     "avg_pace_sec_per_km": _spec["avg_pace_sec_per_km"],
+                     "visibility": _spec["visibility"], "title": _title,
+                     "area": _spec["area"], "gps_track": _gps}
+            _cn = _spec.get("session_crew_name")
+            if _cn and _cn in _crew_by_name:
+                _body["crew_id"] = _crew_by_name[_cn]
+            r = api(c, "POST", "/runs", _tok, json=_body)
+            if r.status_code != 200 and "crew_id" in _body:
+                _body.pop("crew_id")   # 크루 부재/비멤버 → 무태그 폴백
+                r = api(c, "POST", "/runs", _tok, json=_body)
+            if r.status_code != 200:
+                die(f"실 GPS 시드런 {_title} 실패", r.text)
+            # ran_at 백데이트 + verification 원본 복원(간축 재투입은 포인트 수
+            # 미달로 unverified 판정 — 원본 세계 재현엔 원 판정 보존이 맞음)
+            c.patch(f"{_SB}/rest/v1/runs?id=eq.{r.json()['id']}", headers=_ADM,
+                    json={"ran_at": _spec["ran_at"],
+                          "verification": _spec.get("verification", "verified")})
+            made["runs"] += 1
+            log(f"  {_title} 재현 ({_key}, {_spec['distance_km']}km, "
+                f"{'세션태그' if 'crew_id' in _body else '무태그'})")
 
         # ── 요약 ─────────────────────────────────────────────────────────
         section("시딩 요약 (이번 실행에서 새로 만든 것)")
