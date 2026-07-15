@@ -231,5 +231,14 @@ async def send_for_notification(
         if dead:
             await _drop_tokens(dead)
             logger.info("DeviceNotRegistered 토큰 %d개 정리", len(dead))
+
+        # 발송 성공 요약 — 토큰 값·유저 식별정보는 남기지 않고 카운트/상태만
+        # (관측성: 실 Expo 발송 확인용. status별 집계 — 대부분 ok, error면 세부는
+        # 위 DeviceNotRegistered 처리·영수증 폴링 v2에서).
+        ok_n = sum(1 for tk in tickets
+                   if isinstance(tk, dict) and tk.get("status") == "ok")
+        err_n = len(tickets) - ok_n
+        logger.info("push sent: type=%s recipients=%d tickets=ok:%d err:%d",
+                    type, len(tokens), ok_n, err_n)
     except Exception:  # noqa: BLE001 — 푸시는 부가 기능, 어떤 실패도 전파 금지
         logger.warning("푸시 발송 실패 — 무시 (type=%s)", type, exc_info=True)

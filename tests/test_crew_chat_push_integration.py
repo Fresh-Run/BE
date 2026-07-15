@@ -92,9 +92,13 @@ def run_tests():
         # 서버 8001 (EXPO_PUSH_URL=mock) — 프로필 설정은 기동 후(BASE=8001)
         # 서버 8001 (EXPO_PUSH_URL=mock)
         env = {**os.environ, "EXPO_PUSH_URL": f"{mock_url}/push"}
+        logf = open(os.path.join(os.path.dirname(__file__), "..",
+                                 "_ccp_uvicorn.log"), "w+")
         proc = subprocess.Popen(
-            [sys.executable, "-m", "uvicorn", "app.main:app", "--port", "8001", "--log-level", "warning"],
-            cwd=os.path.join(os.path.dirname(__file__), ".."), env=env)
+            [sys.executable, "-m", "uvicorn", "app.main:app", "--port", "8001",
+             "--log-level", "info"],  # info — "push sent" 성공 로그 캡처용
+            cwd=os.path.join(os.path.dirname(__file__), ".."), env=env,
+            stderr=logf, stdout=logf)
         for _ in range(40):
             try:
                 if httpx.get("http://localhost:8001/health", timeout=2).status_code == 200: break
@@ -125,6 +129,22 @@ def run_tests():
         assert any(f"ccp-cc-{TS}" in t for t in sent_tokens), "C에게 Expo 발송"
         assert not any(f"ccp-a-{TS}" in t for t in sent_tokens), "A에겐 미발송"
         ok(f"인앱 B·C 각 1 · 발신자 0 · Expo 발송 {len(sent_tokens)}건(B·C)")
+
+        # 성공 로그 포맷 검증 — "push sent: type=crew_chat recipients=1 tickets=ok:1 err:0"
+        logf.flush()
+        with open(os.path.join(os.path.dirname(__file__), "..", "_ccp_uvicorn.log")) as lf:
+            logtxt = lf.read()
+        sent_lines = [ln for ln in logtxt.splitlines() if "push sent:" in ln and "crew_chat" in ln]
+        assert sent_lines, "성공 로그 'push sent: ...crew_chat...' 부재"
+        assert any("tickets=ok:1 err:0" in ln for ln in sent_lines), \
+            f"ticket 상태 요약(ok:1 err:0) 부재: {sent_lines[-2:]}"
+        # push sent 로그 라인에 토큰 값·유저 id가 없어야 (마스킹 계약 — 카운트만).
+        # (참고: httpx INFO 로그는 Supabase URL의 user_id를 남기지만 그건 별개
+        #  기존 이슈 — 프로덕션 로그 레벨 관리 대상이고 이 로그 라인의 계약 아님.)
+        for ln in sent_lines:
+            assert f"ccp-b-{TS}" not in ln and uids["b"] not in ln, \
+                f"push sent 로그에 토큰/유저 식별정보 누출: {ln}"
+        ok(f"성공 로그 포맷 확인: '{sent_lines[-1].split('push sent:')[1].strip()[:60]}' · 카운트만(식별정보 무)")
 
         step("3. 스로틀 — A 연타 2건 추가 → 인앱 누적 3, 푸시는 1(스로틀)")
         MockExpo.received = []
@@ -168,6 +188,8 @@ def run_tests():
         step("Cleanup")
         if proc: proc.terminate()
         httpd.shutdown()
+        _lp = os.path.join(os.path.dirname(__file__), "..", "_ccp_uvicorn.log")
+        if os.path.exists(_lp): os.remove(_lp)
         if "crew" in dir():
             pass
         for uid in uids.values():
