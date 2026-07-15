@@ -95,6 +95,10 @@ def run():
                 assert api(c, "PATCH", "/me/profile", toks[-1],
                            json={"nickname": f"목록u{i}-{ts % 100000}"}).status_code == 200
             tok1, tok2, tok3 = toks
+            # u1이 크루 3개를 소유해야 함 — free는 1개 한도(2026-07 도입)라 premium
+            # 승격(admin, session_only 테스트 선례). 이 테스트는 한도 도입 전 작성분.
+            c.patch(f"{_SB}/rest/v1/profiles?user_id=eq.{uids[0]}",
+                    headers=_ADM, json={"tier": "premium"})
             names = {}
             for label in ("A", "B", "C"):
                 r = api(c, "POST", "/crews", tok1,

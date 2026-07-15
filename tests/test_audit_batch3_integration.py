@@ -114,8 +114,11 @@ def run():
             ok("남의 route 학습 차단 ✓ (owner 불일치 → []) 생성은 200 ✓")
 
             step("2. L1 — kudos 가시성 게이트 (팔로우/크루 O, 무관 X)")
-            # A가 run 생성
-            r = api(c, "POST", "/runs", tok_a, json={"distance_km": 5.0, "duration_sec": 1650})
+            # A가 run 생성 — visibility="followers" 명시 (2026-07-15 갱신: 이 테스트는
+            # visibility v1(07-07) 전날 작성돼 "미지정=소유자만" 시절 기대였음. v1부터
+            # 미지정 기본이 public이라 "무관 C는 404" 감사 의도를 보존하려면 followers 명시)
+            r = api(c, "POST", "/runs", tok_a,
+                    json={"distance_km": 5.0, "duration_sec": 1650, "visibility": "followers"})
             run_a = r.json()["id"]; run_ids.append(run_a)
             # B(팔로워)는 kudos 가능 + 목록 조회 가능
             assert api(c, "POST", f"/runs/{run_a}/kudos", tok_b).status_code == 204

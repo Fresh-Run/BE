@@ -4,8 +4,11 @@ Integration test: 신고 v1 (docs/REPORT_DESIGN.md)
 POST /reports(유저 신고, 204·self 400·404 은닉·중복 멱등·레이스) +
 GET/PATCH /admin/reports(운영진 게이트 404·목록 brief·단방향 처리).
 
-전제: 로컬 서버가 ADMIN_USER_IDS=<test1 uid>로 기동돼 있어야 함(운영진=test1).
-secret 미설정 fail-safe(전원 404)는 이 파일 밖에서 env 제거+재시작으로 별도 검증.
+자가완결형(2026-07-15 갱신): 임시 admin 유저를 만들고 **자체 uvicorn(8002)**을
+ADMIN_USER_IDS=<임시 uid> env로 기동해 전 스텝을 8002로 실행 — 로컬 .env·운영
+secret(실 ADMIN_USER_IDS)·실기기 계정 무접촉. (push_notification의 8001 선례.)
+secret 미설정 fail-safe(전원 404)는 메인 8000이 실운영 uid만 가지므로 이 테스트의
+비운영진 404 스텝이 사실상 함께 커버.
 
 케이스:
  1. 유저 신고 정상 → 204 + reports 행 생성(pending)
@@ -26,10 +29,10 @@ Run: python tests/test_report_integration.py  (로컬 서버 + ADMIN_USER_IDS �
 from __future__ import annotations
 
 import asyncio
-import os, sys, time
+import os, subprocess, sys, time
 import httpx
 
-BASE = "http://localhost:8000/api"
+BASE = "http://localhost:8002/api"   # 자체 기동 서버(admin env 오버라이드)
 _SB = "https://jlmmqnpddkokyintlawd.supabase.co"
 
 
@@ -85,15 +88,31 @@ def notif_count(c, token):
 def run_tests():
     c = httpx.Client(timeout=90)
     uids = {}
+    proc = None
     try:
-        step("0. A(신고자)·B(대상)·C(차단페어/비운영진) + admin=test1")
-        for k in ("a", "b", "cc"):
+        step("0. A(신고자)·B(대상)·C(차단페어/비운영진) + 임시 admin + 서버 8002")
+        for k in ("a", "b", "cc", "adm"):
             uids[k] = sb_user(c, f"rpt-{k}-{TS}@test.com")
         tk = {k: sb_login(c, f"rpt-{k}-{TS}@test.com") for k in uids}
+        # 자체 서버: ADMIN_USER_IDS=임시 admin uid (로컬 .env·운영 secret 무접촉)
+        env = {**os.environ, "ADMIN_USER_IDS": uids["adm"]}
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "uvicorn", "app.main:app", "--port", "8002",
+             "--log-level", "warning"],
+            cwd=os.path.join(os.path.dirname(__file__), ".."), env=env)
+        for _ in range(40):
+            try:
+                if httpx.get("http://localhost:8002/health", timeout=2).status_code == 200:
+                    break
+            except Exception:
+                pass
+            time.sleep(0.5)
+        else:
+            fail("8002 서버 기동 실패")
         for k in uids:
             assert api(c, "PATCH", "/me/profile", tk[k], json={"nickname": f"RPT{k}{TS}"}).status_code == 200
-        adm_tok = sb_login(c, "test1@freshrun.com")   # 운영진(ADMIN_USER_IDS)
-        ok("임시 유저 3명 + test1(운영진) 로그인")
+        adm_tok = tk["adm"]   # 임시 운영진(이 서버의 ADMIN_USER_IDS)
+        ok("임시 유저 4명 + admin env 서버 8002 기동")
 
         step("1. 유저 신고 정상 — A→B → 204 + pending 행 생성")
         b_notif_before = notif_count(c, tk["b"])
@@ -214,9 +233,11 @@ def run_tests():
         print("\n" + "=" * 50 + "\n  ALL TESTS PASSED\n" + "=" * 50)
     finally:
         step("Cleanup")
+        if proc:
+            proc.terminate()
         for uid in uids.values():
             c.delete(f"{_SB}/auth/v1/admin/users/{uid}", headers=_ADM)
-        print("  정리 완료 (reports는 reporter_id FK cascade)")
+        print("  정리 완료 (8002 종료 · reports는 reporter_id FK cascade)")
 
 
 if __name__ == "__main__":
