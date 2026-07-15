@@ -23,10 +23,15 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
+from course_geometry import derive_geometry, load_tracks
+
 BASE = "http://localhost:8000/api"
 _SB = "https://jlmmqnpddkokyintlawd.supabase.co"
 _KST = timezone(timedelta(hours=9))
 PW = "test1234"
+
+# 코스 지오메트리 유도용 실 GPS 트랙(§19) — 한 번만 로드해 재사용.
+_COURSE_TRACKS = load_tracks()
 
 random.seed(20260704)  # 결정적 시딩 (재실행 시 동일 값)
 
@@ -209,11 +214,16 @@ def ensure_profile(c, tok, nickname, bio, avatar_seed):
 
 
 def sb_insert_route(c, uid, summary, is_public, lat, lng, dist):
+    # 지오메트리 유도: 실제 앱 저장 경로(route_service.persist_route)와 동일 포맷
+    # (polyline=Coordinate[] · waypoints=Waypoint[]) — §19 실 트랙에서 코스 시작점
+    # 기준으로 유도. 예전엔 waypoints:[]·polyline null → 프론트 "네온 폴백"이었음.
+    polyline, waypoints = derive_geometry(lat, lng, summary, _COURSE_TRACKS)
     r = c.post(f"{_SB}/rest/v1/routes",
                headers={**_ADM, "Prefer": "return=representation"},
                json={"user_id": uid, "summary": summary, "total_distance_km": dist,
                      "estimated_duration_min": round(dist * 6.5),
-                     "is_public": is_public, "waypoints": [],
+                     "is_public": is_public, "waypoints": waypoints,
+                     "polyline": polyline,
                      "start_lat": lat, "start_lng": lng})
     if r.status_code not in (200, 201):
         die("route insert 실패", r.text)
