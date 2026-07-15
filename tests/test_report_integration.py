@@ -1,8 +1,8 @@
 """
-Integration test: 신고 v1 (docs/REPORT_DESIGN.md)
+Integration test: 신고 v1 + run 오픈 v1.1 (docs/REPORT_DESIGN.md)
 
-POST /reports(유저 신고, 204·self 400·404 은닉·중복 멱등·레이스) +
-GET/PATCH /admin/reports(운영진 게이트 404·목록 brief·단방향 처리).
+POST /reports(유저·run 신고, 204·self 400·404 은닉·중복 멱등·레이스) +
+GET/PATCH /admin/reports(운영진 게이트 404·목록 brief(user/run)·단방향 처리).
 
 자가완결형(2026-07-15 갱신): 임시 admin 유저를 만들고 **자체 uvicorn(8002)**을
 ADMIN_USER_IDS=<임시 uid> env로 기동해 전 스텝을 8002로 실행 — 로컬 .env·운영
@@ -15,7 +15,7 @@ secret 미설정 fail-safe(전원 404)는 메인 8000이 실운영 uid만 가지
  2. self 신고 → 400
  3. 차단 관계 신고 → 404 + 행 미생성
  4. 없는 유저 → 404
- 5. target_type='run'(미오픈) → 422
+ 5. target_type='route'(미오픈) → 422  (run은 v1.1에서 오픈 — 11~14로 이동)
  6. 중복 pending 재신고 → 204 + 행 1개 유지(멱등)
  7. 레이스: 동시 2발 → 둘 다 204 + 행 정확히 1개(부분 유니크 불변식)
  8. admin 조회: 운영진 200+brief / 비운영진 404
@@ -23,6 +23,14 @@ secret 미설정 fail-safe(전원 404)는 메인 8000이 실운영 uid만 가지
     dismissed 204 / 비운영진 404
 10. detail 501자 → 422
 +  무알림: 신고당한 B의 notifications 개수 불변
+
+run 신고 (v1.1, 2026-07-15 오픈):
+11. B의 public run 신고(A, 비팔로우) → 204 + target_type='run' 행 생성
+    / 중복 pending 멱등(부분 유니크 타입 무관 자동 적용) / 자기 run → 400
+12. B의 private run 신고(A 비가시) → 404 은닉 + 행 미생성 / 없는 run → 404
+13. 차단 소유자(C)의 public run → 404 은닉 + 행 미생성
+14. admin 조회: target_run{run_id,title,owner.nickname} brief · target은 null
+    → B가 run 삭제 후 재조회: 200 안 깨짐 + 신고 행 잔존 + target_run null
 
 Run: python tests/test_report_integration.py  (로컬 서버 + ADMIN_USER_IDS 필요)
 """
@@ -152,11 +160,11 @@ def run_tests():
         assert r.status_code == 404, f"없는 유저 404, got {r.status_code}"
         ok("없는 유저 404")
 
-        step("5. target_type='run'(미오픈) → 422")
+        step("5. target_type='route'(미오픈) → 422")
         r = api(c, "POST", "/reports", tk["a"],
-                json={"target_type": "run", "target_id": uids["b"], "reason": "spam"})
+                json={"target_type": "route", "target_id": uids["b"], "reason": "spam"})
         assert r.status_code == 422, f"미오픈 타입 422, got {r.status_code}"
-        ok("target_type='run' 422 (v1은 user만)")
+        ok("target_type='route' 422 (user·run만 오픈)")
 
         step("10. detail 501자 → 422")
         r = api(c, "POST", "/reports", tk["a"],
@@ -229,6 +237,79 @@ def run_tests():
         assert api(c, "PATCH", f"/admin/reports/{ghost}", adm_tok,
                    json={"status": "reviewed"}).status_code == 404, "없는 id 404"
         ok("reviewed 204+reviewed_at · 재처리 404 · 되돌리기 422 · dismissed 204 · 비운영진 404")
+
+        step("11. run 신고 — B의 public run(A 비팔로우) → 204 + 행 / 멱등 / 자기 run 400")
+        r = api(c, "POST", "/runs", tk["b"],
+                json={"distance_km": 5.0, "duration_sec": 1800,
+                      "title": f"공개런{TS}", "visibility": "public"})
+        assert r.status_code == 200, f"run 생성, got {r.status_code}: {r.text[:150]}"
+        run_pub = r.json()["id"]
+        r = api(c, "POST", "/runs", tk["b"],
+                json={"distance_km": 3.0, "duration_sec": 1200, "visibility": "private"})
+        assert r.status_code == 200
+        run_priv = r.json()["id"]
+        r = api(c, "POST", "/reports", tk["a"],
+                json={"target_type": "run", "target_id": run_pub,
+                      "reason": "inappropriate", "detail": "부적절한 기록 같아요"})
+        assert r.status_code == 204, f"run 신고 204, got {r.status_code}: {r.text[:150]}"
+        rows = db_reports(c, uids["a"], run_pub)
+        assert len(rows) == 1 and rows[0]["status"] == "pending", f"run 신고 행 1개, got {rows}"
+        report_run = rows[0]["id"]
+        # 중복 pending 멱등 — 부분 유니크 (reporter, target_type, target_id) 타입 무관 적용
+        r = api(c, "POST", "/reports", tk["a"],
+                json={"target_type": "run", "target_id": run_pub, "reason": "spam"})
+        assert r.status_code == 204, f"재신고 멱등 204, got {r.status_code}"
+        assert len(db_reports(c, uids["a"], run_pub)) == 1, "멱등 1행 유지"
+        # 자기 run 신고 → 400 (user self 선례)
+        r = api(c, "POST", "/reports", tk["b"],
+                json={"target_type": "run", "target_id": run_pub, "reason": "spam"})
+        assert r.status_code == 400, f"자기 run 400, got {r.status_code}"
+        ok("public run 신고 204·행 생성 · 중복 멱등 1행 · 자기 run 400")
+
+        step("12. 비가시 run — B의 private run(A) 404 은닉 / 없는 run 404")
+        r = api(c, "POST", "/reports", tk["a"],
+                json={"target_type": "run", "target_id": run_priv, "reason": "spam"})
+        assert r.status_code == 404, f"private run 404 은닉, got {r.status_code}"
+        assert db_reports(c, uids["a"], run_priv) == [], "행 미생성"
+        r = api(c, "POST", "/reports", tk["a"],
+                json={"target_type": "run", "target_id": ghost, "reason": "spam"})
+        assert r.status_code == 404, f"없는 run 404, got {r.status_code}"
+        ok("private run 404 은닉·행 미생성 · 없는 run 404")
+
+        step("13. 차단 소유자(C)의 public run → 404 은닉 + 행 미생성")
+        r = api(c, "POST", "/runs", tk["cc"],
+                json={"distance_km": 4.0, "duration_sec": 1500, "visibility": "public"})
+        assert r.status_code == 200
+        run_cc = r.json()["id"]
+        assert api(c, "POST", f"/users/{uids['cc']}/block", tk["a"]).status_code == 204
+        r = api(c, "POST", "/reports", tk["a"],
+                json={"target_type": "run", "target_id": run_cc, "reason": "abuse"})
+        assert r.status_code == 404, f"차단 소유자 run 404, got {r.status_code}"
+        assert db_reports(c, uids["a"], run_cc) == [], "행 미생성"
+        api(c, "DELETE", f"/users/{uids['cc']}/block", tk["a"])  # 원복
+        ok("차단 소유자 run 404 은닉 · 행 미생성")
+
+        step("14. admin 조회 run brief + run 삭제 후 잔존 처리")
+        r = api(c, "GET", "/admin/reports", adm_tok, params={"status": "pending", "limit": "100"})
+        assert r.status_code == 200, f"운영진 200, got {r.status_code}: {r.text[:150]}"
+        items = {x["id"]: x for x in r.json()}
+        assert report_run in items, "run 신고가 목록에"
+        it = items[report_run]
+        assert it["target_type"] == "run" and it["target"] is None, "run 신고는 target(user) null"
+        tr = it["target_run"]
+        assert tr and tr["run_id"] == run_pub and tr["title"] == f"공개런{TS}", f"target_run brief, got {tr}"
+        assert tr["owner"]["user_id"] == uids["b"] and tr["owner"]["nickname"], "owner brief"
+        assert all(x.get("target_run") is None for x in r.json()
+                   if x["target_type"] == "user"), "user 신고는 target_run null(회귀)"
+        # run 삭제 → 신고 행 잔존(폴리모픽 FK 없음) + admin 조회 안 깨짐 + brief null
+        assert api(c, "DELETE", f"/runs/{run_pub}", tk["b"]).status_code == 204, "run 삭제"
+        r = api(c, "GET", "/admin/reports", adm_tok, params={"status": "pending", "limit": "100"})
+        assert r.status_code == 200, f"삭제 후 admin 조회 200, got {r.status_code}: {r.text[:150]}"
+        items = {x["id"]: x for x in r.json()}
+        assert report_run in items, "신고 행 잔존"
+        assert items[report_run]["target_run"] is None, "삭제된 run은 target_run null"
+        assert items[report_run]["target_id"] == run_pub, "target_id 원본 보존"
+        ok("target_run brief(제목·owner) · run 삭제 후 200·행 잔존·brief null")
 
         print("\n" + "=" * 50 + "\n  ALL TESTS PASSED\n" + "=" * 50)
     finally:

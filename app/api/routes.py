@@ -524,21 +524,25 @@ async def list_my_blocks(
 @router.post(
     "/reports",
     status_code=status.HTTP_204_NO_CONTENT,
-    summary="신고 (v1: 유저 신고만)",
+    summary="신고 (user·run)",
 )
 async def create_report(
     req: ReportCreate,
     user: CurrentUser = Depends(get_current_user),
 ) -> Response:
-    """유저 신고 접수 — 성공/중복 pending(멱등) 모두 **204**(block·follow 관성).
-    self 400, 없는 유저·차단 관계 404 은닉. target_type은 v1 'user'만(그 외 422).
+    """유저/run 신고 접수 — 성공/중복 pending(멱등) 모두 **204**(block·follow 관성).
+    self(자기 자신·자기 run) 400. 없는 대상·차단 관계·**비가시 run**(내게 안 보이는
+    visibility) 404 은닉. target_type은 'user'·'run'(댓글·코스 등은 422).
     차단과 독립(신고가 차단을 유발하지 않음 — 프론트는 별도 2호출). 무알림."""
     try:
         await report_service.create_report(user.user_id, req)
     except report_service.SelfReportNotAllowed:
         raise HTTPException(status_code=400, detail="Cannot report yourself")
     except report_service.ReportTargetNotFound:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(
+            status_code=404,
+            detail="Run not found" if req.target_type == "run" else "User not found",
+        )
     except Exception as exc:  # noqa: BLE001
         raise _bad_gateway("Failed to create report", exc)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -556,7 +560,8 @@ async def list_reports(
     offset: int = 0,
     admin: CurrentUser = Depends(require_admin),
 ) -> list[ReportItem]:
-    """운영진 신고 목록(최신순, reporter/target 프로필 brief 포함).
+    """운영진 신고 목록(최신순) — reporter/target(user형) 프로필 brief +
+    run형은 target_run(제목·소유자 brief, 삭제된 run은 null) 포함.
     게이트는 require_admin — 비운영진·ADMIN_USER_IDS 미설정 시 404(존재 은닉)."""
     try:
         return await report_service.list_reports(report_status, limit=limit, offset=offset)

@@ -14,8 +14,8 @@ from datetime import datetime, timezone
 from postgrest.exceptions import APIError
 
 from app.core.supabase_client import get_supabase_admin
-from app.models.schemas import ReportCreate, ReportItem, ReportUserBrief
-from app.services import profile_service
+from app.models.schemas import ReportCreate, ReportItem, ReportRunBrief, ReportUserBrief
+from app.services import profile_service, run_service
 
 logger = logging.getLogger(__name__)
 
@@ -36,19 +36,24 @@ class ReportNotFound(Exception):
 
 
 async def create_report(reporter_id: str, req: ReportCreate) -> None:
-    """신고 적재 (성공 204). v1은 target_type='user'만(스키마 Literal이 보증).
+    """신고 적재 (성공 204). target_type 'user'(v1)·'run'(2026-07-15 오픈).
 
-    게이트 순서는 follow/block과 동형: self(400) → 존재(404) → 차단(404 은닉).
+    게이트 순서는 follow/block과 동형: self(400) → 존재(404) → 차단·비가시(404 은닉).
+    run은 _can_see_run(결정 A′·visibility 합성·차단 포함) 그대로 재사용 — 내가 볼 수
+    없는 run은 존재 자체를 은닉(피드에 안 뜨는 run의 존재를 신고 API가 누설 금지).
     중복 pending은 멱등 — 부분 유니크 충돌을 성공으로 흡수(재신고·동시요청 안전).
     """
-    if req.target_id == reporter_id:
-        raise SelfReportNotAllowed()
-    # 대상 유저 존재 확인 — 프로필 없는 유저는 렌더 불가라 신고 대상도 아님
-    if await profile_service.get_profile(req.target_id) is None:
-        raise ReportTargetNotFound()
-    # 차단 게이트(양방향) — 존재 은닉이 최우선(블록 통일 계약)
-    if await profile_service.is_blocked_either(req.target_id, reporter_id):
-        raise ReportTargetNotFound()
+    if req.target_type == "run":
+        await _ensure_run_reportable(reporter_id, req.target_id)
+    else:
+        if req.target_id == reporter_id:
+            raise SelfReportNotAllowed()
+        # 대상 유저 존재 확인 — 프로필 없는 유저는 렌더 불가라 신고 대상도 아님
+        if await profile_service.get_profile(req.target_id) is None:
+            raise ReportTargetNotFound()
+        # 차단 게이트(양방향) — 존재 은닉이 최우선(블록 통일 계약)
+        if await profile_service.is_blocked_either(req.target_id, reporter_id):
+            raise ReportTargetNotFound()
 
     supabase = get_supabase_admin()
     try:
@@ -67,10 +72,24 @@ async def create_report(reporter_id: str, req: ReportCreate) -> None:
         # 이미 같은 대상 pending 존재 — 멱등 성공(스팸 재신고·레이스 흡수)
 
 
+async def _ensure_run_reportable(reporter_id: str, run_id: str) -> None:
+    """run 신고 게이트: 존재(404) → self run(400) → 가시성·차단(404 은닉)."""
+    try:
+        owner_id, visibility = await run_service._run_owner(run_id)
+    except run_service.RunNotFound:
+        raise ReportTargetNotFound()
+    if owner_id == reporter_id:
+        raise SelfReportNotAllowed()
+    # 차단(양방향)은 _can_see_run이 최우선 False — user 신고의 은닉 계약과 동일
+    if not await run_service._can_see_run(owner_id, reporter_id, visibility):
+        raise ReportTargetNotFound()
+
+
 async def list_reports(
     status: str = "pending", limit: int = 20, offset: int = 0
 ) -> list[ReportItem]:
-    """운영진 신고 목록, 최신순 — reporter/target(user형) 프로필 brief 포함."""
+    """운영진 신고 목록, 최신순 — reporter/target(user형) 프로필 brief +
+    run형은 run 요약(제목·소유자) 포함. 삭제된 run은 target_run=null(행은 잔존)."""
     limit = max(1, min(limit, _MAX_PAGE))
     offset = max(0, offset)
     supabase = get_supabase_admin()
@@ -85,16 +104,34 @@ async def list_reports(
     if not rows:
         return []
 
-    # reporter 전원 + target 중 user형만 프로필 brief 배치 조회(1쿼리)
+    # run형 target은 runs 배치 조회(1쿼리) — 삭제된 run은 결과에 없음(brief null)
+    run_ids = [r["target_id"] for r in rows if r["target_type"] == "run"]
+    runs_by_id: dict[str, dict] = {}
+    if run_ids:
+        run_res = await asyncio.to_thread(
+            lambda: supabase.table("runs").select("id, title, user_id")
+            .in_("id", run_ids).execute()
+        )
+        runs_by_id = {r["id"]: r for r in run_res.data}
+
+    # reporter 전원 + user형 target + run형 소유자 프로필 brief 배치 조회(1쿼리)
     ids = [r["reporter_id"] for r in rows] + [
         r["target_id"] for r in rows if r["target_type"] == "user"
-    ]
+    ] + [r["user_id"] for r in runs_by_id.values()]
     briefs = await profile_service.get_profile_briefs(ids)
 
     def _brief(uid: str) -> ReportUserBrief:
         b = briefs.get(uid, {})
         return ReportUserBrief(
             user_id=uid, nickname=b.get("nickname"), avatar_url=b.get("avatar_url")
+        )
+
+    def _run_brief(run_id: str) -> ReportRunBrief | None:
+        run = runs_by_id.get(run_id)
+        if run is None:  # 삭제된 run — 신고 행은 남되 대상 요약만 null
+            return None
+        return ReportRunBrief(
+            run_id=run["id"], title=run.get("title"), owner=_brief(run["user_id"])
         )
 
     return [
@@ -104,6 +141,7 @@ async def list_reports(
             target_type=r["target_type"],
             target_id=r["target_id"],
             target=_brief(r["target_id"]) if r["target_type"] == "user" else None,
+            target_run=_run_brief(r["target_id"]) if r["target_type"] == "run" else None,
             reason=r["reason"],
             detail=r.get("detail"),
             status=r["status"],

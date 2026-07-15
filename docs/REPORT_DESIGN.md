@@ -1,10 +1,15 @@
 # REPORT_DESIGN — 유저/콘텐츠 신고 기능 설계
 
-> 작성 2026-07-13. 상태: **구현 완료(배포 대기)** — SQL 적용됨(사용자 실행,
-> `db/2026-07-14_reports.sql`), 코드·테스트 완료. §8 확정: POST 성공 **204** /
-> detail 길이 **앱(Pydantic)만** / 운영진 미설정 시 admin **404 fail-safe 수용** /
-> status **단방향**(되돌리기 미지원). 배포 전 선행: `fly secrets set
-> ADMIN_USER_IDS=<uuid>` 주입.
+> 작성 2026-07-13. 상태: **v1.1 — `target_type='run'` 오픈(2026-07-15, 배포 대기)**.
+> v1(user)은 배포됨. run 오픈은 §1 "비요구"에 예약해둔 확장 그대로: DB CHECK
+> 6종 선등록이라 **스키마 변경 0**, API Literal 확장 + 가시성 게이트(`_can_see_run`
+> 재사용 — self run 400·비가시/차단 404 은닉)만. admin 목록에 `target_run`
+> brief(run 제목·소유자) additive 추가, **run 삭제 시 신고 행 잔존 +
+> `target_run: null`**(폴리모픽 FK 없음 — 의도된 동작). 중복 pending 멱등은 부분
+> 유니크 `(reporter, target_type, target_id)`가 타입 무관 자동 적용(실검증).
+> §8 확정: POST 성공 **204** / detail 길이 **앱(Pydantic)만** / 운영진 미설정 시
+> admin **404 fail-safe 수용** / status **단방향**(되돌리기 미지원).
+> 배포 전 선행(완료): `fly secrets set ADMIN_USER_IDS=<uuid>` 주입.
 > 전제(진단 완료, 실조회): `reports` 테이블 없음(신규) · 차단 스택이 additive
 > 참고 패턴(`blocks` 테이블·`is_blocked_either` 404 은닉·self CHECK·RLS enable) ·
 > 전역 운영진 role 없음(profiles에 role/is_admin 없음, tier는 IAP 전용) · 신고 대상

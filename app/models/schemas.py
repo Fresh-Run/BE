@@ -1781,16 +1781,16 @@ class ChallengeResponse(BaseModel):
 
 
 class ReportCreate(BaseModel):
-    """POST /reports 입력. v1은 target_type='user'만 오픈(Literal이 나머지 422)."""
+    """POST /reports 입력. v1.1: target_type 'user'+'run' 오픈(Literal이 나머지 422)."""
 
     # 오타/미지 키 422 — reason·target_type 같은 필드가 오타로 silent 무시되면
     # 신고가 조용히 누락된다(M-7 계열, 신규 모델은 forbid 기본).
     model_config = ConfigDict(extra="forbid")
 
-    target_type: Literal["user"] = Field(
-        ..., description="v1은 'user'만. run/댓글 등은 스키마(DB CHECK 6종)만 선반영 — API 확장 시 Literal만 넓힘."
+    target_type: Literal["user", "run"] = Field(
+        ..., description="'user'(v1) 또는 'run'(2026-07-15 오픈). 댓글·코스 등은 스키마(DB CHECK 6종)만 선반영 — 확장 시 Literal만 넓힘."
     )
-    target_id: str = Field(..., description="신고 대상 user_id.")
+    target_id: str = Field(..., description="신고 대상 id — 'user'는 user_id, 'run'은 run_id.")
     reason: Literal["spam", "abuse", "inappropriate", "impersonation", "other"] = Field(
         ..., description="사유(영문 서버 키 — 한글 라벨은 프론트 몫)."
     )
@@ -1807,6 +1807,14 @@ class ReportUserBrief(BaseModel):
     avatar_url: Optional[str] = None
 
 
+class ReportRunBrief(BaseModel):
+    """신고 목록의 run 대상 요약 — 대상 run이 삭제됐으면 항목 전체가 null."""
+
+    run_id: str
+    title: Optional[str] = None
+    owner: ReportUserBrief
+
+
 class ReportItem(BaseModel):
     """GET /admin/reports 한 항목 (운영 전용 — 일반 응답에 노출 금지)."""
 
@@ -1816,6 +1824,9 @@ class ReportItem(BaseModel):
     target_id: str
     target: Optional[ReportUserBrief] = Field(
         None, description="target_type='user'일 때만 프로필 요약(그 외 null)."
+    )
+    target_run: Optional[ReportRunBrief] = Field(
+        None, description="target_type='run'일 때 run 요약. run이 삭제됐으면 null(신고 행은 잔존 — 폴리모픽 FK 없음)."
     )
     reason: str
     detail: Optional[str] = None
