@@ -441,16 +441,27 @@ def main():
         log("코스 4개 (공개3·비공개1), 좋아요 6, 댓글 3, 북마크 1")
 
         # ── 5. 팔로우 그래프 ─────────────────────────────────────────────
-        section("5. 팔로우")
+        # 요청→승인 흐름(2026-07-15): test1·test2가 비공개(§13/§18)라 그들을 향한
+        # 팔로우는 요청제(202)로 빠진다. 승인제 통합(Part B) 이후 세계에서 8건
+        # 맞팔을 재현하려면 202일 때 대상이 승인해줘야 follows가 생긴다. b가
+        # 비공개여도 최종 follows 상태로 수렴(승인 알림도 자연 발생 — 비공개
+        # 계정 간 팔로우는 실제로 승인을 거친 관계).
+        section("5. 팔로우 (요청→승인 — 비공개 대상 포함 8건 맞팔)")
         pairs = [("test1", "test2"), ("test2", "test1"),            # 맞팔
                  ("test1", "demo1"), ("test1", "demo2"),            # 팔로잉 피드용
                  ("test2", "demo1"),
                  ("demo1", "test1"), ("demo2", "test1"), ("demo3", "test1")]
         for a, b in pairs:
-            if api(c, "POST", f"/users/{users[b][0]}/follow",
-                   users[a][1]).status_code == 204:
+            r = api(c, "POST", f"/users/{users[b][0]}/follow", users[a][1])
+            if r.status_code == 204:            # public 대상 — 즉시 팔로우
                 made["follows"] += 1
-        log(f"팔로우 관계 {len(pairs)}건 보장 (맞팔 포함)")
+            elif r.status_code == 202:          # 비공개 대상 — 대상이 승인
+                ap = api(c, "PATCH", f"/me/follow-requests/{users[a][0]}",
+                         users[b][1], json={"approve": True})
+                if ap.status_code == 204:
+                    made["follows"] += 1
+            # 409(이미 pending/팔로우 중)는 멱등 — 재실행 안전
+        log(f"팔로우 관계 {len(pairs)}건 보장 (맞팔 포함 — 비공개 대상은 요청→승인)")
 
         # ── 6. 러닝 기록 (최근 2주 분산, ran_at 조작 = admin) ────────────
         section("6. 러닝 기록")
