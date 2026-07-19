@@ -14,16 +14,27 @@ from app.main import app
 from app.models.schemas import Coordinate, PedestrianRoute, RouteResponse, Waypoint
 from app.services import map_service, openai_service
 
-_state: dict = {"seq": [], "i": 0, "gemini_calls": 0, "chain_targets": []}
+_state: dict = {"seq": [], "i": 0, "gemini_calls": 0, "chain_targets": [],
+                "gemini_seq": [], "g": 0, "radii": []}
+
+# 기준 기하(d=0.0045)의 체인 길이 ≈ 1.537km — chain_target에 비례 스케일해
+# "순응하는 Gemini"를 모사한다(v2.3 사전 게이트가 기본 시나리오를 안 막게).
+_BASE_CHAIN_KM = 1.537
 
 
 async def _mock_generate_route(**kw) -> RouteResponse:
     _state["gemini_calls"] += 1
     # 적응형 피드백 검증용 — route_service가 attempt별로 전달한 체인 목표 기록
-    _state["chain_targets"].append(kw.get("chain_target_km"))
+    aim = kw.get("chain_target_km")
+    _state["chain_targets"].append(aim)
+    _state["radii"].append(kw.get("radius_km"))
+    # gemini_seq: 호출별 체인 순응 배수(chain = aim × factor). 소진 시 1.0(순응).
+    gseq = _state["gemini_seq"]
+    factor = float(gseq[_state["g"]]) if _state["g"] < len(gseq) else 1.0
+    _state["g"] += 1
+    chain_km = (aim or _BASE_CHAIN_KM) * factor
     start: Coordinate = kw["start"]
-    # 고정 4-waypoint 루프 (직선 체인 ~2.8km 상당 — chain_km 로그 계산용 기하)
-    d = 0.0045  # ~0.5km/변
+    d = 0.0045 * (chain_km / _BASE_CHAIN_KM)
     wps = [
         Waypoint(name="시작", coordinate=start),
         Waypoint(name="wp1", coordinate=Coordinate(lat=start.lat + d, lng=start.lng)),
@@ -58,13 +69,16 @@ map_service.get_pedestrian_route = _mock_pedestrian
 async def set_scenario(req: Request):
     data = await req.json()
     _state["seq"] = data["seq"]
+    _state["gemini_seq"] = data.get("gemini_seq", [])
     _state["i"] = 0
+    _state["g"] = 0
     _state["gemini_calls"] = 0
     _state["chain_targets"] = []
+    _state["radii"] = []
     return {"ok": True}
 
 
 @app.get("/__mock/stats")
 async def mock_stats():
     return {"gemini_calls": _state["gemini_calls"], "tmap_calls": _state["i"],
-            "chain_targets": _state["chain_targets"]}
+            "chain_targets": _state["chain_targets"], "radii": _state["radii"]}

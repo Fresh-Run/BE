@@ -159,6 +159,10 @@ _SNAP_INFLATION = 1.6
 # 비대칭 밴드 [target−0.1, target+0.5] 중심 조준 오프셋 — 체인 목표를
 # (target+0.2) 기준으로 계산해 미달 확률을 구조적으로 낮춘다(v2.1 룰링과 세트).
 _BAND_AIM_KM = 0.2
+# v2.3 체인 상한 배수 — 프롬프트 금지 문구("MUST NOT exceed aim×1.15") +
+# route_service 사전 게이트 상한(aim×1.25)과 세트. 프롬프트 상한을 게이트보다
+# 약간 좁게 둬서 모델이 경계를 밟아도 게이트 안에 남게.
+_CHAIN_CAP_FACTOR = 1.15
 
 
 def _build_prompt(
@@ -171,6 +175,7 @@ def _build_prompt(
     prefs: AiCourseSettings | None = None,
     radius_km: float | None = None,
     chain_target_km: float | None = None,
+    radius_center: Coordinate | None = None,
 ) -> str:
     if end:
         end_text = f"end at ({end.lat}, {end.lng})"
@@ -206,7 +211,16 @@ def _build_prompt(
 
     # 탐색 반경: 수치가 오면 "near the start"를 명시적 반경 제약으로 교체.
     # (구 문구의 "avoid overshooting"은 과소 기하를 유도해 삭제 — ±0.5km 보장 설계)
-    if radius_km is not None:
+    if radius_km is not None and radius_center is not None:
+        # end-aware(v2.3): 일방 요청은 start-end corridor 중점 기준 원 —
+        # start 중심 원은 |start−end|≈target일 때 도착지에 못 닿는 기하 모순.
+        area_text = (
+            f"Keep every waypoint within {radius_km} km (straight-line) of "
+            f"({radius_center.lat}, {radius_center.lng}) — the midpoint of the "
+            "start-to-end corridor. Provide ordered waypoints with realistic "
+            "WGS84 coordinates, "
+        )
+    elif radius_km is not None:
         area_text = (
             f"Keep every waypoint within {radius_km} km (straight-line) of the "
             "start point. Provide ordered waypoints with realistic WGS84 "
@@ -221,9 +235,12 @@ def _build_prompt(
     # 계산 가능한 직선 체인 목표를 준다. 조준점은 밴드 중심(target+0.2).
     # chain_target_km이 오면 그 값 사용(적응형 — route_service가 직전 attempt의
     # 실측 팽창비로 재계산해 전달), 없으면 초기 상수(_SNAP_INFLATION)로 계산.
+    # v2.3: 체인 상한을 명시적 금지 문구로 강제 — 실측상 aim 3.6에 chain 6.91
+    # 같은 비순응이 명중률 주범(부검 2026-07-20). 상한 = aim×1.15.
     chain_target = chain_target_km if chain_target_km is not None else round(
         (target_distance_km + _BAND_AIM_KM) / _SNAP_INFLATION, 1
     )
+    chain_cap = round(chain_target * _CHAIN_CAP_FACTOR, 1)
     distance_text = (
         f"Design a running route in South Korea whose final on-road length is "
         f"about {target_distance_km} km. Note: the route will be snapped to real "
@@ -231,8 +248,9 @@ def _build_prompt(
         f"straight lines between waypoints. Therefore place the waypoints so that "
         f"the SUM OF STRAIGHT-LINE distances between consecutive waypoints "
         f"(including the return to start for loops) is about {chain_target} km. "
-        f"If unsure, err slightly longer — a route a bit over {target_distance_km} km "
-        f"is acceptable, but shorter is not. "
+        f"The chain MUST NOT exceed {chain_cap} km — longer routes are invalid. "
+        f"If unsure within that limit, err slightly longer — a route a bit over "
+        f"{target_distance_km} km is acceptable, but shorter is not. "
     )
 
     return (
@@ -258,6 +276,7 @@ async def generate_route(
     radius_km: float | None = None,
     lang: str = "ko",
     chain_target_km: float | None = None,
+    radius_center: Coordinate | None = None,
 ) -> RouteResponse:
     """Generate a structured running route via OpenAI Function Calling.
 
@@ -293,7 +312,7 @@ async def generate_route(
         },
         {"role": "user", "content": _build_prompt(
             target_distance_km, start, end, pitstop_keyword, notes, avoid_tags,
-            prefs, radius_km, chain_target_km,
+            prefs, radius_km, chain_target_km, radius_center,
         )},
     ]
 

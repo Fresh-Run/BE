@@ -77,11 +77,13 @@ def sb_login(c, email):
                   json={"email": email, "password": "test1234"}).json()["access_token"]
 
 
-def gen(c, token, base=B8001, target=4.0):
+def gen(c, token, base=B8001, target=4.0, start=None, end=None):
+    body = {"start": start or {"lat": 37.5445, "lng": 127.0374},
+            "target_distance_km": target}
+    if end:
+        body["end"] = end
     return c.post(f"{base}/api/routes/generate",
-                  headers={"Authorization": f"Bearer {token}"},
-                  json={"start": {"lat": 37.5445, "lng": 127.0374},
-                        "target_distance_km": target})
+                  headers={"Authorization": f"Bearer {token}"}, json=body)
 
 
 def scenario(c, seq):
@@ -202,35 +204,82 @@ def run_tests():
         expect_chain = round((4.0 + 0.2) / 1.6, 1)
         assert f"about {expect_chain} km" in p, f"기본 체인 목표({expect_chain}) 명시, got: {p[:200]}"
         assert "err slightly longer" in p, "오버슈트 바이어스 문구"
+        cap = round(expect_chain * 1.15, 1)
+        assert f"MUST NOT exceed {cap} km" in p, "체인 상한 강제 문구(v2.3)"
         # 적응형 오버라이드 — chain_target_km이 오면 그 값이 프롬프트에 실림
         p2 = _build_prompt(4.0, Coordinate(lat=37.5445, lng=127.0374), None, None, None,
                            radius_km=1.0, chain_target_km=2.4)
         assert "about 2.4 km" in p2, "적응형 체인 목표 오버라이드"
         ok(f"프롬프트: 기본 체인 {expect_chain}km(1.6 재보정) · 오버라이드 2.4km · err slightly longer")
 
-        step("7. ★적응형 피드백 — [5.6, 5.3] → aim 3.2 → (클램프 2.2) → aim 2.4 → 합격")
+        step("7. ★적응형 피드백 — [5.6, 5.3] → aim 3.2 → ratio 1.75 관측 → aim 3.0 → 합격")
         scenario(c, [{"snap_km": 5.6}, {"snap_km": 5.3}])
         d = gen(c, tok, target=5.0).json()
         assert d["total_distance_km"] == 5.3 and d["target_missed"] is False, d
         st = stats(c)
         assert st["gemini_calls"] == 2, st
         aims = st["chain_targets"]
-        exp1 = round((5.0 + 0.2) / 1.6, 1)   # 3.2 — 초기 상수 조준
-        exp2 = round((5.0 + 0.2) / 2.2, 1)   # 2.4 — 관측 ratio(클램프 상한) 반영
+        exp1 = round((5.0 + 0.2) / 1.6, 1)          # 3.2 — 초기 상수 조준
+        ratio1 = 5.6 / exp1                          # ≈1.75 — mock은 aim에 순응(chain=aim)
+        exp2 = round((5.0 + 0.2) / ratio1, 1)        # 3.0 — 관측 ratio 반영
         assert aims == [exp1, exp2], \
             f"적응형 조준 [초기 {exp1}, 피드백 {exp2}] 기대, got {aims}"
-        ok(f"attempt1 aim {aims[0]} → 팽창 관측 → attempt2 aim {aims[1]} → 5.3 합격")
+        ok(f"attempt1 aim {aims[0]} → ratio {ratio1:.2f} 관측 → attempt2 aim {aims[1]} → 5.3 합격")
+
+        step("8. ★사전 게이트 재추첨 — gemini [×1.6, ×1.0] → 1롤 반려·2롤 통과 (v2.3)")
+        assert c.post(f"{B8001}/__mock/scenario",
+                      json={"seq": [{"snap_km": 5.2}], "gemini_seq": [1.6, 1.0]}
+                      ).status_code == 200
+        d = gen(c, tok, target=5.0).json()
+        assert d["total_distance_km"] == 5.2 and d["target_missed"] is False, d
+        st = stats(c)
+        assert st["gemini_calls"] == 2, f"재추첨 1회 = gemini 2, got {st}"
+        assert st["tmap_calls"] == 1, f"반려 롤은 T-map 미호출, got {st}"
+        ok("체인 ×1.6 반려(T-map 0) → 재추첨 순응 → 5.2 합격 · gemini 2/tmap 1")
+
+        step("9. ★사전 게이트 소진 → salvage — gemini [×2.0 ×3] → 최근접 롤로 스냅 진행")
+        assert c.post(f"{B8001}/__mock/scenario",
+                      json={"seq": [{"snap_km": 5.2}],
+                            "gemini_seq": [2.0, 2.0, 2.0]}).status_code == 200
+        d = gen(c, tok, target=5.0).json()
+        assert d["total_distance_km"] == 5.2 and d["target_missed"] is False, d
+        st = stats(c)
+        assert st["gemini_calls"] == 3, f"롤 3회 소진(재추첨 상한), got {st}"
+        assert st["tmap_calls"] == 1, f"salvage여도 attempt당 T-map 1회, got {st}"
+        assert d["radius_expanded"] is False, "salvage로 attempt1에서 완결(원지시 pre_miss였으면 attempt2행)"
+        ok("3롤 비순응 → 최근접 롤 salvage → 5.2 합격 · gemini 3/tmap 1 (attempt 미소실)")
+
+        step("10. ★end-aware — |start−end|≈5km 일방: 반경 corridor + aim 물리 하한 (v2.3)")
+        scenario(c, [{"snap_km": 5.2}])
+        d = gen(c, tok, target=5.0,
+                end={"lat": 37.5445, "lng": 127.0374 + 0.0567}).json()  # ~5km 동쪽
+        assert d["total_distance_km"] == 5.2 and d["target_missed"] is False, d
+        st = stats(c)
+        r1 = st["radii"][0]
+        assert r1 >= 3.4, \
+            f"end-aware r0 = max(1.2, |s−e|/2+1.0) ≈ 3.5 기대(구식 1.2면 기하 모순), got {r1}"
+        aim1 = st["chain_targets"][0]
+        assert aim1 >= 5.0, \
+            f"aim 물리 하한(직선거리×1.05 ≈ 5.3) 기대 — 하한 없으면 4.2로 전 롤 반려됨, got {aim1}"
+        ok(f"일방 attempt1 radius={r1} · aim={aim1}(하한 적용) · 5.2 합격")
 
         print("\n" + "=" * 50 + "\n  MOCK 케이스 PASSED — E2E는 메인 서버로\n" + "=" * 50)
 
-        step("E2E. 실호출 2건 (비용 ~4원, target=5.0) — v2.2 계약 + 명중률 방향")
-        for n in (1, 2):
-            r = gen(c, tok, base=BASE, target=5.0)
+        step("E2E. 실호출 4건 (target=5.0) — 원점 복귀 3좌표 + 일방 1건 (v2.3)")
+        e2e_cases = [
+            ("성수 루프", {"lat": 37.5445, "lng": 127.0374}, None),
+            ("여의도 루프", {"lat": 37.5285, "lng": 126.9328}, None),
+            ("잠실 루프", {"lat": 37.5145, "lng": 127.1027}, None),
+            ("일방 성수→건대너머(~5km)", {"lat": 37.5445, "lng": 127.0374},
+             {"lat": 37.5445, "lng": 127.0941}),  # ~5km 동쪽
+        ]
+        for name, s, e in e2e_cases:
+            r = gen(c, tok, base=BASE, target=5.0, start=s, end=e)
             if r.status_code == 502:
                 assert r.json()["detail"]["error"] == "route_generation_failed", r.text[:200]
-                print(f"    #{n}: 502 (전패 — 미달만 or 초과 전부 캡 밖) — 계약 준수")
+                print(f"    {name}: 502 (전패 — 정직 실패) — 계약 준수")
                 continue
-            assert r.status_code == 200, r.text[:250]
+            assert r.status_code == 200, f"{name}: {r.text[:250]}"
             d = r.json()
             total = d["total_distance_km"]
             in_band = 4.9 - 1e-9 <= total <= 5.5 + 1e-9
@@ -238,12 +287,13 @@ def run_tests():
                 assert d["target_missed"] is False, d["target_missed"]
             else:
                 assert d["target_missed"] is True and total <= 6.0 + 1e-9, \
-                    f"계약 위반: {total}, missed={d['target_missed']} (캡 6.0)"
+                    f"{name} 계약 위반: {total}, missed={d['target_missed']} (캡 6.0)"
             assert d["estimated_duration_min"] == round(total * 6.5), \
                 f"러닝 환산 duration 기대, got {d['estimated_duration_min']}"
-            print(f"    #{n}: total={total}km (오차 {total-5.0:+.2f}) missed={d['target_missed']} "
-                  f"duration={d['estimated_duration_min']}분")
-        ok("E2E 2건 계약 준수 (실측값은 위 출력)")
+            print(f"    {name}: total={total}km (오차 {total-5.0:+.2f}) "
+                  f"missed={d['target_missed']} radius={d['search_radius_km']}"
+                  f"{' ★명중' if in_band else ''}")
+        ok("E2E 4건 계약 준수 (실측값·명중 여부는 위 출력)")
 
         print("\n" + "=" * 50 + "\n  ALL TESTS PASSED\n" + "=" * 50)
     finally:

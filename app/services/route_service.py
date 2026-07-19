@@ -21,6 +21,7 @@ from app.core.supabase_client import get_supabase_admin
 from app.models.schemas import (
     AiCourseSettings,
     CommentResponse,
+    Coordinate,
     PublicRouteResponse,
     RouteRequest,
     RouteResponse,
@@ -114,9 +115,29 @@ _MAX_RADIUS_KM = 8.0
 _RATIO_CLAMP = (1.1, 2.2)
 _OVER_SERVE_CAP_KM = 1.0
 
+# v2.3 스냅 전 사전 게이트 (부검 2026-07-20: 502 건의 후보 7.71/6.45km — 원인은
+# aim 3.9에 chain 5.57 같은 Gemini 비순응): 체인이 aim×[0.75, 1.25] 밖이면
+# T-map 없이 Gemini만 재추첨(attempt당 최대 2회). 소진 시 그 attempt는 miss.
+# T-map 왕복(약 0.6s/leg×N)과 무효 후보 적재를 아낀다.
+_PRE_GATE_BAND = (0.75, 1.25)
+_PRE_GATE_REROLLS = 2
+# 일방(end 좌표) 요청의 초기 팽창비 — corridor 경로는 루프보다 우회가 적어
+# 스냅 팽창이 낮다(E2E 실측: 루프 1.6 vs 일방 체인≈직선). 적응형이 이후 보정.
+_ONE_WAY_INFLATION = 1.25
+
 # 예상 시간 = 러닝 기준 (2026-07-20 오너 확정): T-map 도보 시간(~13분/km)을
 # 버리고 거리 × 기본 러닝 페이스 6'30"/km로 재계산. 개인 페이스 반영은 후속.
 _RUN_PACE_MIN_PER_KM = 6.5
+
+
+def _log_perf_failed(t0: float, perf: dict) -> None:
+    """생성 실패(502) 경로의 계측 요약 — 성공 PERF와 동형(관측 공백 방지)."""
+    logger.info(
+        "[PERF] route generate FAILED: total=%.1fs | gemini=%.1fs(%d call) | "
+        "tmap=%.1fs(%d leg) | attempts=%d | pre_rejects=%d",
+        time.perf_counter() - t0, perf["gemini_s"], perf["gemini_calls"],
+        perf["tmap_s"], perf["tmap_legs"], perf["attempts"], perf["pre_rejects"],
+    )
 
 
 def _within_band(actual_km: float, target_km: float) -> bool:
@@ -140,13 +161,28 @@ def _waypoint_chain_km(route: RouteResponse) -> float:
     return total
 
 
-def _radius_schedule(target_km: float) -> list[float]:
+def _dist_km(a: Coordinate, b: Coordinate) -> float:
+    """두 좌표 간 haversine 거리(km) — end-aware 반경·중점 계산용."""
+    p1, p2 = math.radians(a.lat), math.radians(b.lat)
+    dp, dl = math.radians(b.lat - a.lat), math.radians(b.lng - a.lng)
+    x = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * 6371.0 * math.asin(math.sqrt(x))
+
+
+def _radius_schedule(target_km: float, start_end_km: float | None = None) -> list[float]:
     """목표 거리 비례 탐색 반경 시퀀스 (최대 4시도, 상한 8km, 중복 제거).
 
     루프 코스 L km는 기하학상 반경 ~L/4가 필요하므로 r0=clamp(target/4, 1, 8),
     이후 +1.0 → +2.5 → 8.0으로 점증 (기획의 +500m×16회 대신 비용·지연 통제형).
+
+    v2.3 end-aware: end 좌표가 있는 일방 요청은 탐색 원이 start-end corridor를
+    덮어야 한다 — 중점 중심 원 반경 max(r0, |start−end|/2 + 1.0). start 중심
+    r0=target/4 원은 |start−end|≈target일 때 도착지에 못 닿는 기하 모순(현행
+    미구현이던 것 신규 — Ivan 일방통행 파킹 사유).
     """
     r0 = min(_MAX_RADIUS_KM, max(1.0, round(target_km / 4, 1)))
+    if start_end_km is not None:
+        r0 = min(_MAX_RADIUS_KM, max(r0, round(start_end_km / 2 + 1.0, 1)))
     out: list[float] = []
     for r in (r0, r0 + 1.0, r0 + 2.5, _MAX_RADIUS_KM):
         r = min(round(r, 1), _MAX_RADIUS_KM)
@@ -217,32 +253,68 @@ async def create_running_route(
     # 구간별 계측 (병목 관측용 — 항상 켜둔 경량 타이머)
     _t0 = time.perf_counter()
     _perf = {"gemini_s": 0.0, "gemini_calls": 0, "tmap_s": 0.0, "tmap_legs": 0,
-             "attempts": 0}
+             "attempts": 0, "pre_rejects": 0}
+
+    # v2.3 end-aware: 일방(end 좌표) 요청은 탐색 원을 corridor 중점 기준으로,
+    # 초기 팽창비도 낮게(직선형 경로 — E2E 부검에서 aim 3.2로 4/4 pre_miss 전멸).
+    start_end_km = _dist_km(req.start, req.end) if req.end else None
+    radius_center = None
+    if req.end is not None:
+        radius_center = Coordinate(
+            lat=(req.start.lat + req.end.lat) / 2,
+            lng=(req.start.lng + req.end.lng) / 2,
+        )
 
     # 적응형 팽창비 추정치 — 첫 attempt는 초기 상수, 이후 직전 실측으로 갱신
-    est_ratio = openai_service._SNAP_INFLATION
+    est_ratio = (openai_service._SNAP_INFLATION if start_end_km is None
+                 else _ONE_WAY_INFLATION)
 
-    for i, radius_km in enumerate(_radius_schedule(target_km)):
+    for i, radius_km in enumerate(_radius_schedule(target_km, start_end_km)):
         _perf["attempts"] += 1
-        chain_aim_km = round(
-            (target_km + openai_service._BAND_AIM_KM) / est_ratio, 1
-        )
+        chain_aim_km = (target_km + openai_service._BAND_AIM_KM) / est_ratio
+        if start_end_km is not None:
+            # 체인 물리 하한: start→…→end 체인은 직선거리보다 짧을 수 없다
+            chain_aim_km = max(chain_aim_km, start_end_km * 1.05)
+        chain_aim_km = round(chain_aim_km, 1)
+
+        # v2.3 사전 게이트: 체인이 aim×[0.75, 1.25] 밖이면 T-map 없이 Gemini만
+        # 재추첨(최대 2회). 전 롤 소진 시 **aim 최근접 롤로 salvage** — 원지시는
+        # "소진 시 miss"였으나 E2E 부검에서 pre_miss가 attempt를 통째로 태워
+        # 후보 고갈→502 양산(잠실 3/4·일방 4/4 소실). T-map은 attempt당 1회로
+        # 동일하게 상한되므로 salvage가 비용 증가 없이 후보만 보존(판단 플래그).
+        route = None
+        chain_km = 0.0
+        attempt_rejects = 0
+        salvage: tuple[float, RouteResponse] | None = None  # (chain_km, cand)
         try:
-            _g = time.perf_counter()
-            route = await openai_service.generate_route(
-                target_distance_km=target_km,
-                start=req.start,
-                end=req.end,
-                pitstop_keyword=req.pitstop_keyword,
-                notes=req.notes,
-                avoid_tags=avoid_tags,
-                prefs=prefs,
-                radius_km=radius_km,
-                lang=lang,
-                chain_target_km=chain_aim_km,
-            )
-            _perf["gemini_s"] += time.perf_counter() - _g
-            _perf["gemini_calls"] += 1
+            for _roll in range(1 + _PRE_GATE_REROLLS):
+                _g = time.perf_counter()
+                cand = await openai_service.generate_route(
+                    target_distance_km=target_km,
+                    start=req.start,
+                    end=req.end,
+                    pitstop_keyword=req.pitstop_keyword,
+                    notes=req.notes,
+                    avoid_tags=avoid_tags,
+                    prefs=prefs,
+                    radius_km=radius_km,
+                    lang=lang,
+                    chain_target_km=chain_aim_km,
+                    radius_center=radius_center,
+                )
+                _perf["gemini_s"] += time.perf_counter() - _g
+                _perf["gemini_calls"] += 1
+                c_km = _waypoint_chain_km(cand)
+                if (chain_aim_km * _PRE_GATE_BAND[0]
+                        <= c_km
+                        <= chain_aim_km * _PRE_GATE_BAND[1]):
+                    route, chain_km = cand, c_km
+                    break
+                attempt_rejects += 1
+                if salvage is None or abs(c_km - chain_aim_km) < abs(salvage[0] - chain_aim_km):
+                    salvage = (c_km, cand)
+            if route is None and salvage is not None:
+                chain_km, route = salvage
         except OpenAIAPIError:
             # ①-a API 장애: 반경과 무관 — 확장 재시도는 낭비. 이미 확보한
             # 후보가 있으면 그걸로 마무리, 없으면 그대로 실패.
@@ -257,6 +329,11 @@ async def create_running_route(
                 "Gemini 응답 파싱/검증 실패 (radius=%skm) — 다음 반경으로 재시도",
                 radius_km, exc_info=True,
             )
+            continue
+        finally:
+            _perf["pre_rejects"] += attempt_rejects
+
+        if route is None:  # 롤 전부 예외 없이 실패한 극단 케이스만 (이론상 salvage가 항상 존재)
             continue
 
         # Step 2: snap the pitstop to a real place if a keyword was given.
@@ -293,7 +370,7 @@ async def create_running_route(
         #  체인 목표를 고정하므로 반경이 커져도 오버슈트를 키우지 않고 재추첨 효과만)
         status = "NO_PATH"
         actual_km = route.total_distance_km
-        chain_km = _waypoint_chain_km(route)  # 계측: Gemini 기하 의도(팽창비 재료)
+        # chain_km은 사전 게이트에서 이미 계산됨 (Gemini 기하 의도 — 팽창비 재료)
         if len(route.waypoints) >= 2:
             try:
                 via = [wp.coordinate for wp in route.waypoints[1:-1]] or None
@@ -330,11 +407,11 @@ async def create_running_route(
         # 중앙값 재산정). 좌표·유저 id 미기록(위치 프라이버시), 키 없음.
         logger.info(
             "route_gen attempt=%d radius=%.1f chain_km=%.2f snapped_km=%.2f "
-            "ratio=%.2f target=%.1f aim=%.1f verdict=%s",
+            "ratio=%.2f target=%.1f aim=%.1f pre_reject=%d verdict=%s",
             i + 1, radius_km, chain_km,
             actual_km if status != "NO_PATH" else 0.0,
             (actual_km / chain_km) if (chain_km > 0 and status != "NO_PATH") else 0.0,
-            target_km, chain_aim_km, status.lower(),
+            target_km, chain_aim_km, attempt_rejects, status.lower(),
         )
 
         if status == "OK":
@@ -362,6 +439,7 @@ async def create_running_route(
                 best = min(over, key=lambda t: t[0] - target_km)[1]
                 best.target_missed = True
             else:
+                _log_perf_failed(_t0, _perf)  # 502도 계측(관측 공백 방지)
                 raise RouteGenerationFailed()
         elif nopath_candidate is not None:
             best = nopath_candidate
@@ -369,6 +447,7 @@ async def create_running_route(
                 best.total_distance_km, target_km
             )
         else:
+            _log_perf_failed(_t0, _perf)
             raise RouteGenerationFailed()
 
     # 예상 시간 = 러닝 기준 일괄 환산 (오너 확정 2026-07-20) — T-map 도보 시간·
@@ -381,10 +460,10 @@ async def create_running_route(
     _total = time.perf_counter() - _t0
     logger.info(
         "[PERF] route generate: total=%.1fs | gemini=%.1fs(%d call) | "
-        "tmap=%.1fs(%d leg) | attempts=%d | expanded=%s",
+        "tmap=%.1fs(%d leg) | attempts=%d | pre_rejects=%d | expanded=%s",
         _total, _perf["gemini_s"], _perf["gemini_calls"],
         _perf["tmap_s"], _perf["tmap_legs"], _perf["attempts"],
-        best.radius_expanded,
+        _perf["pre_rejects"], best.radius_expanded,
     )
 
     # Step 4: persist the generated route to Supabase (best-effort).
