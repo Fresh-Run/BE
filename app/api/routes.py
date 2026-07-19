@@ -731,6 +731,21 @@ async def generate_route(
 
     try:
         route = await route_service.create_running_route(req, user_id=user.user_id)
+    except route_service.OneWayEndTooFar as exc:
+        # 일방 실행가능성 게이트(v2.3) — 유저 입력 문제라 422(쿼터 미소모)
+        await quota_service.release_ai_generation(reservation_id)
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "one_way_end_too_far",
+                "message": (
+                    f"도착지가 목표 거리에 비해 너무 멀어요 — 직선거리 "
+                    f"{exc.distance_km}km인 이 도착지까지는 목표를 "
+                    f"{exc.min_target_km}km 이상으로 설정해 주세요."
+                ),
+                "min_target_km": exc.min_target_km,
+            },
+        )
     except Exception:  # noqa: BLE001
         # 생성 실패 = 무료: 예약 해제 (기존 "실패는 쿼터 미소모" 시맨틱 보존)
         await quota_service.release_ai_generation(reservation_id)

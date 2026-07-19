@@ -249,19 +249,35 @@ def run_tests():
         assert d["radius_expanded"] is False, "salvage로 attempt1에서 완결(원지시 pre_miss였으면 attempt2행)"
         ok("3롤 비순응 → 최근접 롤 salvage → 5.2 합격 · gemini 3/tmap 1 (attempt 미소실)")
 
-        step("10. ★end-aware — |start−end|≈5km 일방: 반경 corridor + aim 물리 하한 (v2.3)")
+        step("10. ★end-aware — |start−end|≈3.5km 일방(실행가능): corridor 반경 + 정상 서빙")
         scenario(c, [{"snap_km": 5.2}])
         d = gen(c, tok, target=5.0,
-                end={"lat": 37.5445, "lng": 127.0374 + 0.0567}).json()  # ~5km 동쪽
+                end={"lat": 37.5445, "lng": 127.0374 + 0.0396}).json()  # ~3.5km 동쪽
         assert d["total_distance_km"] == 5.2 and d["target_missed"] is False, d
         st = stats(c)
         r1 = st["radii"][0]
-        assert r1 >= 3.4, \
-            f"end-aware r0 = max(1.2, |s−e|/2+1.0) ≈ 3.5 기대(구식 1.2면 기하 모순), got {r1}"
-        aim1 = st["chain_targets"][0]
-        assert aim1 >= 5.0, \
-            f"aim 물리 하한(직선거리×1.05 ≈ 5.3) 기대 — 하한 없으면 4.2로 전 롤 반려됨, got {aim1}"
-        ok(f"일방 attempt1 radius={r1} · aim={aim1}(하한 적용) · 5.2 합격")
+        assert r1 >= 2.6, \
+            f"end-aware r0 = max(1.2, |s−e|/2+1.0) ≈ 2.7 기대(구식 1.2면 기하 모순), got {r1}"
+        ok(f"일방(3.5km) attempt1 radius={r1} (corridor 커버) · 5.2 합격")
+
+        step("11. ★일방 실행가능성 게이트 (v2.3 마감) — 경계 통과 / 초과 422 / 루프 무영향")
+        # 경계 직전(직선 ≈3.99km ≤ 5×0.8=4.0) → 통과
+        scenario(c, [{"snap_km": 5.2}])
+        r = gen(c, tok, target=5.0, end={"lat": 37.5445, "lng": 127.0374 + 0.0452})
+        assert r.status_code == 200, f"경계 내(3.99≤4.0) 통과 기대, got {r.status_code}: {r.text[:150]}"
+        # 초과(직선 ≈5.0km > 4.0) → 422 구조화 에러 + 최소 거리 힌트
+        r = gen(c, tok, target=5.0, end={"lat": 37.5445, "lng": 127.0374 + 0.0567})
+        assert r.status_code == 422, f"초과 422 기대, got {r.status_code}: {r.text[:150]}"
+        det = r.json()["detail"]
+        assert det["error"] == "one_way_end_too_far", det
+        assert "너무 멀어요" in det["message"] and det["min_target_km"] >= 6.2, det
+        # 게이트는 Gemini 비용 0 — 422 요청은 mock gemini 호출 없음
+        st_before = stats(c)["gemini_calls"]
+        # 루프 요청(end 없음)은 무영향
+        scenario(c, [{"snap_km": 5.2}])
+        r = gen(c, tok, target=5.0)
+        assert r.status_code == 200, "루프 요청 무영향"
+        ok(f"경계 3.99 통과 · 5.0 초과 422(min_target={det['min_target_km']}) · 루프 무영향")
 
         print("\n" + "=" * 50 + "\n  MOCK 케이스 PASSED — E2E는 메인 서버로\n" + "=" * 50)
 
@@ -270,8 +286,8 @@ def run_tests():
             ("성수 루프", {"lat": 37.5445, "lng": 127.0374}, None),
             ("여의도 루프", {"lat": 37.5285, "lng": 126.9328}, None),
             ("잠실 루프", {"lat": 37.5145, "lng": 127.1027}, None),
-            ("일방 성수→건대너머(~5km)", {"lat": 37.5445, "lng": 127.0374},
-             {"lat": 37.5445, "lng": 127.0941}),  # ~5km 동쪽
+            ("일방 성수→~3.5km 동쪽(실행가능)", {"lat": 37.5445, "lng": 127.0374},
+             {"lat": 37.5445, "lng": 127.0770}),  # ~3.5km — target×0.8=4.0 내
         ]
         for name, s, e in e2e_cases:
             r = gen(c, tok, base=BASE, target=5.0, start=s, end=e)

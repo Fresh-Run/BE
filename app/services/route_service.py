@@ -48,6 +48,24 @@ class RouteGenerationFailed(Exception):
     """Gemini never produced a usable route across all radius attempts."""
 
 
+class OneWayEndTooFar(Exception):
+    """일방(end) 요청의 직선거리가 target×0.8 초과 — 물리적으로 불가(422).
+
+    도로 팽창(실측 ≥1.2×)상 직선거리 d의 코스는 최소 ~1.25d — target이 그보다
+    짧으면 어떤 시스템도 못 만든다(v2.3 E2E 실증: d=5.0·target=5.0 → 전패 502).
+    min_target_km: 이 도착지가 성립하는 최소 목표 거리(= d/0.8, 0.1 올림) 힌트.
+    """
+
+    def __init__(self, distance_km: float, min_target_km: float):
+        self.distance_km = distance_km
+        self.min_target_km = min_target_km
+        super().__init__(f"one-way end too far: d={distance_km}, min={min_target_km}")
+
+
+# 일방 실행가능성 상한 — |start−end| ≤ target×0.8 (여유 0.2는 도로 팽창분)
+_ONE_WAY_MAX_DIST_FACTOR = 0.8
+
+
 async def _course_context(user_id: str | None) -> tuple[AiCourseSettings, str]:
     """(ai_course 선호, lang) — 한 번의 get_settings로 둘 다 (쿼리 증가 0).
 
@@ -258,6 +276,12 @@ async def create_running_route(
     # v2.3 end-aware: 일방(end 좌표) 요청은 탐색 원을 corridor 중점 기준으로,
     # 초기 팽창비도 낮게(직선형 경로 — E2E 부검에서 aim 3.2로 4/4 pre_miss 전멸).
     start_end_km = _dist_km(req.start, req.end) if req.end else None
+    # 실행가능성 게이트(v2.3 마감): 직선거리 > target×0.8이면 시작 전에 422 —
+    # Gemini/T-map 비용 0으로 반려(전패 502보다 정직·저렴).
+    if (start_end_km is not None
+            and start_end_km > target_km * _ONE_WAY_MAX_DIST_FACTOR + 1e-9):
+        min_target = math.ceil(start_end_km / _ONE_WAY_MAX_DIST_FACTOR * 10) / 10
+        raise OneWayEndTooFar(round(start_end_km, 1), min_target)
     radius_center = None
     if req.end is not None:
         radius_center = Coordinate(
