@@ -151,10 +151,13 @@ def _prefs_text(prefs: AiCourseSettings | None) -> str:
 # 중앙값 1.50 → 1.45 채택(저팽창 격자 도로망에서 미달을 덜 만들도록 소폭 하향 —
 # 오버슈트는 ±0.5km 게이트+재시도가 잡음). ⚠️ 표본 3건 한계: route_gen 계측
 # 로그가 20건 이상 쌓이면 ratio 중앙값을 재산정해 이 상수를 갱신할 것.
-_SNAP_INFLATION = 1.45
+# 스냅 팽창비 초기값 — 2026-07-20 긴급 재보정: 1.45 → 1.6 (실측 13건 중앙값
+# 1.58·평균 1.61, 전 실패가 초과 방향 = 상수 과소). 표본이 서울 target 5km에
+# 편중된 점은 판단 플래그 — attempt 2부터는 route_service가 직전 실측 ratio를
+# 피드백하므로(적응형) 이 상수는 첫 시도 조준에만 쓰인다.
+_SNAP_INFLATION = 1.6
 # 비대칭 밴드 [target−0.1, target+0.5] 중심 조준 오프셋 — 체인 목표를
 # (target+0.2) 기준으로 계산해 미달 확률을 구조적으로 낮춘다(v2.1 룰링과 세트).
-# 팽창비 1.45 자체는 유지 — 재보정은 route_gen 계측 20건 축적 후 중앙값으로.
 _BAND_AIM_KM = 0.2
 
 
@@ -167,6 +170,7 @@ def _build_prompt(
     avoid_tags: list[str] | None = None,
     prefs: AiCourseSettings | None = None,
     radius_km: float | None = None,
+    chain_target_km: float | None = None,
 ) -> str:
     if end:
         end_text = f"end at ({end.lat}, {end.lng})"
@@ -213,11 +217,13 @@ def _build_prompt(
             "Provide ordered waypoints with realistic WGS84 coordinates near the start, "
         )
 
-    # 거리 보장 v2.1: 도보 스냅 팽창(실측 1.3~1.7x)을 프롬프트가 선보정 — 모델에게
-    # 어림이 아닌 계산 가능한 직선 체인 목표를 준다. 합격 밴드가 비대칭
-    # [target−0.1, target+0.5]이므로 조준점을 밴드 중심(target+0.2)으로 상향 —
-    # 미달을 구조적으로 줄이는 오버슈트 바이어스.
-    chain_target = round((target_distance_km + _BAND_AIM_KM) / _SNAP_INFLATION, 1)
+    # 거리 보장 v2.2: 도보 스냅 팽창을 프롬프트가 선보정 — 모델에게 어림이 아닌
+    # 계산 가능한 직선 체인 목표를 준다. 조준점은 밴드 중심(target+0.2).
+    # chain_target_km이 오면 그 값 사용(적응형 — route_service가 직전 attempt의
+    # 실측 팽창비로 재계산해 전달), 없으면 초기 상수(_SNAP_INFLATION)로 계산.
+    chain_target = chain_target_km if chain_target_km is not None else round(
+        (target_distance_km + _BAND_AIM_KM) / _SNAP_INFLATION, 1
+    )
     distance_text = (
         f"Design a running route in South Korea whose final on-road length is "
         f"about {target_distance_km} km. Note: the route will be snapped to real "
@@ -251,6 +257,7 @@ async def generate_route(
     prefs: AiCourseSettings | None = None,
     radius_km: float | None = None,
     lang: str = "ko",
+    chain_target_km: float | None = None,
 ) -> RouteResponse:
     """Generate a structured running route via OpenAI Function Calling.
 
@@ -286,7 +293,7 @@ async def generate_route(
         },
         {"role": "user", "content": _build_prompt(
             target_distance_km, start, end, pitstop_keyword, notes, avoid_tags,
-            prefs, radius_km,
+            prefs, radius_km, chain_target_km,
         )},
     ]
 

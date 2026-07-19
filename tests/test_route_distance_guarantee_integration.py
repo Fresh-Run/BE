@@ -7,19 +7,27 @@ target+0.5**만 합격 (폭 0.6 — 명중률 확보). 전패 시 **미달 반�
 초과 최선만 target_missed=true, 초과 0이면 502 route_generation_failed
 (기존 실패 계약 재사용, 쿼터 미소모). 프롬프트 조준점 (target+0.2)/1.45.
 
+v2.2 (같은 날 긴급 재보정 — 실전 명중률 0): ① 적응형 팽창비(직전 attempt 실측
+ratio를 다음 체인 목표에 피드백, 관측 클램프 [1.1, 2.2], 초기 상수 1.45→1.6)
+② 전패 초과 서빙 캡 +1.0km(초과 최선이 그 밖이면 502) ③ 예상 시간 러닝 환산
+(거리 × 6'30"/km — T-map 도보 시간 폐기).
+
 mock 케이스 (tests.mock_route_app을 8001에 기동 — Gemini·T-map 실호출 0, target=5.0):
- 1. 하한 안쪽 합격: [4.95] → 채택·missed=false·gemini 1회
+ 1. 하한 안쪽 합격: [4.95] → 채택·missed=false·gemini 1회 + duration=32(러닝 환산)
  2. 하한 밖 반려: [4.85, 4.95] → 4.85(−0.15) 반려 → 4.95 채택·gemini 2회
  3. 상한 안쪽 합격: [5.45] → 채택·1회
  3b. 상한 밖 반려: [5.55, 5.45] → 5.55(+0.55) 반려 → 5.45 채택·2회
- 4. 전패(초과 존재): [4.0, 5.6, 5.8, 4.2] → 5.6 채택(초과 최선)·missed=true·4회
- 4b. ★전패(미달만): [4.0, 4.2, 4.5, 4.7] → **502 route_generation_failed**
-     (v2.1 신규 — 미달 서빙 금지)
+ 4. 전패(캡 내 초과 존재): [4.0, 5.6, 5.8, 4.2] → 5.6 채택(초과 최선 ≤ +1.0)·missed·4회
+ 4b. 전패(미달만): [4.0, 4.2, 4.5, 4.7] → 502 (미달 서빙 금지)
+ 4c. ★전패(초과가 전부 캡 밖): [6.1, 6.5, 7.0, 8.0] → **502** (v2.2 신규)
+ 4d. 캡 경계: [6.0, 6.5, 7.0, 8.0] → 6.0(+1.0 정확히) 채택·missed=true
  5. NO_PATH 폴백 회귀(target=4.0): 전부 no_path → AI 추정(4.0 ∈ [3.9,4.5])·missed=false
- 6. 프롬프트 단위: "about 2.9 km"((4.0+0.2)/1.45) + "err slightly longer" 포함
+ 6. 프롬프트 단위: 기본 체인 "about 2.6 km"((4.2)/1.6) + "err slightly longer"
+ 7. ★적응형 피드백: [5.6, 5.3] → attempt1 aim 3.2((5.2)/1.6) → ratio 관측(클램프
+    2.2) → attempt2 aim 2.4((5.2)/2.2) → 5.3 합격. chain_targets 기록으로 검증
 
-+ E2E 실호출 1건(비용 ~2원): 200이면 (3.9 ≤ total ≤ 4.5) OR missed=true,
-  또는 502 route_generation_failed(전패-미달만) — 둘 다 계약 준수.
++ E2E 실호출 2건(비용 ~4원, target=5.0 서울): 각각 200이면 밴드 내 or
+  missed(총거리 ≤ 6.0), 또는 502 — 계약 준수 + 명중률 방향 관찰(표본 적음 인지).
 
 Run: python tests/test_route_distance_guarantee_integration.py  (로컬 서버 8000 필요)
 """
@@ -117,8 +125,10 @@ def run_tests():
         assert r.status_code == 200, r.text[:200]
         d = r.json()
         assert d["total_distance_km"] == round(4.95, 1) and d["target_missed"] is False, d
+        assert d["estimated_duration_min"] == round(round(4.95, 1) * 6.5), \
+            f"러닝 환산(6'30\"/km) 기대, got {d['estimated_duration_min']}"
         assert stats(c)["gemini_calls"] == 1, stats(c)
-        ok("4.95(−0.05) 합격 · missed=false · gemini 1회")
+        ok(f"4.95(−0.05) 합격 · missed=false · duration={d['estimated_duration_min']}분(러닝 환산) · gemini 1회")
 
         step("2. 하한 밖 반려 — [4.85, 4.95] → 4.85 반려·4.95 채택")
         scenario(c, [{"snap_km": 4.85}, {"snap_km": 4.95}])
@@ -143,22 +153,36 @@ def run_tests():
             "5.55(+0.55, 표시로는 5.5)가 원값 게이트에서 반려됐다는 증거 — 표시 반올림 우회 없음"
         ok("5.55 반려(원값 게이트) → 5.45 채택 · gemini 2회")
 
-        step("4. 전패(초과 존재) — [4.0, 5.6, 5.8, 4.2] → 5.6 채택(초과 최선)")
+        step("4. 전패(캡 내 초과 존재) — [4.0, 5.6, 5.8, 4.2] → 5.6 채택")
         scenario(c, [{"snap_km": 4.0}, {"snap_km": 5.6}, {"snap_km": 5.8}, {"snap_km": 4.2}])
         d = gen(c, tok, target=5.0).json()
         assert d["total_distance_km"] == 5.6, \
-            f"초과 최선(5.6 < 5.8), 미달(4.0·4.2)은 반환 금지, got {d['total_distance_km']}"
+            f"초과 최선(5.6 < 5.8, 둘 다 캡 6.0 내), 미달(4.0·4.2)은 반환 금지, got {d['total_distance_km']}"
         assert d["target_missed"] is True, "전패 플래그"
         assert stats(c)["gemini_calls"] == 4, "cap 4 유지"
         ok("전패 → 초과 최선 5.6 채택 · target_missed=true · gemini 4회(cap)")
 
-        step("4b. ★전패(미달만) — [4.0, 4.2, 4.5, 4.7] → 502 실패 (v2.1 신규)")
+        step("4b. 전패(미달만) — [4.0, 4.2, 4.5, 4.7] → 502 실패")
         scenario(c, [{"snap_km": 4.0}, {"snap_km": 4.2}, {"snap_km": 4.5}, {"snap_km": 4.7}])
         r = gen(c, tok, target=5.0)
         assert r.status_code == 502, f"미달만 전패 → 502, got {r.status_code}: {r.text[:150]}"
         assert r.json()["detail"]["error"] == "route_generation_failed", r.text[:200]
         assert stats(c)["gemini_calls"] == 4, "4회 시도 후 실패"
         ok("전패(미달만) → 502 route_generation_failed — 미달 서빙 금지")
+
+        step("4c. ★전패(초과 전부 캡 밖) — [6.1, 6.5, 7.0, 8.0] → 502 (v2.2 신규)")
+        scenario(c, [{"snap_km": 6.1}, {"snap_km": 6.5}, {"snap_km": 7.0}, {"snap_km": 8.0}])
+        r = gen(c, tok, target=5.0)
+        assert r.status_code == 502, \
+            f"초과 최선 6.1(+1.1 > 캡 +1.0) → 502, got {r.status_code}: {r.text[:150]}"
+        assert r.json()["detail"]["error"] == "route_generation_failed", r.text[:200]
+        ok("초과 전부 캡(+1.0) 밖 → 502 — '6.3km는 5km의 답이 아니다' 반영")
+
+        step("4d. 캡 경계 — [6.0, 6.5, 7.0, 8.0] → 6.0(+1.0 정확히) 채택+missed")
+        scenario(c, [{"snap_km": 6.0}, {"snap_km": 6.5}, {"snap_km": 7.0}, {"snap_km": 8.0}])
+        d = gen(c, tok, target=5.0).json()
+        assert d["total_distance_km"] == 6.0 and d["target_missed"] is True, d
+        ok("캡 경계 +1.0 = 서빙 허용 · missed=true")
 
         step("5. NO_PATH 폴백 회귀 — 전부 no_path → AI 추정 유지 (target 4.0)")
         scenario(c, [{"no_path": True}] * 4)
@@ -171,33 +195,55 @@ def run_tests():
         step("6. 프롬프트 단위 검증 (호출 0회)")
         from app.services.openai_service import _build_prompt, _SNAP_INFLATION, _BAND_AIM_KM
         from app.models.schemas import Coordinate
-        assert _SNAP_INFLATION == 1.45 and _BAND_AIM_KM == 0.2
+        assert _SNAP_INFLATION == 1.6 and _BAND_AIM_KM == 0.2, "v2.2 재보정 상수"
         p = _build_prompt(4.0, Coordinate(lat=37.5445, lng=127.0374), None, None, None,
                           radius_km=1.0)
         assert "avoid overshooting" not in p, "과소 기하 유도 문구 삭제"
-        assert "about 2.9 km" in p, f"체인 목표((4.0+0.2)/1.45=2.9) 명시, got: {p[:200]}"
-        assert "1.3-1.7x" in p, "팽창 맥락 안내"
-        assert "about 4.0 km" in p, "최종 목표 거리도 유지"
-        assert "err slightly longer" in p, "오버슈트 바이어스 문구(미달 불합격 세트)"
-        ok("프롬프트: 체인 2.9km(밴드 중심 +0.2 조준) · err slightly longer · 1.3-1.7x")
+        expect_chain = round((4.0 + 0.2) / 1.6, 1)
+        assert f"about {expect_chain} km" in p, f"기본 체인 목표({expect_chain}) 명시, got: {p[:200]}"
+        assert "err slightly longer" in p, "오버슈트 바이어스 문구"
+        # 적응형 오버라이드 — chain_target_km이 오면 그 값이 프롬프트에 실림
+        p2 = _build_prompt(4.0, Coordinate(lat=37.5445, lng=127.0374), None, None, None,
+                           radius_km=1.0, chain_target_km=2.4)
+        assert "about 2.4 km" in p2, "적응형 체인 목표 오버라이드"
+        ok(f"프롬프트: 기본 체인 {expect_chain}km(1.6 재보정) · 오버라이드 2.4km · err slightly longer")
 
-        print("\n" + "=" * 50 + "\n  MOCK 6케이스 PASSED — E2E는 메인 서버로\n" + "=" * 50)
+        step("7. ★적응형 피드백 — [5.6, 5.3] → aim 3.2 → (클램프 2.2) → aim 2.4 → 합격")
+        scenario(c, [{"snap_km": 5.6}, {"snap_km": 5.3}])
+        d = gen(c, tok, target=5.0).json()
+        assert d["total_distance_km"] == 5.3 and d["target_missed"] is False, d
+        st = stats(c)
+        assert st["gemini_calls"] == 2, st
+        aims = st["chain_targets"]
+        exp1 = round((5.0 + 0.2) / 1.6, 1)   # 3.2 — 초기 상수 조준
+        exp2 = round((5.0 + 0.2) / 2.2, 1)   # 2.4 — 관측 ratio(클램프 상한) 반영
+        assert aims == [exp1, exp2], \
+            f"적응형 조준 [초기 {exp1}, 피드백 {exp2}] 기대, got {aims}"
+        ok(f"attempt1 aim {aims[0]} → 팽창 관측 → attempt2 aim {aims[1]} → 5.3 합격")
 
-        step("E2E. 실호출 1건 (비용 ~2원) — v2.1 계약 검증")
-        r = gen(c, tok, base=BASE)
-        if r.status_code == 502:
-            assert r.json()["detail"]["error"] == "route_generation_failed", r.text[:200]
-            ok("E2E: 전패(미달만) → 502 실패 계약 준수 (미달 서빙 금지)")
-        else:
+        print("\n" + "=" * 50 + "\n  MOCK 케이스 PASSED — E2E는 메인 서버로\n" + "=" * 50)
+
+        step("E2E. 실호출 2건 (비용 ~4원, target=5.0) — v2.2 계약 + 명중률 방향")
+        for n in (1, 2):
+            r = gen(c, tok, base=BASE, target=5.0)
+            if r.status_code == 502:
+                assert r.json()["detail"]["error"] == "route_generation_failed", r.text[:200]
+                print(f"    #{n}: 502 (전패 — 미달만 or 초과 전부 캡 밖) — 계약 준수")
+                continue
             assert r.status_code == 200, r.text[:250]
             d = r.json()
             total = d["total_distance_km"]
-            in_band = 3.9 - 1e-9 <= total <= 4.5 + 1e-9
-            assert in_band or d["target_missed"] is True, \
-                f"계약 위반: {total} ∉ [3.9, 4.5]인데 missed={d['target_missed']}"
-            print(f"    실측: total={total}km (오차 {total-4.0:+.2f}) "
-                  f"target_missed={d['target_missed']} radius_expanded={d['radius_expanded']}")
-            ok(f"E2E 계약 준수: [target−0.1, target+0.5] 이내 또는 초과+플래그 (실제 {total}km)")
+            in_band = 4.9 - 1e-9 <= total <= 5.5 + 1e-9
+            if in_band:
+                assert d["target_missed"] is False, d["target_missed"]
+            else:
+                assert d["target_missed"] is True and total <= 6.0 + 1e-9, \
+                    f"계약 위반: {total}, missed={d['target_missed']} (캡 6.0)"
+            assert d["estimated_duration_min"] == round(total * 6.5), \
+                f"러닝 환산 duration 기대, got {d['estimated_duration_min']}"
+            print(f"    #{n}: total={total}km (오차 {total-5.0:+.2f}) missed={d['target_missed']} "
+                  f"duration={d['estimated_duration_min']}분")
+        ok("E2E 2건 계약 준수 (실측값은 위 출력)")
 
         print("\n" + "=" * 50 + "\n  ALL TESTS PASSED\n" + "=" * 50)
     finally:

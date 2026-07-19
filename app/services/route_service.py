@@ -104,6 +104,20 @@ _UNDER_TOLERANCE_KM = 0.1
 _OVER_TOLERANCE_KM = 0.5
 _MAX_RADIUS_KM = 8.0
 
+# v2.2 (2026-07-20 긴급 재보정 — 실전 명중률 0 대응):
+# ① 적응형 팽창비: attempt N의 실측 ratio(스냅/체인)를 N+1의 체인 목표에 피드백.
+#    실측 13건 분포(중앙값 1.58, 범위 1.09~2.11)상 어떤 고정 상수도 폭 0.6 밴드를
+#    1회에 못 맞춤 — 직전 관측이 같은 지역의 최선 추정치. 관측치는 클램프
+#    [1.1, 2.2] (분포 밖 극단 관측이 다음 조준을 망치는 것 방지).
+# ② 전패 초과 서빙 캡: 초과 최선이 target+1.0 넘으면 서빙 대신 실패(502) —
+#    "6.3km는 5km 요청의 답이 아니다"(오너). 캡 값 1.0은 판단 플래그.
+_RATIO_CLAMP = (1.1, 2.2)
+_OVER_SERVE_CAP_KM = 1.0
+
+# 예상 시간 = 러닝 기준 (2026-07-20 오너 확정): T-map 도보 시간(~13분/km)을
+# 버리고 거리 × 기본 러닝 페이스 6'30"/km로 재계산. 개인 페이스 반영은 후속.
+_RUN_PACE_MIN_PER_KM = 6.5
+
 
 def _within_band(actual_km: float, target_km: float) -> bool:
     """비대칭 합격 판정 — [target−0.1, target+0.5], 부동소수 여유 1e-9."""
@@ -205,8 +219,14 @@ async def create_running_route(
     _perf = {"gemini_s": 0.0, "gemini_calls": 0, "tmap_s": 0.0, "tmap_legs": 0,
              "attempts": 0}
 
+    # 적응형 팽창비 추정치 — 첫 attempt는 초기 상수, 이후 직전 실측으로 갱신
+    est_ratio = openai_service._SNAP_INFLATION
+
     for i, radius_km in enumerate(_radius_schedule(target_km)):
         _perf["attempts"] += 1
+        chain_aim_km = round(
+            (target_km + openai_service._BAND_AIM_KM) / est_ratio, 1
+        )
         try:
             _g = time.perf_counter()
             route = await openai_service.generate_route(
@@ -219,6 +239,7 @@ async def create_running_route(
                 prefs=prefs,
                 radius_km=radius_km,
                 lang=lang,
+                chain_target_km=chain_aim_km,
             )
             _perf["gemini_s"] += time.perf_counter() - _g
             _perf["gemini_calls"] += 1
@@ -285,14 +306,18 @@ async def create_running_route(
                 _perf["tmap_s"] += time.perf_counter() - _m
                 _perf["tmap_legs"] += len(route.waypoints) - 1
                 route.polyline = pedestrian.path
-                # 표시용: 거리 소수 1자리, 소요시간 정수 분 (소수점 노출 방지)
+                # 표시용: 거리 소수 1자리 (소수점 노출 방지). 시간은 루프 뒤
+                # 일괄 러닝 환산(_RUN_PACE_MIN_PER_KM) — T-map 도보 시간 미사용.
                 raw_km = pedestrian.distance_m / 1000.0
                 route.total_distance_km = round(raw_km, 1)
-                route.estimated_duration_min = float(round(pedestrian.duration_s / 60.0))
                 # 게이트는 반올림 전 원값으로 (v2.1 — 0.1 표시 반올림이 ±50m
                 # 경계를 뭉개던 것 제거: 5.55는 표시 5.5여도 밴드 밖으로 판정)
                 actual_km = raw_km
                 status = "OK" if _within_band(raw_km, target_km) else "MISS"
+                # 적응형 피드백: 이 attempt의 실측 팽창비를 다음 조준에 반영
+                if chain_km > 0:
+                    est_ratio = min(max(raw_km / chain_km, _RATIO_CLAMP[0]),
+                                    _RATIO_CLAMP[1])
             except Exception:  # noqa: BLE001 - keep AI estimates if routing fails
                 logger.warning(
                     "Pedestrian routing (%s) failed; falling back to AI distance "
@@ -305,11 +330,11 @@ async def create_running_route(
         # 중앙값 재산정). 좌표·유저 id 미기록(위치 프라이버시), 키 없음.
         logger.info(
             "route_gen attempt=%d radius=%.1f chain_km=%.2f snapped_km=%.2f "
-            "ratio=%.2f target=%.1f verdict=%s",
+            "ratio=%.2f target=%.1f aim=%.1f verdict=%s",
             i + 1, radius_km, chain_km,
             actual_km if status != "NO_PATH" else 0.0,
             (actual_km / chain_km) if (chain_km > 0 and status != "NO_PATH") else 0.0,
-            target_km, status.lower(),
+            target_km, chain_aim_km, status.lower(),
         )
 
         if status == "OK":
@@ -325,10 +350,14 @@ async def create_running_route(
         # 최선+정직한 표시 — 프론트가 "요청 거리와 달라요" 안내). 연결 후보가
         # 없으면 AI 추정 폴백(동일 기준으로 플래그). 유효 응답 0이면 실패.
         if miss_candidates:
-            # v2.1 룰링: 미달(<target−0.1) 후보는 반환 금지. 초과 후보가 있으면
-            # 목표 최근접을 missed로 서빙, 없으면(미달만) 생성 실패 —
-            # 짧은 코스를 주느니 프론트가 "다시 설정"을 유도(502, 쿼터 미소모).
-            over = [(k, r) for k, r in miss_candidates if k > target_km]
+            # v2.1: 미달(<target−0.1) 후보는 반환 금지. v2.2: 초과도
+            # target+_OVER_SERVE_CAP_KM(1.0)까지만 서빙 — 그보다 큰 이탈은
+            # "5km 요청의 답이 아니다"(오너). 서빙 가능 초과가 없으면 생성 실패
+            # (502, 쿼터 미소모 — 프론트 "다시 설정" 유도).
+            over = [
+                (k, r) for k, r in miss_candidates
+                if target_km < k <= target_km + _OVER_SERVE_CAP_KM + 1e-9
+            ]
             if over:
                 best = min(over, key=lambda t: t[0] - target_km)[1]
                 best.target_missed = True
@@ -341,6 +370,12 @@ async def create_running_route(
             )
         else:
             raise RouteGenerationFailed()
+
+    # 예상 시간 = 러닝 기준 일괄 환산 (오너 확정 2026-07-20) — T-map 도보 시간·
+    # AI 추정 무관하게 최종 거리 × 6'30"/km. NO_PATH 폴백 경로 포함 단일 소스.
+    best.estimated_duration_min = float(
+        round(best.total_distance_km * _RUN_PACE_MIN_PER_KM)
+    )
 
     # 계측 요약 — 병목 분포 관측 (총합/Gemini/T-map/재시도)
     _total = time.perf_counter() - _t0

@@ -2,6 +2,12 @@
 
 > 상태: **구현 완료**. 2026-07-15. 확답 A~D 반영(bbox+haversine·radius≤20·
 > 시간윈도 무제한·트랙 보유 전량 백필).
+>
+> **오너 룰링 (2026-07-20, TF 리포트 후 현행 유지 확정 — 코드 변경 0)**:
+> **비공개 계정(profile `followers`/`private`)은 탐색 피드에서 완전 은닉** —
+> 개별 run을 public으로 올려도 안 뜬다. run별 공개설정은 "프로필 내 공개
+> 범위"로 해석(계정 잠금이 상위 게이트, `/routes/public` 코스 정책과 일관).
+> 베타 피드백 시 재검토.
 > SQL: `db/2026-07-15_run_start_coords.sql`(실행 완료 — 컬럼2·부분인덱스·백필 동수·누락0).
 > 구현: `run_service.list_nearby_feed`·`create_run` 좌표 자동채움 · `GET /feed/nearby`
 > (routes.py) · `tests/test_nearby_feed_integration.py`(전 매트릭스 통과).
