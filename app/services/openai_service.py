@@ -152,10 +152,10 @@ def _prefs_text(prefs: AiCourseSettings | None) -> str:
 # 오버슈트는 ±0.5km 게이트+재시도가 잡음). ⚠️ 표본 3건 한계: route_gen 계측
 # 로그가 20건 이상 쌓이면 ratio 중앙값을 재산정해 이 상수를 갱신할 것.
 _SNAP_INFLATION = 1.45
-# 비대칭 밴드 [target, target+0.3] 중앙 조준 오프셋 — 체인 목표를 (target+0.15)
-# 기준으로 계산해 미달 확률을 구조적으로 낮춘다(2026-07-20 밴드 변경과 세트).
+# 비대칭 밴드 [target−0.1, target+0.5] 중심 조준 오프셋 — 체인 목표를
+# (target+0.2) 기준으로 계산해 미달 확률을 구조적으로 낮춘다(v2.1 룰링과 세트).
 # 팽창비 1.45 자체는 유지 — 재보정은 route_gen 계측 20건 축적 후 중앙값으로.
-_BAND_AIM_KM = 0.15
+_BAND_AIM_KM = 0.2
 
 
 def _build_prompt(
@@ -213,10 +213,10 @@ def _build_prompt(
             "Provide ordered waypoints with realistic WGS84 coordinates near the start, "
         )
 
-    # 거리 보장 v2: 도보 스냅 팽창(실측 1.3~1.7x)을 프롬프트가 선보정 — 모델에게
+    # 거리 보장 v2.1: 도보 스냅 팽창(실측 1.3~1.7x)을 프롬프트가 선보정 — 모델에게
     # 어림이 아닌 계산 가능한 직선 체인 목표를 준다. 합격 밴드가 비대칭
-    # [target, target+0.3]이 되면서(미달 무조건 불합격) 조준점을 target이 아닌
-    # 밴드 중앙(target+0.15)으로 상향 — 미달을 구조적으로 줄이는 오버슈트 바이어스.
+    # [target−0.1, target+0.5]이므로 조준점을 밴드 중심(target+0.2)으로 상향 —
+    # 미달을 구조적으로 줄이는 오버슈트 바이어스.
     chain_target = round((target_distance_km + _BAND_AIM_KM) / _SNAP_INFLATION, 1)
     distance_text = (
         f"Design a running route in South Korea whose final on-road length is "

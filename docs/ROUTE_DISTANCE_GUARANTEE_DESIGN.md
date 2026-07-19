@@ -1,15 +1,16 @@
-# ROUTE_DISTANCE_GUARANTEE_DESIGN — AI 코스 목표 거리 보장 (v2 비대칭 밴드)
+# ROUTE_DISTANCE_GUARANTEE_DESIGN — AI 코스 목표 거리 보장 (v2.1 비대칭 밴드)
 
-> **v2 (2026-07-20, 배포 대기)**: TF 실기기 사례(낙산 5km 요청→3.0km 서빙 7/18,
-> 안양천 5km→3.9km 재발 7/19 — 둘 다 전패 후 최선+missed 경로로 판정. attempt
-> 로그는 링버퍼 소실이라 간접 판정, 우회 코드 패스 없음은 확인) 계기로 오너
-> 확정: 합격 밴드를 ±0.5 대칭에서 **[target, target+0.3]** 비대칭으로 —
-> **미달 무조건 불합격**(−허용 0), 초과 +300m. 전패 시 **초과 후보 우선**(목표
-> 최근접) → 없으면 미달 최장 + target_missed=true. 프롬프트 조준점도 밴드
-> 중앙으로 상향: `chain_target=(target+0.15)/1.45` + "err slightly longer".
-> ⚠️ **오너 결정 대기**: 전패 최선이 미달일 때 그대로 서빙(현행) vs 실패 반환.
-> ⚠️ 밴드가 좁아 실전 1회합격률 하락 예상 — target_missed 빈도·시도 수 계측
-> 관찰 (E2E 첫 실측: 4회 전패 → 4.8 초과 채택+missed=true).
+> **v2.1 (2026-07-20 최종 룰링 — Ivan 절충안, 배포 대기)**: 합격 밴드
+> **[target−0.1, target+0.5]** (폭 0.6 — 명중률 확보). 전패 시 **미달 후보 반환
+> 금지**: 초과 최선만 target_missed=true로 서빙, 초과 0이면 **502
+> route_generation_failed**(기존 실패 계약 재사용·쿼터 미소모 — 프론트 "다시
+> 설정" 유도). 프롬프트 조준점 밴드 중심 `(target+0.2)/1.45` + "err slightly
+> longer". (중간안 v2 [target, target+0.3]·전패 미달 최장 서빙은 같은 날 폐기.)
+> 계기: TF 실기기 사례(낙산 5km→3.0km 7/18, 안양천 5km→3.9km 7/19 — 둘 다 전패
+> 후 최선+missed 경로로 판정. attempt 로그 링버퍼 소실이라 간접 판정, 우회
+> 코드 패스 없음은 확인).
+> ⚠️ 관찰: target_missed·502 빈도, 시도 수 분포 — 계측 20건 축적 시
+> _SNAP_INFLATION 재보정과 함께 리뷰.
 >
 > v1: 작성 2026-07-14, 배포 완료(v59~) — §10 확정: E2E는 "±0.5 이내
 > 또는 target_missed=true" 계약 검증 / _SHORT_RATIO 완전 삭제(±0.5 일원화).
