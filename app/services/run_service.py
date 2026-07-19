@@ -1224,7 +1224,11 @@ async def _build_activity_items(
 async def list_activity_feed(
     user_id: str, limit: int = 20, offset: int = 0
 ) -> list[ActivityFeedItem]:
-    """Following activity feed: runs by followed users + my own, newest ran_at.
+    """Following activity feed: runs by followed users only, newest ran_at.
+
+    2026-07-20 스펙 변경(오너 룰링): **본인 run 제외**. 초기 설계는 "팔로우+본인"
+    이었으나 홈 친구 탭이 이 피드를 소비하면서 본인 포함이 부자연해짐(본인 run은
+    기록 탭·프로필 서피스). is_mine 필드는 하위호환으로 유지(이제 항상 False).
 
     Same shape/privacy rules as the crew feed (CrewRunItem base), plus kudos.
     Kept separate from crew_service.list_crew_runs on purpose — different
@@ -1241,14 +1245,16 @@ async def list_activity_feed(
         .eq("follower_id", user_id)
         .execute()
     )
-    audience = [row["following_id"] for row in res.data] + [user_id]
+    audience = [row["following_id"] for row in res.data]
+    if not audience:  # 팔로우 0명 — 본인 제외 후엔 조회 대상 자체가 없음
+        return []
 
     runs_res = await asyncio.to_thread(
         lambda: supabase.table("runs")
         .select(_ACTIVITY_SELECT)
         .in_("user_id", audience)
-        # private run은 본인 것만 (팔로우 대상의 private는 활동 피드에서 제외)
-        .or_(f"visibility.neq.private,user_id.eq.{user_id}")
+        # 팔로우 대상의 private run은 활동 피드에서 제외 (본인은 audience에 없음)
+        .neq("visibility", "private")
         .order("ran_at", desc=True)
         .range(offset, offset + limit - 1)
         .execute()

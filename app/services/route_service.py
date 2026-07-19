@@ -93,12 +93,20 @@ def _resolve_course_prefs(
 
 # ── 동적 탐색 반경 ─────────────────────────────────────────────────────────────
 
-# ±500m 보장 (docs/ROUTE_DISTANCE_GUARANTEE_DESIGN.md): |실측−목표| ≤ 0.5km만
-# 합격. 구 _SHORT_RATIO=0.6(하한만, 상한 없음 — "4km→2.5km"도 통과하던 갭)을
-# 양방향 게이트로 완전 대체. 불합격은 후보 보관 후 반경 루프 재시도(cap 4 불변),
-# 전패 시 |오차| 최소 후보 채택 + target_missed=True(반려 대신 최선+정직한 표시).
-_TOLERANCE_KM = 0.5
+# 거리 보장 v2 — 비대칭 밴드 (2026-07-20 오너 확정, TF 실기기 5km→3.0km 낙산
+# 사례 계기): **target ≤ actual ≤ target+0.3km**만 합격. 미달은 무조건 불합격
+# (−허용 0 — 구 ±0.5 대칭 밴드가 "5km 요청→4.5km"를 합격시키던 것 제거), 초과는
+# +300m까지. 불합격은 후보 보관 후 반경 루프 재시도(cap 4 불변).
+# 전패 시: 초과 후보 우선(미달을 주느니 긴 쪽 — 밴드 철학 정합) 중 목표 최근접,
+# 초과가 없으면 미달 중 최장 + target_missed=True(반려 대신 최선+정직한 표시).
+# ⚠️ 미달 최선일 때 "실패 반환"으로 바꿀지는 오너 결정 대기 — 현행 반려-없음 유지.
+_OVER_TOLERANCE_KM = 0.3
 _MAX_RADIUS_KM = 8.0
+
+
+def _within_band(actual_km: float, target_km: float) -> bool:
+    """비대칭 합격 판정 — 부동소수 여유(1e-9)만 두고 미달 0 허용."""
+    return (target_km - 1e-9) <= actual_km <= (target_km + _OVER_TOLERANCE_KM + 1e-9)
 
 
 def _waypoint_chain_km(route: RouteResponse) -> float:
@@ -251,9 +259,9 @@ async def create_running_route(
         route.search_radius_km = radius_km
         route.radius_expanded = i > 0
 
-        # Step 3: 보행 경로 연결 + 실측 거리로 성공 판정 (±0.5km 양방향).
-        #   OK      — 연결됐고 |실측−목표| ≤ 0.5km → 즉시 채택
-        #   MISS    — 연결됐지만 허용 오차 밖(미달·초과) → 후보 보관, 재시도
+        # Step 3: 보행 경로 연결 + 실측 거리로 성공 판정 (비대칭 밴드).
+        #   OK      — 연결됐고 target ≤ 실측 ≤ target+0.3 → 즉시 채택
+        #   MISS    — 연결됐지만 밴드 밖(미달·초과) → 후보 보관, 재시도
         #   NO_PATH — 연결 실패(또는 waypoint<2) → AI 추정 폴백 보관, 반경 확장
         # (반경 확장은 미달에 유효 — 초과 케이스도 스케줄 그대로 진행: 프롬프트가
         #  체인 목표를 고정하므로 반경이 커져도 오버슈트를 키우지 않고 재추첨 효과만)
@@ -276,7 +284,7 @@ async def create_running_route(
                 route.total_distance_km = round(pedestrian.distance_m / 1000.0, 1)
                 route.estimated_duration_min = float(round(pedestrian.duration_s / 60.0))
                 actual_km = route.total_distance_km
-                status = "OK" if abs(actual_km - target_km) <= _TOLERANCE_KM else "MISS"
+                status = "OK" if _within_band(actual_km, target_km) else "MISS"
             except Exception:  # noqa: BLE001 - keep AI estimates if routing fails
                 logger.warning(
                     "Pedestrian routing (%s) failed; falling back to AI distance "
@@ -309,12 +317,18 @@ async def create_running_route(
         # 최선+정직한 표시 — 프론트가 "요청 거리와 달라요" 안내). 연결 후보가
         # 없으면 AI 추정 폴백(동일 기준으로 플래그). 유효 응답 0이면 실패.
         if miss_candidates:
-            best = min(miss_candidates, key=lambda t: abs(t[0] - target_km))[1]
+            # 초과 후보 우선(밴드 철학: 미달을 주느니 긴 쪽) 중 목표 최근접,
+            # 초과가 없으면 미달 중 최장. ⚠️ 미달 최선 시 실패 반환 여부는 오너 대기.
+            over = [(k, r) for k, r in miss_candidates if k >= target_km]
+            if over:
+                best = min(over, key=lambda t: t[0] - target_km)[1]
+            else:
+                best = max(miss_candidates, key=lambda t: t[0])[1]
             best.target_missed = True
         elif nopath_candidate is not None:
             best = nopath_candidate
-            best.target_missed = (
-                abs(best.total_distance_km - target_km) > _TOLERANCE_KM
+            best.target_missed = not _within_band(
+                best.total_distance_km, target_km
             )
         else:
             raise RouteGenerationFailed()

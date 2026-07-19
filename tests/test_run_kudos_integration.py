@@ -141,17 +141,17 @@ def run():
             assert users_list[1]["avatar_url"] == "https://a.test/k1.png"
             ok("팔로우 무관 kudos ✓ 최신순+닉네임·아바타 ✓")
 
-            # ── 5. 활동 피드: 정렬·is_mine·집계 ──────────────────────────
-            step("5. 피드: [mine, b, a] + is_mine + kudos_count/my_kudos")
+            # ── 5. 활동 피드: 정렬·본인 제외·집계 (2026-07-20 스펙: 본인 run 제외) ──
+            step("5. 피드: [b, a] (본인 run 제외) + is_mine 전부 False + kudos_count/my_kudos")
             items = feed(c, tok1)
-            assert [i["run_id"] for i in items] == [run_mine, run_b, run_a], \
-                "ran_at 최신순 (u3의 run_c는 미팔로우라 제외)"
-            assert items[0]["is_mine"] is True and items[1]["is_mine"] is False
+            assert [i["run_id"] for i in items] == [run_b, run_a], \
+                "ran_at 최신순 · 본인(run_mine) 제외 · u3의 run_c는 미팔로우라 제외"
+            assert all(i["is_mine"] is False for i in items), "본인 제외라 is_mine 항상 False"
             by = {i["run_id"]: i for i in items}
             assert by[run_a]["kudos_count"] == 2 and by[run_a]["my_kudos"] is True
             assert by[run_b]["kudos_count"] == 0 and by[run_b]["my_kudos"] is False
             assert by[run_a]["nickname"] == f"쿠도u2-{ts%100000}"
-            ok("정렬 ✓ is_mine ✓ kudos_count=2·my_kudos ✓")
+            ok("정렬 ✓ 본인 제외·is_mine False ✓ kudos_count=2·my_kudos ✓")
 
             # ── 6. 상속 프라이버시 (CrewRunItem 규칙) ─────────────────────
             step("6. notes 미노출 + 비공개 route_summary null")
@@ -174,9 +174,9 @@ def run():
 
             # ── 8. 페이지네이션 + 기존 /feed 회귀 ─────────────────────────
             step("8. limit=1 페이지네이션 + 기존 코스 피드(/feed) 회귀")
-            p = [feed(c, tok1, limit=1, offset=o) for o in (0, 1, 2, 3)]
-            assert [x[0]["run_id"] for x in p[:3]] == [run_mine, run_b, run_a]
-            assert p[3] == []
+            p = [feed(c, tok1, limit=1, offset=o) for o in (0, 1, 2)]
+            assert [x[0]["run_id"] for x in p[:2]] == [run_b, run_a]
+            assert p[2] == []
             course_feed = api(c, "GET", "/feed", tok1).json()
             assert [f["id"] for f in course_feed] == [pub_route], \
                 "기존 코스 피드는 여전히 route 단위로 동작해야 함"
@@ -184,16 +184,14 @@ def run():
             ok("페이지네이션 ✓ /feed 회귀 (route 단위 유지) ✓")
 
             # ── 9. 언팔로우 반영 + 빈 피드 ────────────────────────────────
-            step("9. 언팔로우 → 내 run만 / u4(팔로우0·run0) → []")
+            step("9. 언팔로우 → [] (본인 run도 미포함) / u4(팔로우0) → []")
             assert api(c, "DELETE", f"/users/{uid2}/follow", tok1).status_code == 204
-            assert [i["run_id"] for i in feed(c, tok1)] == [run_mine], "내 run만 남음"
-            assert feed(c, tok4) == [], "팔로우 0 + run 0 → 빈 배열"
+            assert feed(c, tok1) == [], "언팔 후 빈 배열 (본인 run 제외 — 2026-07-20 스펙)"
+            assert feed(c, tok4) == [], "팔로우 0 → 빈 배열"
             # step 4에서 kudos 위해 걸어둔 u3→u2 팔로우 해제 (팔로우 0 전제 복원, kudos 행은 유지)
             assert api(c, "DELETE", f"/users/{uid2}/follow", tok3).status_code == 204
-            items3 = feed(c, tok3)
-            assert [i["run_id"] for i in items3] == [run_c] and items3[0]["is_mine"] is True, \
-                "팔로우 0이어도 내 run은 포함"
-            ok("언팔 반영 ✓ 빈 배열 ✓ 본인 run 포함 ✓")
+            assert feed(c, tok3) == [], "팔로우 0이면 본인 run(run_c) 있어도 빈 배열"
+            ok("언팔 → [] ✓ 팔로우0 → [] ✓ 본인 run 미포함 ✓")
 
             print("\n" + "="*50)
             print("  ALL TESTS PASSED")
