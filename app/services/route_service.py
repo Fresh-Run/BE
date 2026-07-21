@@ -144,6 +144,12 @@ _OVER_SERVE_CAP_KM = 1.0
 # T-map 왕복(약 0.6s/leg×N)과 무효 후보 적재를 아낀다.
 _PRE_GATE_BAND = (0.75, 1.25)
 _PRE_GATE_REROLLS = 2
+# v2.5 지연 통제 (오너 결정 — 콜 3배 폭증 대응):
+# ① 시간 예산 — 총 경과 이 값 초과 시 신규 attempt 진입 금지, 그 시점 최선 판정
+#    (진행 중 attempt는 완주 허용, 중간 절단 없음). 첫 attempt는 무조건 1회 보장.
+# ② pre-gate 재추첨은 gather 병렬 발사(순차 합 대신 max 1콜 시간 — route_service).
+# ③ Gemini 콜 타임아웃은 openai_service 클라이언트에 설정(8s).
+_TIME_BUDGET_S = 20.0
 # 일방(end 좌표) 요청의 초기 팽창비 — corridor 경로는 루프보다 우회가 적어
 # 스냅 팽창이 낮다(E2E 실측: 루프 1.6 vs 일방 체인≈직선). 적응형이 이후 보정.
 _ONE_WAY_INFLATION = 1.25
@@ -302,6 +308,14 @@ async def create_running_route(
                  else _ONE_WAY_INFLATION)
 
     for i, radius_km in enumerate(_radius_schedule(target_km, start_end_km)):
+        # v2.5 시간 예산 게이트: 총 경과 20s 초과 + 이미 1 attempt 완료면 신규
+        # attempt 진입 금지 → 그 시점 최선 후보로 판정(아래 best 선정 블록).
+        # 첫 attempt(i==0)는 무조건 보장, 진행 중 attempt는 완주(중간 절단 없음).
+        if i > 0 and (time.perf_counter() - _t0) > _TIME_BUDGET_S:
+            logger.info("route_gen 시간 예산(%.0fs) 초과 — attempt %d 진입 금지, 최선 판정",
+                        _TIME_BUDGET_S, i + 1)
+            break
+
         _perf["attempts"] += 1
         chain_aim_km = (target_km + openai_service._BAND_AIM_KM) / est_ratio
         if start_end_km is not None:
@@ -309,64 +323,48 @@ async def create_running_route(
             chain_aim_km = max(chain_aim_km, start_end_km * 1.05)
         chain_aim_km = round(chain_aim_km, 1)
 
-        # v2.3 사전 게이트: 체인이 aim×[0.75, 1.25] 밖이면 T-map 없이 Gemini만
-        # 재추첨(최대 2회). 전 롤 소진 시 **aim 최근접 롤로 salvage** — 원지시는
-        # "소진 시 miss"였으나 E2E 부검에서 pre_miss가 attempt를 통째로 태워
-        # 후보 고갈→502 양산(잠실 3/4·일방 4/4 소실). T-map은 attempt당 1회로
-        # 동일하게 상한되므로 salvage가 비용 증가 없이 후보만 보존(판단 플래그).
+        # v2.5 사전 게이트 (병렬): 3롤(1+재추첨2)을 gather로 동시 발사 — 순차 합
+        # 대신 max 1콜 시간. 게이트(체인 aim×[0.75,1.25]) 통과 후보 중 aim 최근접
+        # 채택, 통과 0이면 전체 최근접 salvage(전략 불변, 발사 방식만 병렬화).
+        # 개별 롤의 타임아웃(8s)·파싱 실패는 return_exceptions로 그 롤만 실패.
         route = None
         chain_km = 0.0
         attempt_rejects = 0
-        salvage: tuple[float, RouteResponse] | None = None  # (chain_km, cand)
-        try:
-            for _roll in range(1 + _PRE_GATE_REROLLS):
-                _g = time.perf_counter()
-                cand = await openai_service.generate_route(
-                    target_distance_km=target_km,
-                    start=req.start,
-                    end=req.end,
-                    pitstop_keyword=req.pitstop_keyword,
-                    notes=req.notes,
-                    avoid_tags=avoid_tags,
-                    prefs=prefs,
-                    radius_km=radius_km,
-                    lang=lang,
-                    chain_target_km=chain_aim_km,
-                    radius_center=radius_center,
-                )
-                _perf["gemini_s"] += time.perf_counter() - _g
-                _perf["gemini_calls"] += 1
-                c_km = _waypoint_chain_km(cand)
-                if (chain_aim_km * _PRE_GATE_BAND[0]
-                        <= c_km
-                        <= chain_aim_km * _PRE_GATE_BAND[1]):
-                    route, chain_km = cand, c_km
-                    break
-                attempt_rejects += 1
-                if salvage is None or abs(c_km - chain_aim_km) < abs(salvage[0] - chain_aim_km):
-                    salvage = (c_km, cand)
-            if route is None and salvage is not None:
-                chain_km, route = salvage
-        except OpenAIAPIError:
-            # ①-a API 장애: 반경과 무관 — 확장 재시도는 낭비. 이미 확보한
-            # 후보가 있으면 그걸로 마무리, 없으면 그대로 실패.
-            if miss_candidates or nopath_candidate is not None:
-                logger.warning("Gemini API 장애 (radius=%skm) — 기존 후보로 마무리", radius_km)
-                break
-            raise
-        except (ValueError, ValidationError):
-            # ①-b/c/d tool call 없음·파싱·검증 실패: 비결정적 — 이 시도만
-            # 무효 처리하고 다음 반경으로 (반경이 커져도 손해 없음).
-            logger.warning(
-                "Gemini 응답 파싱/검증 실패 (radius=%skm) — 다음 반경으로 재시도",
-                radius_km, exc_info=True,
+        rolls = [
+            openai_service.generate_route(
+                target_distance_km=target_km, start=req.start, end=req.end,
+                pitstop_keyword=req.pitstop_keyword, notes=req.notes,
+                avoid_tags=avoid_tags, prefs=prefs, radius_km=radius_km, lang=lang,
+                chain_target_km=chain_aim_km, radius_center=radius_center,
             )
-            continue
-        finally:
-            _perf["pre_rejects"] += attempt_rejects
+            for _ in range(1 + _PRE_GATE_REROLLS)
+        ]
+        _g = time.perf_counter()
+        results = await asyncio.gather(*rolls, return_exceptions=True)
+        _perf["gemini_s"] += time.perf_counter() - _g  # 병렬이라 wall-clock(=max롤)
+        _perf["gemini_calls"] += len(results)
 
-        if route is None:  # 롤 전부 예외 없이 실패한 극단 케이스만 (이론상 salvage가 항상 존재)
+        cands = [(r, _waypoint_chain_km(r)) for r in results
+                 if isinstance(r, RouteResponse)]
+        if not cands:
+            # 전 롤 실패 — 예외 종류로 분기(기존 순차 흐름과 동일 시맨틱).
+            excs = [r for r in results if isinstance(r, BaseException)]
+            _perf["pre_rejects"] += len(results)
+            if any(isinstance(e, OpenAIAPIError) for e in excs):
+                if miss_candidates or nopath_candidate is not None:
+                    logger.warning("Gemini API 장애 (radius=%skm) — 기존 후보로 마무리", radius_km)
+                    break
+                raise next(e for e in excs if isinstance(e, OpenAIAPIError))
+            logger.warning("Gemini 전 롤 파싱/검증 실패 (radius=%skm) — 다음 반경", radius_km)
             continue
+
+        lo, hi = chain_aim_km * _PRE_GATE_BAND[0], chain_aim_km * _PRE_GATE_BAND[1]
+        in_band = [(r, ck) for r, ck in cands if lo <= ck <= hi]
+        pool = in_band or cands  # 통과 없으면 전체에서 최근접 salvage
+        route, chain_km = min(pool, key=lambda t: abs(t[1] - chain_aim_km))
+        # 버려진 롤 수(계측): 채택 1개 제외 전부(밴드 밖·예외 포함)
+        attempt_rejects = len(results) - 1
+        _perf["pre_rejects"] += attempt_rejects
 
         # Step 2: snap the pitstop to a real place if a keyword was given.
         if req.pitstop_keyword:
@@ -537,7 +535,8 @@ async def create_running_route(
                 "attempts": _perf["attempts"],
                 "pre_rejects": _perf["pre_rejects"],
                 "one_way": req.end is not None,
-                "snaps": snaps}  # attempt별 스냅(v2.4 — 버려진 후보 관측)
+                "snaps": snaps,  # attempt별 스냅(v2.4 — 버려진 후보 관측)
+                "elapsed_s": round(_total, 1)}  # 총 소요(v2.5 — 시간 계측 영속)
 
     # Step 4: persist the generated route to Supabase (best-effort).
     await _save_route(req, best, user_id, target_distance_km=target_km, gen_meta=gen_meta)

@@ -33,6 +33,10 @@ if not _base_url or _base_url == _DEFAULT_OPENAI_URL:
 _client = AsyncOpenAI(
     api_key=settings.openai_api_key,
     base_url=_base_url,  # routes to Gemini's OpenAI-compatible endpoint
+    # v2.5 콜 타임아웃 8s — 미설정 시 SDK 기본 600s라 서버가 늘어진 콜을 무한
+    # 대기했다. 평균 콜 ~3.2s이므로 8s는 정상 콜 여유 + 스파이크 방어. 타임아웃
+    # 콜은 APITimeoutError → route_service의 gather return_exceptions로 그 롤만 실패.
+    timeout=8.0,
 )
 
 # AI 생성 텍스트의 출력 언어 — 유저 settings.lang(ko/en)을 따른다. lang name은

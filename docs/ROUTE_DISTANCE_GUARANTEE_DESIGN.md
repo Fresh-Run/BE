@@ -1,4 +1,20 @@
-# ROUTE_DISTANCE_GUARANTEE_DESIGN — AI 코스 목표 거리 보장 (v2.4)
+# ROUTE_DISTANCE_GUARANTEE_DESIGN — AI 코스 목표 거리 보장 (v2.5)
+
+> **v2.5 (2026-07-21, 오너 결정 — 지연 통제 삼종)**: 계측 분해로 지연 악화 원인
+> 확정 — pre-gate 재추첨(v2.3)이 Gemini 콜을 최대 4→12로 3배, Gemini가 총
+> 시간의 ~90%(콜당 ~3.2s)라 최악 42.9s(사용자 타임아웃 유발). 조치:
+> ① **pre-gate 병렬화** — attempt당 3롤(1+재추첨2)을 `asyncio.gather` 동시 발사.
+>    순차 합(~9.6s) 대신 max 1콜(~3.2s). 전략 불변(게이트 통과 중 aim 최근접,
+>    없으면 salvage), 발사 방식만. 대가: 낭비 콜(첫 롤 통과해도 3롤 발사 —
+>    Gemini 콜 = attempt당 항상 3, 비용↑). E2E: 2 attempt 6.8s(순차면 19s+).
+> ② **시간 예산 게이트 20s** — 총 경과 20s 초과 시 신규 attempt 진입 금지,
+>    그 시점 최선 판정(진행 중 attempt 완주, 첫 attempt 무조건 보장). 최악 확정.
+> ③ **Gemini 콜 타임아웃 8s** — openai 클라이언트(구 SDK 기본 600s라 늘어진
+>    콜 무한 대기). 타임아웃 롤은 gather return_exceptions로 그 롤만 실패.
+> ④ **gen_meta.elapsed_s** — 총 소요 초 영속(시간 계측). API_GUIDE 응답 시간
+>    계약(~15s 평균·20s 확정) + 프론트 타임아웃 60s→30s.
+
+# (구) v2.4 헤더
 
 > **v2.4 (2026-07-21, 오너 결정 — 하한 완화 + 계측 보강)**: 계측(v71 로그·저장분
 > 43건)이 초과 편향을 실증 — dev>0:dev<0 = 34:8, median +0.70, 그리고 로그에서

@@ -8,6 +8,10 @@ test_push_notification의 mock Expo(8001) 선례를 따른 패턴.
 """
 from __future__ import annotations
 
+import asyncio
+
+import httpx
+import openai
 from fastapi import Request
 
 from app.main import app
@@ -15,7 +19,8 @@ from app.models.schemas import Coordinate, PedestrianRoute, RouteResponse, Waypo
 from app.services import map_service, openai_service, route_service
 
 _state: dict = {"seq": [], "i": 0, "gemini_calls": 0, "chain_targets": [],
-                "gemini_seq": [], "g": 0, "radii": [], "last_gen_meta": None}
+                "gemini_seq": [], "g": 0, "radii": [], "last_gen_meta": None,
+                "gen_delay": 0.0}
 
 # 기준 기하(d=0.0045)의 체인 길이 ≈ 1.537km — chain_target에 비례 스케일해
 # "순응하는 Gemini"를 모사한다(v2.3 사전 게이트가 기본 시나리오를 안 막게).
@@ -24,14 +29,21 @@ _BASE_CHAIN_KM = 1.537
 
 async def _mock_generate_route(**kw) -> RouteResponse:
     _state["gemini_calls"] += 1
-    # 적응형 피드백 검증용 — route_service가 attempt별로 전달한 체인 목표 기록
     aim = kw.get("chain_target_km")
+    # ⚠️ 병렬(gather) 안전: g 인덱스·factor·기록은 sleep(await) **전에** 확정해야
+    # gemini_seq 매칭 순서가 보장된다(sleep 후엔 3롤이 인터리브돼 g 경쟁).
+    my_g = _state["g"]
+    _state["g"] += 1
+    gseq = _state["gemini_seq"]
+    factor = float(gseq[my_g]) if my_g < len(gseq) else 1.0
     _state["chain_targets"].append(aim)
     _state["radii"].append(kw.get("radius_km"))
-    # gemini_seq: 호출별 체인 순응 배수(chain = aim × factor). 소진 시 1.0(순응).
-    gseq = _state["gemini_seq"]
-    factor = float(gseq[_state["g"]]) if _state["g"] < len(gseq) else 1.0
-    _state["g"] += 1
+    # v2.5 지연 주입(예산 게이트 테스트) — factor 확정 후 sleep
+    if _state["gen_delay"]:
+        await asyncio.sleep(_state["gen_delay"])
+    # v2.5 콜 타임아웃 마커(factor -1) → APITimeoutError → 그 롤 실패 처리
+    if factor == -1.0:
+        raise openai.APITimeoutError(request=httpx.Request("POST", "http://mock"))
     chain_km = (aim or _BASE_CHAIN_KM) * factor
     start: Coordinate = kw["start"]
     d = 0.0045 * (chain_km / _BASE_CHAIN_KM)
@@ -85,6 +97,9 @@ async def set_scenario(req: Request):
     _state["gemini_calls"] = 0
     _state["chain_targets"] = []
     _state["radii"] = []
+    # v2.5 지연 주입 + 시간 예산 오버라이드(예산 게이트 테스트)
+    _state["gen_delay"] = float(data.get("gen_delay_s", 0.0))
+    route_service._TIME_BUDGET_S = float(data.get("budget_s", 20.0))
     return {"ok": True}
 
 

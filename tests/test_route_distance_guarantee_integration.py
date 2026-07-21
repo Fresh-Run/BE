@@ -7,6 +7,11 @@ target+0.5] 폭 0.8. 계측 근거(v71): 4.84 같은 아깝게 미달 후보가 
 버려져 초과 서빙되던 편향(dev>0:dev<0=34:8) 완화. + gen_meta에 snaps 배열
 (attempt별 스냅 — 버려진 후보 관측). 전패 처리는 새 하한 기준으로 불변.
 
+v2.5 (2026-07-21 지연 통제): pre-gate 3롤 gather **병렬 발사** → attempt당
+Gemini 콜 항상 3(=1+rerolls, 낭비 콜 포함) / T-map 1(채택만). ⚠️ 이 파일의
+gemini_calls 기대치는 attempts×3. + 시간 예산 게이트 20s + 콜 타임아웃 8s +
+gen_meta.elapsed_s. mock은 gather에서 gemini_seq를 리스트 순서로 소비.
+
 
 게이트 v2.1 (2026-07-20 최종 룰링, Ivan 절충안): **target−0.1 ≤ actual ≤
 target+0.5**만 합격 (폭 0.6 — 명중률 확보). 전패 시 **미달 반환 금지** —
@@ -136,7 +141,7 @@ def run_tests():
         assert d["estimated_duration_min"] == round(round(4.75, 1) * 6.5), \
             f"러닝 환산(6'30\"/km) 기대, got {d['estimated_duration_min']}"
         st = stats(c)
-        assert st["gemini_calls"] == 1, st
+        assert st["gemini_calls"] == 3, st  # v2.5 병렬: 1 attempt × 3롤
         # 계측 영속화(리포트 B): 채택 attempt 메타 + snaps(v2.4)가 전달됐는지
         gm = st["last_gen_meta"]
         assert gm and gm["verdict"] == "hit", f"hit verdict 메타, got {gm}"
@@ -150,25 +155,25 @@ def run_tests():
         assert d["total_distance_km"] == round(4.75, 1) and d["target_missed"] is False, d
         assert d["radius_expanded"] is True, "2시도 = 반경 확장 플래그"
         st = stats(c)
-        assert st["gemini_calls"] == 2, "4.65(−0.35)가 반려됐다는 증거(v2.4 하한 −0.3)"
+        assert st["gemini_calls"] == 6, "2 attempt × 3롤 = 6 (병렬)"
         assert st["last_gen_meta"]["snaps"] == [round(4.65, 1), round(4.75, 1)], \
-            f"버려진 4.65 + 채택 4.75 = snaps 2개(v2.4 관측), got {st['last_gen_meta']['snaps']}"
-        ok("4.65 반려 → 4.75 채택 · gemini 2회 · snaps=[4.6, 4.8](버려진 후보 관측)")
+            f"attempt별 스냅: 버려진 4.65 + 채택 4.75(v2.4 관측), got {st['last_gen_meta']['snaps']}"
+        ok("4.65(−0.35) attempt1 반려 → 4.75 attempt2 채택 · snaps=[4.6, 4.8]")
 
         step("3. 상한 안쪽 합격 — [5.45] 1시도")
         scenario(c, [{"snap_km": 5.45}])
         d = gen(c, tok, target=5.0).json()
         assert d["total_distance_km"] == round(5.45, 1) and d["target_missed"] is False, d
-        assert stats(c)["gemini_calls"] == 1, stats(c)
-        ok("5.45(+0.45) 합격 · 1회")
+        assert stats(c)["gemini_calls"] == 3, stats(c)  # 1 attempt × 3롤
+        ok("5.45(+0.45) 합격 · 1 attempt(gemini 3)")
 
         step("3b. 상한 밖 반려 — [5.55, 5.45] → 5.55 반려·5.45 채택")
         scenario(c, [{"snap_km": 5.55}, {"snap_km": 5.45}])
         d = gen(c, tok, target=5.0).json()
         assert d["target_missed"] is False, d
-        assert stats(c)["gemini_calls"] == 2, \
-            "5.55(+0.55, 표시로는 5.5)가 원값 게이트에서 반려됐다는 증거 — 표시 반올림 우회 없음"
-        ok("5.55 반려(원값 게이트) → 5.45 채택 · gemini 2회")
+        assert stats(c)["gemini_calls"] == 6, \
+            "2 attempt × 3롤 = 6. 5.55(+0.55)가 원값 게이트에서 반려(표시 반올림 우회 없음)"
+        ok("5.55 반려(원값 게이트) → 5.45 채택 · 2 attempt")
 
         step("4. 전패(캡 내 초과 존재) — [4.0, 5.6, 5.8, 4.2] → 5.6 채택")
         scenario(c, [{"snap_km": 4.0}, {"snap_km": 5.6}, {"snap_km": 5.8}, {"snap_km": 4.2}])
@@ -177,16 +182,16 @@ def run_tests():
             f"초과 최선(5.6 < 5.8, 둘 다 캡 6.0 내), 미달(4.0·4.2)은 반환 금지, got {d['total_distance_km']}"
         assert d["target_missed"] is True, "전패 플래그"
         st = stats(c)
-        assert st["gemini_calls"] == 4, "cap 4 유지"
+        assert st["gemini_calls"] == 12, "4 attempt × 3롤 = 12 (cap 4 유지)"
         assert st["last_gen_meta"]["verdict"] == "missed", f"missed verdict, got {st['last_gen_meta']}"
-        ok("전패 → 초과 최선 5.6 채택 · missed=true · gen_meta verdict=missed · gemini 4회(cap)")
+        ok("전패 → 초과 최선 5.6 채택 · missed=true · verdict=missed · 4 attempt")
 
         step("4b. 전패(미달만) — [4.0, 4.2, 4.4, 4.5] 전부 <하한4.7 → 502 실패")
         scenario(c, [{"snap_km": 4.0}, {"snap_km": 4.2}, {"snap_km": 4.4}, {"snap_km": 4.5}])
         r = gen(c, tok, target=5.0)
         assert r.status_code == 502, f"미달만 전패 → 502, got {r.status_code}: {r.text[:150]}"
         assert r.json()["detail"]["error"] == "route_generation_failed", r.text[:200]
-        assert stats(c)["gemini_calls"] == 4, "4회 시도 후 실패"
+        assert stats(c)["gemini_calls"] == 12, "4 attempt × 3롤 = 12 후 실패"
         ok("전패(미달만 <4.7) → 502 route_generation_failed — 미달 서빙 금지")
 
         step("4c. ★전패(초과 전부 캡 밖) — [6.1, 6.5, 7.0, 8.0] → 502 (v2.2 신규)")
@@ -235,37 +240,37 @@ def run_tests():
         d = gen(c, tok, target=5.0).json()
         assert d["total_distance_km"] == 5.3 and d["target_missed"] is False, d
         st = stats(c)
-        assert st["gemini_calls"] == 2, st
-        aims = st["chain_targets"]
+        assert st["gemini_calls"] == 6, st  # 2 attempt × 3롤
+        aims = st["chain_targets"]  # 병렬: attempt당 3개 동일 aim → [a1,a1,a1,a2,a2,a2]
         exp1 = round((5.0 + 0.2) / 1.6, 1)          # 3.2 — 초기 상수 조준
         ratio1 = 5.6 / exp1                          # ≈1.75 — mock은 aim에 순응(chain=aim)
         exp2 = round((5.0 + 0.2) / ratio1, 1)        # 3.0 — 관측 ratio 반영
-        assert aims == [exp1, exp2], \
-            f"적응형 조준 [초기 {exp1}, 피드백 {exp2}] 기대, got {aims}"
-        ok(f"attempt1 aim {aims[0]} → ratio {ratio1:.2f} 관측 → attempt2 aim {aims[1]} → 5.3 합격")
+        assert aims[0] == exp1 and aims[3] == exp2, \
+            f"적응형 조준 attempt1={exp1} attempt2={exp2} 기대(각 3롤), got {aims}"
+        ok(f"attempt1 aim {aims[0]} → ratio {ratio1:.2f} 관측 → attempt2 aim {aims[3]} → 5.3 합격")
 
-        step("8. ★사전 게이트 재추첨 — gemini [×1.6, ×1.0] → 1롤 반려·2롤 통과 (v2.3)")
+        step("8. ★사전 게이트 병렬 — gemini [×1.6, ×1.0, ×1.0] → 통과 롤 채택 (v2.5)")
         assert c.post(f"{B8001}/__mock/scenario",
-                      json={"seq": [{"snap_km": 5.2}], "gemini_seq": [1.6, 1.0]}
+                      json={"seq": [{"snap_km": 5.2}], "gemini_seq": [1.6, 1.0, 1.0]}
                       ).status_code == 200
         d = gen(c, tok, target=5.0).json()
         assert d["total_distance_km"] == 5.2 and d["target_missed"] is False, d
         st = stats(c)
-        assert st["gemini_calls"] == 2, f"재추첨 1회 = gemini 2, got {st}"
-        assert st["tmap_calls"] == 1, f"반려 롤은 T-map 미호출, got {st}"
-        ok("체인 ×1.6 반려(T-map 0) → 재추첨 순응 → 5.2 합격 · gemini 2/tmap 1")
+        assert st["gemini_calls"] == 3, f"병렬 3롤 동시 발사 = gemini 3, got {st}"
+        assert st["tmap_calls"] == 1, f"gemini만 병렬, T-map은 채택 1개, got {st}"
+        ok("병렬 3롤(×1.6 밴드밖·×1.0×2 통과) → 통과 롤 채택 → 5.2 합격 · gemini 3/tmap 1")
 
-        step("9. ★사전 게이트 소진 → salvage — gemini [×2.0 ×3] → 최근접 롤로 스냅 진행")
+        step("9. ★병렬 전 롤 밴드밖 → salvage — gemini [×2.0 ×3] → 최근접 롤 (v2.5)")
         assert c.post(f"{B8001}/__mock/scenario",
                       json={"seq": [{"snap_km": 5.2}],
                             "gemini_seq": [2.0, 2.0, 2.0]}).status_code == 200
         d = gen(c, tok, target=5.0).json()
         assert d["total_distance_km"] == 5.2 and d["target_missed"] is False, d
         st = stats(c)
-        assert st["gemini_calls"] == 3, f"롤 3회 소진(재추첨 상한), got {st}"
+        assert st["gemini_calls"] == 3, f"병렬 3롤, got {st}"
         assert st["tmap_calls"] == 1, f"salvage여도 attempt당 T-map 1회, got {st}"
-        assert d["radius_expanded"] is False, "salvage로 attempt1에서 완결(원지시 pre_miss였으면 attempt2행)"
-        ok("3롤 비순응 → 최근접 롤 salvage → 5.2 합격 · gemini 3/tmap 1 (attempt 미소실)")
+        assert d["radius_expanded"] is False, "salvage로 attempt1에서 완결(attempt 미소실)"
+        ok("병렬 3롤 전부 밴드밖 → 최근접 salvage → 5.2 합격 · gemini 3/tmap 1")
 
         step("10. ★end-aware — |start−end|≈3.5km 일방(실행가능): corridor 반경 + 정상 서빙")
         scenario(c, [{"snap_km": 5.2}])
@@ -322,6 +327,41 @@ def run_tests():
         r = gen(c, tok, target=5.0)
         assert r.status_code == 200, "루프 요청 무영향"
         ok(f"경계 3.99 통과 · 5.0 초과 422(min_target={det['min_target_km']}) · 루프 무영향")
+
+        step("12. ★시간 예산 게이트 (v2.5) — 지연 주입 → 예산 초과 시 최선 판정")
+        # gen_delay 0.1s + budget 0.05s: attempt1(초과 5.6) 후 경과>예산 →
+        # attempt2 진입 금지 → miss_candidate 5.6 초과 서빙(missed). 1 attempt만.
+        assert c.post(f"{B8001}/__mock/scenario",
+                      json={"seq": [{"snap_km": 5.6}, {"snap_km": 5.2}],
+                            "gen_delay_s": 0.1, "budget_s": 0.05}).status_code == 200
+        d = gen(c, tok, target=5.0).json()
+        assert d["total_distance_km"] == 5.6 and d["target_missed"] is True, \
+            f"예산 초과 → attempt1 최선(5.6 초과) missed 서빙, got {d}"
+        st = stats(c)
+        assert st["gemini_calls"] == 3, f"1 attempt만(예산 게이트로 attempt2 차단), got {st}"
+        assert st["last_gen_meta"]["attempts"] == 1, "gen_meta attempts=1(조기 종료)"
+        assert st["last_gen_meta"].get("elapsed_s") is not None, "elapsed_s 저장(v2.5)"
+        ok(f"예산 0.05s 초과 → attempt1 최선 5.6 missed 서빙 · attempts=1 · elapsed_s={st['last_gen_meta']['elapsed_s']}")
+
+        step("13. ★콜 타임아웃 부분 실패 (v2.5) — [timeout, ×1.0, ×1.0] → 성공 롤 채택")
+        assert c.post(f"{B8001}/__mock/scenario",
+                      json={"seq": [{"snap_km": 5.2}],
+                            "gemini_seq": [-1, 1.0, 1.0]}).status_code == 200
+        d = gen(c, tok, target=5.0).json()
+        assert d["total_distance_km"] == 5.2 and d["target_missed"] is False, \
+            f"타임아웃 롤 무시하고 성공 롤 채택, got {d}"
+        st = stats(c)
+        assert st["gemini_calls"] == 3, f"3롤 발사(1 타임아웃+2 성공), got {st}"
+        ok("병렬 3롤 중 1롤 타임아웃 → 나머지 2롤로 5.2 채택 (롤 실패 처리)")
+
+        step("14. ★콜 타임아웃 전 롤 실패 (v2.5) — [timeout×3] → 502")
+        assert c.post(f"{B8001}/__mock/scenario",
+                      json={"seq": [{"snap_km": 5.2}],
+                            "gemini_seq": [-1, -1, -1]}).status_code == 200
+        r = gen(c, tok, target=5.0)
+        assert r.status_code == 502, f"전 롤 타임아웃 → 502, got {r.status_code}: {r.text[:120]}"
+        assert r.json()["detail"]["error"] == "route_generation_failed", r.text[:150]
+        ok("병렬 3롤 전부 타임아웃 → 502 (OpenAIAPIError 분기 · 후보 0)")
 
         print("\n" + "=" * 50 + "\n  MOCK 케이스 PASSED — E2E는 메인 서버로\n" + "=" * 50)
 
