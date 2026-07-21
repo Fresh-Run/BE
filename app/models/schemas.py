@@ -692,6 +692,10 @@ class StoredRoute(BaseModel):
         False,
         description="일방통행 코스(생성 시 end 좌표 동봉) 여부. 기존 코스는 false(루프). 2026-07-21 additive.",
     )
+    source_run_id: Optional[str] = Field(
+        None,
+        description="이 코스가 어느 러닝에서 저장됐나('이 경로 달리기'). 일반 생성 코스는 null. 2026-07-21 additive.",
+    )
 
 
 class PublicRouteResponse(BaseModel):

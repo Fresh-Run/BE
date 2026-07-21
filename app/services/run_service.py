@@ -27,8 +27,9 @@ from app.models.schemas import (
     RunSplit,
     RunTrackResponse,
     StatsResponse,
+    StoredRoute,
 )
-from app.services import profile_service, track_service
+from app.services import notification_service, profile_service, track_service
 
 _UNIQUE_VIOLATION = "23505"
 
@@ -43,6 +44,10 @@ class SelfKudos(Exception):
 
 class CrewTagNotAllowed(Exception):
     """비멤버가 남의 크루 정기런 태그 시도 — 400 (핸들러가 매핑)."""
+
+
+class RunTrackMissing(Exception):
+    """트랙(GPS 경로) 없는 run을 코스로 저장 시도 — 400 (수동 기록은 폴리라인 없음)."""
 
 logger = logging.getLogger(__name__)
 
@@ -770,6 +775,96 @@ async def get_run_track(run_id: str, user_id: str) -> RunTrackResponse | None:
         point_count_raw=row["raw_point_count"],
         point_count_kept=row["kept_point_count"],
     )
+
+
+async def copy_run_as_route(run_id: str, viewer_id: str) -> tuple[StoredRoute, bool]:
+    """러닝을 viewer 소유의 private 코스로 저장('이 경로 달리기'). 반환 (route, created).
+
+    게이트는 track·kudos와 동일 _can_see_run(비가시·차단 404 은닉). 트랙 없는 run은
+    RunTrackMissing(400 — 수동 기록은 폴리라인 없음). 멱등: (viewer, source_run_id)
+    유니크라 재호출 시 기존 코스 반환(created=False). 자기 run 복사도 허용(내 러닝을
+    코스로 재사용 — 무해). Gemini·쿼터 미소모. 성공 시 run 주인에게 route_saved 알림
+    (자기 run 복사면 self 스킵 — create_notification이 recipient==actor 무발송).
+    """
+    owner_id, visibility = await _run_owner(run_id)  # RunNotFound → 핸들러 404
+    if not await _can_see_run(owner_id, viewer_id, visibility):
+        raise RunNotFound()  # 비가시·차단 — 존재 은닉(404)
+
+    supabase = get_supabase_admin()
+    # 멱등: 이미 이 run을 코스로 저장했으면 그 코스 반환
+    existing = await asyncio.to_thread(
+        lambda: supabase.table("routes").select("*")
+        .eq("user_id", viewer_id).eq("source_run_id", run_id).limit(1).execute()
+    )
+    if existing.data:
+        return StoredRoute(**existing.data[0]), False
+
+    # run 메타 + 트랙 조회
+    run_res = await asyncio.to_thread(
+        lambda: supabase.table("runs")
+        .select("title, distance_km, duration_sec").eq("id", run_id).limit(1).execute()
+    )
+    if not run_res.data:
+        raise RunNotFound()
+    run = run_res.data[0]
+    track_res = await asyncio.to_thread(
+        lambda: supabase.table("run_tracks").select("points")
+        .eq("run_id", run_id).limit(1).execute()
+    )
+    points = track_res.data[0]["points"] if track_res.data else None
+    if not points:
+        raise RunTrackMissing()  # 트랙 없는 수동 기록 — 400
+
+    # summary: 런 제목 우선, 없으면 "{owner}님의 러닝 N.Nkm"
+    dist = float(run.get("distance_km") or 0.0)
+    if run.get("title"):
+        summary = run["title"]
+    else:
+        briefs = await profile_service.get_profile_briefs([owner_id])
+        nick = briefs.get(owner_id, {}).get("nickname") or "러너"
+        summary = f"{nick}님의 러닝 {dist:.1f}km"
+    dur_sec = run.get("duration_sec") or 0
+    # is_one_way: 시작·끝 좌표 거리로 판별(형제 관성 — 200m 이상 벌어지면 편도)
+    p0, pN = points[0], points[-1]
+    one_way = _haversine_km(p0["lat"], p0["lng"], pN["lat"], pN["lng"]) > 0.2
+
+    record = {
+        "user_id": viewer_id,
+        "is_public": False,           # 저장 코스는 private 시작(copy_route 관성)
+        "source_run_id": run_id,
+        "summary": summary,
+        "total_distance_km": round(dist, 1),
+        "estimated_duration_min": float(round(dur_sec / 60.0)),  # 실런 기록 그대로
+        "waypoints": [],              # 트랙 기반이라 웨이포인트 없음
+        "polyline": points,
+        "start_lat": p0["lat"],
+        "start_lng": p0["lng"],
+        "is_one_way": one_way,
+    }
+    try:
+        out = await asyncio.to_thread(
+            lambda: supabase.table("routes").insert(record).execute()
+        )
+    except APIError as exc:
+        if exc.code != _UNIQUE_VIOLATION:
+            raise
+        # 동시 저장 레이스 — 유니크 충돌을 멱등 흡수(패자는 기존 조회)
+        again = await asyncio.to_thread(
+            lambda: supabase.table("routes").select("*")
+            .eq("user_id", viewer_id).eq("source_run_id", run_id).limit(1).execute()
+        )
+        return StoredRoute(**again.data[0]), False
+
+    route = StoredRoute(**out.data[0])
+    # (a′) 알림 — run 주인에게 route_saved (자기 run이면 create_notification이 self 스킵)
+    try:
+        await notification_service.create_notification(
+            recipient_id=owner_id, actor_id=viewer_id, type="route_saved",
+            target_id=run_id, target_type="run",
+        )
+    except Exception:  # noqa: BLE001 — 알림 실패가 저장을 막지 않음
+        logger.warning("route_saved 알림 생성 실패 (run=%s)", run_id, exc_info=True)
+    return route, True
 
 
 def _month_range_utc(year: int, month: int) -> tuple[str, str]:

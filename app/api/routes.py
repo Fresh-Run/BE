@@ -1427,6 +1427,31 @@ async def get_run_track(
 
 
 @router.post(
+    "/runs/{run_id}/copy-as-route",
+    response_model=StoredRoute,
+    summary="러닝을 코스로 저장 ('이 경로 달리기')",
+)
+async def copy_run_as_route(
+    run_id: str,
+    response: Response,
+    user: CurrentUser = Depends(get_current_user),
+) -> StoredRoute:
+    """볼 수 있는 러닝의 GPS 트랙을 내 private 코스로 저장. 신규 **201**, 멱등
+    재저장 **200**(같은 run은 1개만). 비가시·차단 **404**, 트랙 없는 수동 기록
+    **400**. run 주인에게 route_saved 알림(자기 run이면 self 스킵)."""
+    try:
+        route, created = await run_service.copy_run_as_route(run_id, viewer_id=user.user_id)
+    except run_service.RunNotFound:
+        raise HTTPException(status_code=404, detail="Run not found")
+    except run_service.RunTrackMissing:
+        raise HTTPException(status_code=400, detail="Run has no GPS track to save as a course")
+    except Exception as exc:  # noqa: BLE001
+        raise _bad_gateway("Failed to save run as route", exc)
+    response.status_code = status.HTTP_201_CREATED if created else status.HTTP_200_OK
+    return route
+
+
+@router.post(
     "/runs/{run_id}/kudos",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="run에 kudos (멱등, 본인 run 불가)",

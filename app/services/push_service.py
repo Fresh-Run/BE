@@ -32,6 +32,7 @@ _TITLE = "FreshRun"
 _CATEGORY: dict[str, str] = {
     "route_liked": "likes",
     "run_kudoed": "likes",
+    "route_saved": "likes",              # 러닝→코스 저장 (kudos 클래스 — likes 그룹 재사용)
     "route_commented": "comments",
     "run_commented": "comments",
     "user_followed": "followers",
@@ -65,6 +66,8 @@ _TEMPLATES: dict[str, dict[str, str]] = {
                         "en": "{nickname} commented on your course"},
     "run_kudoed": {"ko": "{nickname}님이 회원님의 러닝을 응원해요",
                    "en": "{nickname} gave kudos to your run"},
+    "route_saved": {"ko": "{nickname}님이 회원님의 러닝을 코스로 저장했어요",
+                    "en": "{nickname} saved your run as a course"},
     "run_commented": {"ko": "{nickname}님이 회원님의 러닝에 댓글을 남겼어요",
                       "en": "{nickname} commented on your run"},
     "user_followed": {"ko": "{nickname}님이 회원님을 팔로우해요",
