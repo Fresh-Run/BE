@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi.responses import JSONResponse
 
 from app.core.auth import get_current_user, require_admin
 from app.models.schemas import (
@@ -1403,7 +1404,7 @@ async def list_runs(
 async def get_run(
     run_id: str,
     user: CurrentUser = Depends(get_current_user),
-) -> RunResponse:
+) -> Response:
     """본인은 전체 필드, 타인은 run 공개범위 게이트(track·kudos와 동일) 통과 시
     정제된 필드만(notes·feedback·verification 등 미노출 — API_GUIDE 참조).
     404 if 없음/범위 밖 (존재 은닉)."""
@@ -1413,7 +1414,12 @@ async def get_run(
         raise _bad_gateway("Failed to fetch run", exc)
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
-    return run
+    # photo_paths는 본인 상세에서만 존재 — 타인/None이면 키 자체 제거(경로 미노출).
+    # JSONResponse로 직렬화(RunResponse는 alias 없어 model_dump(json)이 동일 출력).
+    payload = run.model_dump(mode="json")
+    if payload.get("photo_paths") is None:
+        payload.pop("photo_paths", None)
+    return JSONResponse(payload)
 
 
 @router.get(

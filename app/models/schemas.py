@@ -1186,6 +1186,12 @@ class RunResponse(BaseModel):
         default_factory=list,
         description="사진 서명 URL(만료 1h) — 상세(GET /runs/{id})에서만 채움, 목록은 photo_thumb.",
     )
+    photo_paths: Optional[list[str]] = Field(
+        None,
+        description="사진 storage 경로 배열 — **본인(소유자) 상세에서만 존재**(타인 응답엔 "
+        "키 자체 없음, 경로 미노출). `photos`(서명 URL)와 같은 순서·길이. 편집 화면에서 "
+        "기존 사진 유지/삭제/재정렬 시 이 경로를 PATCH /runs {photos}에 그대로 재사용.",
+    )
     photo_thumb: Optional[str] = Field(
         None, description="첫 사진 서명 URL(만료 1h) — 목록 카드 썸네일용."
     )

@@ -699,7 +699,9 @@ async def get_run(run_id: str, user_id: str) -> RunResponse | None:
         _polyline_thumbs([row["id"]]),
         profile_service.feed_flags_batch([owner_id]),
     )
-    photos = [signed[p] for p in photo_paths if p in signed]
+    # 서명 성공분만 유지 — photos(URL)와 photo_paths(경로)가 같은 순서·길이로 정렬.
+    kept_paths = [p for p in photo_paths if p in signed]
+    photos = [signed[p] for p in kept_paths]
     owner_flags = flags.get(owner_id, {})
     common = dict(
         has_track=row["id"] in tracks, splits=tracks.get(row["id"]),
@@ -713,7 +715,10 @@ async def get_run(run_id: str, user_id: str) -> RunResponse | None:
         allow_comments=owner_flags.get("allow_comments", True),
     )
     if is_own:
-        return RunResponse(**{k: v for k, v in row.items() if k != "photos"}, **common)
+        # photo_paths는 본인 상세에서만 — 서명된 photos와 같은 순서(kept_paths).
+        # 편집 시 PATCH /runs {photos}에 재사용(Ivan own-run 사진 편집 블로커 해제).
+        return RunResponse(**{k: v for k, v in row.items() if k != "photos"},
+                           photo_paths=kept_paths, **common)
 
     # 타인: 화이트리스트 + route_id는 연결 코스가 public일 때만 (프로브 차단)
     public_route_id = None
