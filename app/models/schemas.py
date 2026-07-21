@@ -766,6 +766,19 @@ class NewRecord(BaseModel):
     improvement_pct: float = Field(..., description="향상률 % (시안 '4.5% 향상' 칩용).")
 
 
+class CourseRunShareResponse(BaseModel):
+    """소셜프루프 — 최근 window 내 코스 연결 run 비율 (Ivan 퍼널 v1)."""
+
+    scope: str = Field(..., description="'global'(비실사용 제외 전체) 또는 'me'(본인).")
+    window_days: int = Field(..., description="집계 창(ran_at 기준 최근 N일).")
+    total_runs: int = Field(..., description="window 내 전체 run 수(카운트만).")
+    course_runs: int = Field(..., description="그중 코스 연결(route_id not null) run 수.")
+    share: Optional[float] = Field(
+        None,
+        description="course_runs/total_runs(소수 3자리). total<20이면 null(초기 숫자 방어).",
+    )
+
+
 class StatsResponse(BaseModel):
     """Personal running statistics: this week, this month, all time."""
 

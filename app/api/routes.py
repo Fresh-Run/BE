@@ -75,6 +75,7 @@ from app.models.schemas import (
     RunPhotoUploadUrlResponse,
     RunRequest,
     RunUpdate,
+    CourseRunShareResponse,
     RunResponse,
     RunTrackResponse,
     SettingsPatch,
@@ -101,6 +102,7 @@ from app.services import (
     report_service,
     route_service,
     run_service,
+    stats_service,
     weather_service,
 )
 
@@ -1307,6 +1309,24 @@ async def submit_feedback(
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
     return run
+
+
+@router.get(
+    "/stats/course-run-share",
+    response_model=CourseRunShareResponse,
+    summary="코스-런 비율 (소셜프루프 — global/me)",
+)
+async def course_run_share(
+    window_days: int = Query(30, ge=1, le=90),
+    scope: str = Query("global", pattern="^(global|me)$"),
+    user: CurrentUser = Depends(get_current_user),
+) -> CourseRunShareResponse:
+    """최근 window 내 코스 연결 run 비율. global은 비실사용 계정(시드/데모/QA/운영진)
+    제외 전체, me는 본인. total<20이면 share=null. 집계는 카운트만(개별 노출 없음)."""
+    try:
+        return await stats_service.course_run_share(scope, window_days, user.user_id)
+    except Exception as exc:  # noqa: BLE001
+        raise _bad_gateway("Failed to compute course-run share", exc)
 
 
 @router.get(
