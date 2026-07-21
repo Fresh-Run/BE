@@ -32,3 +32,6 @@ frontend/
 
 # Design mockups (로컬 참고용, 저장소에는 미포함)
 design/
+
+# v2.7 E2E 자동 러너 런타임 산출물
+_e2e_v27_verdict.json
