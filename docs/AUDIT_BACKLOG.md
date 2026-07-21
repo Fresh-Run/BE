@@ -27,6 +27,9 @@
 
 ## 잔여 (선택 — μs급, 저위험)
 
+- **[크루 감사 L2] unread 카운트가 차단 발신자 메시지 포함** (`chat_service.py:370` `unread`, 관찰 2026-07-21). 본인 메시지만 제외 → 나를 차단당하게 한 상대가 unread 뱃지를 계속 올릴 수 있음. **현 블록 모델과는 일관**: `list_messages`가 차단 메시지를 완전 은닉이 아니라 content·payload null placeholder로 노출하므로, 카운트에 포함되는 것이 스레드에 보이는 placeholder와 대응. 완전 은닉을 원하면 `unread`(count 쿼리에 sender 차단 제외)와 `list_messages`(placeholder 제거) **양쪽을 함께** 전환해야 — 부분 전환은 count↔목록 불일치. **트리거**: 베타에서 차단자 채팅 스팸 불만 → 블록 모델 재결정(placeholder 유지 vs 완전 은닉) 후 일괄.
+- **[크루 감사 L3] 랭킹·챌린지 기여가 멤버 탈퇴 시 소급 감소** (`crew_service.py:1263`·`1201`, 관찰 2026-07-21). `get_weekly_ranking`·`_challenge_contributions`가 **현재 member_ids 기준** 집계라 멤버가 탈퇴하면 그의 과거 verified 기여가 크루 랭킹·챌린지 달성 km에서 즉시 빠짐. **현 정책(current-members-only)과 일관**이고 verified-only 정합과 같은 축이나, 챌린지 달성도가 탈퇴로 줄어드는 게 사용자엔 의외일 수 있음. **트리거**: 챌린지 UX 피드백 → "탈퇴자 기여 스냅샷 보존" 여부 결정(집계 정책 변경이라 랭킹까지 파급 — 신중).
+
 - **L8 RSVP 마감 창** — `rsvp` 제출의 read→`_rsvp_open`(시간)→upsert 사이 μs wall-clock 경쟁. count 레이스가 아니라 **시간 경계**라 advisory/FOR UPDATE로 안 닫힘 — DB측 `now()` 조건부 upsert RPC가 필요(별도 기법). 마감 순간 정확히 투표하는 극단 엣지라 실질 무해, 필요 시점에 `rsvp_if_open` RPC로 처리 가능.
 
 - **RLS 드리프트 소급 (2026-07-12, H — 채팅 설계 중 발견·즉시 처리)**: 초기

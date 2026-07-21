@@ -839,6 +839,12 @@ async def join_by_code(code: str, user_id: str) -> CrewResponse:
     and clears any leftover pending join request.
     """
     crew = await _crew_by_code(code)
+    # L1(감사 2026-07-21): 가입 시도자가 크루 owner와 차단 관계(양방향)면 존재 은닉 —
+    # 잘못된 코드와 동일한 CrewNotFound(404)로 초대코드 유효성도 차단 사실도 노출 안 함
+    # (기존 차단 404 은닉 계약). 기준은 크루 authority인 owner(invite_member는 발송
+    # 멤버 기준 — 코드는 특정 발송자가 없어 owner가 자연 기준, 오너 룰링).
+    if await profile_service.is_blocked_either(user_id, crew["owner_id"]):
+        raise CrewNotFound()
     if await _is_member(crew["id"], user_id):
         raise AlreadyMember()
 
