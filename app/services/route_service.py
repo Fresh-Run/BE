@@ -159,6 +159,27 @@ _TIME_BUDGET_S = 20.0
 # 스냅 팽창이 낮다(E2E 실측: 루프 1.6 vs 일방 체인≈직선). 적응형이 이후 보정.
 _ONE_WAY_INFLATION = 1.25
 
+# v2.6.2 §1 부분 선행 — 뚝섬/서울숲/성수 수변권 핀포인트 초기 조준 보정.
+# 근거: 웨이포인트 해부 실측(leg 팽창 1.4~1.8·전체 ×1.44) + gen_meta·502 로그
+# ratio 1.385~2.25. 이 지역 도로망(수변 접근 제한·하천 합류부 우회)이 직선 대비
+# 1.4~1.8배라 초기 상수 1.6이 과소 조준 → aim 과대 → 초과 편향. 초기만 1.8로
+# 올려 aim을 낮춘다(적응형이 이후 미세보정). ⚠️ 전국 격자는 20건 대기 —
+# 실측 근거 확보된 이 좌표 1건만 하드코딩(격자 테이블 발명 금지, §1 본수술 때 일반화).
+_TTUKSEOM_CENTER = (37.5219, 127.0561)  # 해부 실측 시작 좌표(서울숲/성수 수변)
+_TTUKSEOM_RADIUS_KM = 2.0               # 이 반경 원 안이면 오버라이드
+_TTUKSEOM_INFLATION = 1.8               # 해부 leg 팽창 상단(1.79) 근사
+
+
+def _initial_est_ratio(start: Coordinate, start_end_km: float | None) -> float:
+    """초기 팽창비 조준 — 일방 corridor(1.25) > 뚝섬 수변권(1.8) > 전국 기본(1.6).
+    적응형은 attempt 2부터 실측으로 갱신하므로 이 값은 첫 조준에만 쓰인다."""
+    if start_end_km is not None:
+        return _ONE_WAY_INFLATION
+    if _dist_km(start, Coordinate(lat=_TTUKSEOM_CENTER[0], lng=_TTUKSEOM_CENTER[1])) \
+            <= _TTUKSEOM_RADIUS_KM:
+        return _TTUKSEOM_INFLATION
+    return openai_service._SNAP_INFLATION
+
 # 예상 시간 = 러닝 기준 (2026-07-20 오너 확정): T-map 도보 시간(~13분/km)을
 # 버리고 거리 × 기본 러닝 페이스 6'30"/km로 재계산. 개인 페이스 반영은 후속.
 _RUN_PACE_MIN_PER_KM = 6.5
@@ -308,10 +329,9 @@ async def create_running_route(
             lng=(req.start.lng + req.end.lng) / 2,
         )
 
-    # 적응형 팽창비 추정치 — 첫 attempt는 초기 상수, 이후 직전 실측으로 갱신
-    est_ratio = (openai_service._SNAP_INFLATION if start_end_km is None
-                 else _ONE_WAY_INFLATION)
-    initial_ratio = est_ratio  # v2.6 §4 — 사용된 초기 조준값(지역 보정 효과 사후 검증용)
+    # 적응형 팽창비 추정치 — 첫 attempt는 초기 조준(일방·지역 보정 반영), 이후 실측 갱신
+    est_ratio = _initial_est_ratio(req.start, start_end_km)
+    initial_ratio = est_ratio  # v2.6 §4 — 사용된 초기 조준값(gen_meta에 자동 기록 = 오버라이드 관측)
 
     for i, radius_km in enumerate(_radius_schedule(target_km, start_end_km)):
         # v2.5 시간 예산 게이트: 총 경과 20s 초과 + 이미 1 attempt 완료면 신규

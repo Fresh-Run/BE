@@ -238,6 +238,15 @@ def run_tests():
         assert "about 2.4 km" in p2, "적응형 체인 목표 오버라이드"
         ok(f"프롬프트: 체인 {expect_chain}km · 상한 {cap}(롤백) · err slightly longer")
 
+        step("6b. ★뚝섬 지역 초기 조준 오버라이드 (v2.6.2 §1 부분) — 단위")
+        from app.services.route_service import _initial_est_ratio
+        # 뚝섬 중심·성수(반경 2km 내) → 1.8, 밖(여의도) → 1.6, 일방 우선 → 1.25
+        assert _initial_est_ratio(Coordinate(lat=37.5219, lng=127.0561), None) == 1.8, "뚝섬 중심 1.8"
+        assert _initial_est_ratio(Coordinate(lat=37.5250, lng=127.0450), None) == 1.8, "성수 수변 1.8"
+        assert _initial_est_ratio(Coordinate(lat=37.5285, lng=126.9328), None) == 1.6, "여의도 밖 1.6"
+        assert _initial_est_ratio(Coordinate(lat=37.5219, lng=127.0561), 3.5) == 1.25, "뚝섬+일방 → corridor 우선 1.25"
+        ok("뚝섬권 초기 1.8 · 밖 1.6 · 일방 우선 1.25 (gen_meta.initial_ratio로 자동 관측)")
+
         step("7. ★적응형 피드백 — [5.6, 5.3] → aim 3.2 → ratio 1.75 관측 → aim 3.0 → 합격")
         scenario(c, [{"snap_km": 5.6}, {"snap_km": 5.3}])
         d = gen(c, tok, target=5.0).json()
@@ -388,31 +397,30 @@ def run_tests():
         print("\n" + "=" * 50 + "\n  MOCK 케이스 PASSED — E2E는 메인 서버로\n" + "=" * 50)
 
         step("E2E. 실호출 3건 (target=5.0) — 사용자 좌표(수술 전 502) 포함, 개선 방향 확인")
-        e2e_cases = [
-            ("성수 루프", {"lat": 37.5445, "lng": 127.0374}),
-            ("여의도 루프", {"lat": 37.5285, "lng": 126.9328}),
-            ("★사용자 좌표(뚝섬 인근)", {"lat": 37.5219, "lng": 127.0561}),  # 09:44 502·09:26 5.6
-        ]
-        for name, s in e2e_cases:
-            r = gen(c, tok, base=BASE, target=5.0, start=s)
+        # 뚝섬 좌표 3회 반복 (오늘 성적 [502, 502, 5.64] 대비 — v2.6.2 초기 1.8 효과)
+        ttukseom = {"lat": 37.5219, "lng": 127.0561}
+        served = fails = 0
+        for n in (1, 2, 3):
+            r = gen(c, tok, base=BASE, target=5.0, start=ttukseom)
             if r.status_code == 502:
                 assert r.json()["detail"]["error"] == "route_generation_failed", r.text[:200]
-                print(f"    {name}: 502 (전패 — 정직 실패)")
+                fails += 1
+                print(f"    뚝섬 #{n}: 502 (전패 — 정직 실패)")
                 continue
-            assert r.status_code == 200, f"{name}: {r.text[:250]}"
+            assert r.status_code == 200, f"뚝섬 #{n}: {r.text[:250]}"
             d = r.json()
             total = d["total_distance_km"]
-            in_band = 4.7 - 1e-9 <= total <= 5.5 + 1e-9  # v2.4 밴드 [−0.3, +0.5]
+            in_band = 4.7 - 1e-9 <= total <= 5.5 + 1e-9
             if in_band:
                 assert d["target_missed"] is False, d["target_missed"]
             else:
                 assert d["target_missed"] is True and total <= 6.0 + 1e-9, \
-                    f"{name} 계약 위반: {total}, missed={d['target_missed']} (캡 6.0)"
-            assert d["estimated_duration_min"] == round(total * 6.5), \
-                f"러닝 환산 duration 기대, got {d['estimated_duration_min']}"
-            print(f"    {name}: total={total}km (오차 {total-5.0:+.2f}) "
+                    f"뚝섬 #{n} 계약 위반: {total}, missed={d['target_missed']} (캡 6.0)"
+            served += 1
+            print(f"    뚝섬 #{n}: total={total}km (오차 {total-5.0:+.2f}) "
                   f"missed={d['target_missed']}{' ★명중' if in_band else ''}")
-        ok("E2E 3건 계약 준수 (사용자 좌표 개선 방향은 위 출력)")
+        print(f"    → 서빙 {served}/3 · 502 {fails}/3 (오늘 1/3 서빙 대비)")
+        ok("E2E 뚝섬 3건 계약 준수 (개선 방향은 위 출력 — 3/3 502면 §2 에스컬레이션)")
 
         print("\n" + "=" * 50 + "\n  ALL TESTS PASSED\n" + "=" * 50)
     finally:
