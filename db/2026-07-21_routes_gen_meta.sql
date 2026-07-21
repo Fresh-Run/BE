@@ -8,7 +8,8 @@
 --   verdict: hit(밴드 내)·missed(초과 서빙)·nopath(AI추정 폴백). 502는 행 없음
 --   (실패 계측은 PERF FAILED 로그 유지 — 별도 테이블 미신설, 과설계 금지).
 -- RLS: routes는 기존 테이블(이미 enable) — 컬럼 추가만이라 정책 무관.
--- ✅ 실행 완료 여부: 미실행 — 사용자가 SQL Editor에서 실행.
+-- ✅ 실행 완료 (2026-07-21, 사용자 SQL Editor). 확인 쿼리: with_meta 0 / total 64
+--    — 기존 행은 null(생성 당시 컬럼 없음), 배포 후 신규 생성분부터 채워짐.
 
 -- [APPLY]
 -- alter table public.routes
