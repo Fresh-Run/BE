@@ -1,6 +1,12 @@
 """
-Integration test: AI 코스 목표 거리 보장 v2.1 — 비대칭 밴드 [−0.1, +0.5]
+Integration test: AI 코스 목표 거리 보장 v2.4 — 비대칭 밴드 [−0.3, +0.5]
 (ROUTE_DISTANCE_GUARANTEE_DESIGN)
+
+v2.4 (2026-07-20 오너 결정 — 하한 완화): 하한 −0.1→−0.3, 밴드 [target−0.3,
+target+0.5] 폭 0.8. 계측 근거(v71): 4.84 같은 아깝게 미달 후보가 하한 밖으로
+버려져 초과 서빙되던 편향(dev>0:dev<0=34:8) 완화. + gen_meta에 snaps 배열
+(attempt별 스냅 — 버려진 후보 관측). 전패 처리는 새 하한 기준으로 불변.
+
 
 게이트 v2.1 (2026-07-20 최종 룰링, Ivan 절충안): **target−0.1 ≤ actual ≤
 target+0.5**만 합격 (폭 0.6 — 명중률 확보). 전패 시 **미달 반환 금지** —
@@ -121,29 +127,33 @@ def run_tests():
 
         # 주의: 응답 total_distance_km는 표시용 0.1 반올림 — **게이트는 반올림 전
         # 원값**(v2.1). 그래서 4.95는 표시 5.0으로 합격, 5.55는 표시 5.5여도 반려.
-        step("1. 하한 안쪽 합격 — [4.95] (target 5.0, 밴드 [4.9, 5.5])")
-        scenario(c, [{"snap_km": 4.95}])
+        step("1. 하한 안쪽 합격 — [4.75] (target 5.0, 밴드 [4.7, 5.5])")
+        scenario(c, [{"snap_km": 4.75}])
         r = gen(c, tok, target=5.0)
         assert r.status_code == 200, r.text[:200]
         d = r.json()
-        assert d["total_distance_km"] == round(4.95, 1) and d["target_missed"] is False, d
-        assert d["estimated_duration_min"] == round(round(4.95, 1) * 6.5), \
+        assert d["total_distance_km"] == round(4.75, 1) and d["target_missed"] is False, d
+        assert d["estimated_duration_min"] == round(round(4.75, 1) * 6.5), \
             f"러닝 환산(6'30\"/km) 기대, got {d['estimated_duration_min']}"
         st = stats(c)
         assert st["gemini_calls"] == 1, st
-        # 계측 영속화(리포트 B): 채택 attempt 메타가 _save_route로 전달됐는지
+        # 계측 영속화(리포트 B): 채택 attempt 메타 + snaps(v2.4)가 전달됐는지
         gm = st["last_gen_meta"]
         assert gm and gm["verdict"] == "hit", f"hit verdict 메타, got {gm}"
         assert gm["attempts"] == 1 and gm["ratio"] > 0 and "pre_rejects" in gm, gm
-        ok(f"4.95(−0.05) 합격 · duration 러닝환산 · gen_meta verdict=hit ratio={gm['ratio']}")
+        assert gm["snaps"] == [round(4.75, 1)], f"snaps 배열 저장(v2.4), got {gm.get('snaps')}"
+        ok(f"4.75(−0.25) 합격 · duration 러닝환산 · gen_meta verdict=hit snaps={gm['snaps']}")
 
-        step("2. 하한 밖 반려 — [4.85, 4.95] → 4.85 반려·4.95 채택")
-        scenario(c, [{"snap_km": 4.85}, {"snap_km": 4.95}])
+        step("2. 하한 밖 반려 — [4.65, 4.75] → 4.65(−0.35) 반려·4.75 채택")
+        scenario(c, [{"snap_km": 4.65}, {"snap_km": 4.75}])
         d = gen(c, tok, target=5.0).json()
-        assert d["total_distance_km"] == round(4.95, 1) and d["target_missed"] is False, d
+        assert d["total_distance_km"] == round(4.75, 1) and d["target_missed"] is False, d
         assert d["radius_expanded"] is True, "2시도 = 반경 확장 플래그"
-        assert stats(c)["gemini_calls"] == 2, "4.85(−0.15)가 반려됐다는 증거"
-        ok("4.85 반려 → 4.95 채택 · gemini 2회")
+        st = stats(c)
+        assert st["gemini_calls"] == 2, "4.65(−0.35)가 반려됐다는 증거(v2.4 하한 −0.3)"
+        assert st["last_gen_meta"]["snaps"] == [round(4.65, 1), round(4.75, 1)], \
+            f"버려진 4.65 + 채택 4.75 = snaps 2개(v2.4 관측), got {st['last_gen_meta']['snaps']}"
+        ok("4.65 반려 → 4.75 채택 · gemini 2회 · snaps=[4.6, 4.8](버려진 후보 관측)")
 
         step("3. 상한 안쪽 합격 — [5.45] 1시도")
         scenario(c, [{"snap_km": 5.45}])
@@ -171,13 +181,13 @@ def run_tests():
         assert st["last_gen_meta"]["verdict"] == "missed", f"missed verdict, got {st['last_gen_meta']}"
         ok("전패 → 초과 최선 5.6 채택 · missed=true · gen_meta verdict=missed · gemini 4회(cap)")
 
-        step("4b. 전패(미달만) — [4.0, 4.2, 4.5, 4.7] → 502 실패")
-        scenario(c, [{"snap_km": 4.0}, {"snap_km": 4.2}, {"snap_km": 4.5}, {"snap_km": 4.7}])
+        step("4b. 전패(미달만) — [4.0, 4.2, 4.4, 4.5] 전부 <하한4.7 → 502 실패")
+        scenario(c, [{"snap_km": 4.0}, {"snap_km": 4.2}, {"snap_km": 4.4}, {"snap_km": 4.5}])
         r = gen(c, tok, target=5.0)
         assert r.status_code == 502, f"미달만 전패 → 502, got {r.status_code}: {r.text[:150]}"
         assert r.json()["detail"]["error"] == "route_generation_failed", r.text[:200]
         assert stats(c)["gemini_calls"] == 4, "4회 시도 후 실패"
-        ok("전패(미달만) → 502 route_generation_failed — 미달 서빙 금지")
+        ok("전패(미달만 <4.7) → 502 route_generation_failed — 미달 서빙 금지")
 
         step("4c. ★전패(초과 전부 캡 밖) — [6.1, 6.5, 7.0, 8.0] → 502 (v2.2 신규)")
         scenario(c, [{"snap_km": 6.1}, {"snap_km": 6.5}, {"snap_km": 7.0}, {"snap_km": 8.0}])

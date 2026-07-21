@@ -119,7 +119,12 @@ def _resolve_course_prefs(
 # 전패 시(v2.1 확정): **미달(<target−0.1) 후보 반환 금지** — 초과 후보 최선만
 # target_missed=True로 서빙, 초과 0이면 RouteGenerationFailed(기존 502
 # route_generation_failed 계약 재사용, 쿼터 미소모 — 프론트 "다시 설정" 유도).
-_UNDER_TOLERANCE_KM = 0.1
+# v2.4 (2026-07-20 오너 결정 — 하한 완화): 하한 −0.1→−0.3, 밴드
+# [target−0.3, target+0.5] 폭 0.8. 계측(v71 로그) 근거: 4.84 같은 아깝게 미달
+# 후보가 하한 −0.1 밖으로 버려지고 다음 attempt의 초과(5.38)를 서빙하던 초과
+# 편향(저장분 dev>0:dev<0 = 34:8)을 완화. 전패 처리(미달 반환 금지·초과 최선·
+# 둘 다 없으면 502)는 새 하한 기준으로 불변.
+_UNDER_TOLERANCE_KM = 0.3
 _OVER_TOLERANCE_KM = 0.5
 _MAX_RADIUS_KM = 8.0
 
@@ -265,6 +270,8 @@ async def create_running_route(
     # 불가 / 실측 미달)하면 반경을 넓혀 재시도. 출발지는 고정.
     best: RouteResponse | None = None
     best_meta: dict | None = None  # 채택 attempt 계측(리포트 B — 영속화)
+    snaps: list[float | None] = []  # attempt별 스냅 거리(v2.4 — 버려진 후보 관측).
+    #   스냅까지 간 것만: pre_reject로 T-map 안 간 롤은 미기록, no_path는 None
     miss_candidates: list[tuple[float, RouteResponse, dict]] = []  # (실측 km, route, meta)
     nopath_candidate: tuple[RouteResponse, dict] | None = None  # (route, meta)
     pitstop_places: list | None = None  # Kakao 검색은 결정적 — 첫 성공 결과 재사용
@@ -388,7 +395,7 @@ async def create_running_route(
         route.radius_expanded = i > 0
 
         # Step 3: 보행 경로 연결 + 실측 거리로 성공 판정 (비대칭 밴드).
-        #   OK      — 연결됐고 target−0.1 ≤ 실측 ≤ target+0.5 → 즉시 채택
+        #   OK      — 연결됐고 target−0.3 ≤ 실측 ≤ target+0.5 → 즉시 채택 (v2.4)
         #   MISS    — 연결됐지만 밴드 밖(미달·초과) → 후보 보관, 재시도
         #   NO_PATH — 연결 실패(또는 waypoint<2) → AI 추정 폴백 보관, 반경 확장
         # (반경 확장은 미달에 유효 — 초과 케이스도 스케줄 그대로 진행: 프롬프트가
@@ -450,6 +457,11 @@ async def create_running_route(
             actual_km if status != "NO_PATH" else 0.0,
             snap_ratio, target_km, chain_aim_km, attempt_rejects, status.lower(),
         )
+
+        # v2.4 snaps: 이 attempt의 스냅 결과 기록(버려진 후보 관측). 스냅까지
+        # 간 것만 — OK/MISS는 실측값(round 1), no_path·untraversable(유효 거리
+        # 없음)은 None. pre_reject로 T-map 안 간 롤은 애초에 여기 도달 안 함.
+        snaps.append(round(actual_km, 1) if status in ("OK", "MISS") else None)
 
         # 계측 영속화 재료(리포트 B): 이 attempt의 채택 시 저장할 메타.
         # 위치·유저 식별은 담지 않는다(코스 행 자체에 좌표 있음 — 중복 불요).
@@ -524,7 +536,8 @@ async def create_running_route(
     gen_meta = {**(best_meta or {"verdict": "unknown"}),
                 "attempts": _perf["attempts"],
                 "pre_rejects": _perf["pre_rejects"],
-                "one_way": req.end is not None}
+                "one_way": req.end is not None,
+                "snaps": snaps}  # attempt별 스냅(v2.4 — 버려진 후보 관측)
 
     # Step 4: persist the generated route to Supabase (best-effort).
     await _save_route(req, best, user_id, target_distance_km=target_km, gen_meta=gen_meta)

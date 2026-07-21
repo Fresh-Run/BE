@@ -4,7 +4,10 @@
 -- jsonb 1컬럼 · additive · nullable(기존 코스·저장 실패 시 null). 위치·유저 식별
 -- 미포함(코스 행 자체에 start_lat/lng 있음 — 중복 저장 불요).
 -- 형태: {"ratio":1.58,"attempt":3,"pre_reject":1,"verdict":"hit",
---        "attempts":3,"pre_rejects":1,"one_way":false}
+--        "attempts":3,"pre_rejects":1,"one_way":false,
+--        "snaps":[null,4.84,5.38]}   -- v2.4: attempt별 스냅(버려진 후보 관측,
+--                                    -- no_path·untraversable은 null). 스키마 변경
+--                                    -- 없음(jsonb 필드 추가 — 컬럼 재적용 불요).
 --   verdict: hit(밴드 내)·missed(초과 서빙)·nopath(AI추정 폴백). 502는 행 없음
 --   (실패 계측은 PERF FAILED 로그 유지 — 별도 테이블 미신설, 과설계 금지).
 -- RLS: routes는 기존 테이블(이미 enable) — 컬럼 추가만이라 정책 무관.
