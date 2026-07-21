@@ -254,11 +254,16 @@ def run_tests():
         d = gen(c, tok, target=5.0,
                 end={"lat": 37.5445, "lng": 127.0374 + 0.0396}).json()  # ~3.5km 동쪽
         assert d["total_distance_km"] == 5.2 and d["target_missed"] is False, d
-        st = stats(c)
-        r1 = st["radii"][0]
+        assert d.get("is_one_way") is True, f"end 동봉 → is_one_way true(리포트 D 갭수정), got {d.get('is_one_way')}"
+        r1 = stats(c)["radii"][0]   # 일방 gen의 stats — 루프 gen 전에 확인
         assert r1 >= 2.6, \
             f"end-aware r0 = max(1.2, |s−e|/2+1.0) ≈ 2.7 기대(구식 1.2면 기하 모순), got {r1}"
-        ok(f"일방(3.5km) attempt1 radius={r1} (corridor 커버) · 5.2 합격")
+        ok(f"일방(3.5km) attempt1 radius={r1} · is_one_way=true · 5.2 합격")
+        # 루프 요청은 is_one_way false
+        scenario(c, [{"snap_km": 5.2}])
+        d_loop = gen(c, tok, target=5.0).json()
+        assert d_loop.get("is_one_way") is False, f"루프 → is_one_way false, got {d_loop.get('is_one_way')}"
+        ok("루프 요청 is_one_way=false (RouteResponse 노출 갭 수정)")
 
         step("11b. ★traversability 게이트 (리포트 A) — 강 위 leg 후보 폐기")
         # attempt1: untraversable(강 횡단) → 폐기 / attempt2: 정상 5.2 → 채택

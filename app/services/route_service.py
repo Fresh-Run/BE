@@ -491,6 +491,8 @@ async def create_running_route(
     best.estimated_duration_min = float(
         round(best.total_distance_km * _RUN_PACE_MIN_PER_KM)
     )
+    # 일방통행 플래그(리포트 D) — 생성 응답에도 노출(_save_route의 DB 저장과 동일 기준)
+    best.is_one_way = req.end is not None
 
     # 계측 요약 — 병목 분포 관측 (총합/Gemini/T-map/재시도)
     _total = time.perf_counter() - _t0

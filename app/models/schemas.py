@@ -619,6 +619,11 @@ class RouteResponse(BaseModel):
         "프론트는 '요청 거리와 조금 달라요' 안내 권장. 오차 수치는 "
         "total_distance_km − 요청 target으로 프론트가 계산.",
     )
+    is_one_way: bool = Field(
+        False,
+        description="일방통행 코스(생성 시 end 좌표 동봉) 여부. 생성 직후 뱃지용 — "
+        "저장 조회(StoredRoute)와 동일 값. 2026-07-21 additive.",
+    )
 
 
 class CoachCue(BaseModel):
