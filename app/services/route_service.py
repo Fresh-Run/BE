@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import statistics
 import time
 from collections import defaultdict
 
@@ -137,6 +138,10 @@ _MAX_RADIUS_KM = 8.0
 #    "6.3km는 5km 요청의 답이 아니다"(오너). 캡 값 1.0은 판단 플래그.
 _RATIO_CLAMP = (1.1, 2.2)
 _OVER_SERVE_CAP_KM = 1.0
+# v2.6 §2 재추첨 학습 완화 — compliance(3롤 median/aim)를 ±10%로 clamp.
+# 무제한이면 산포 큰 지역(사용자 좌표 ratio 1.1~2.9)에서 est_ratio가 진동해
+# aim이 3.2↔2.4로 널뛰며 미달·초과 반복(E2E 실측 역효과). ±10%로 방향만 반영.
+_COMPLIANCE_CLAMP = (0.90, 1.10)
 
 # v2.3 스냅 전 사전 게이트 (부검 2026-07-20: 502 건의 후보 7.71/6.45km — 원인은
 # aim 3.9에 chain 5.57 같은 Gemini 비순응): 체인이 aim×[0.75, 1.25] 밖이면
@@ -306,6 +311,7 @@ async def create_running_route(
     # 적응형 팽창비 추정치 — 첫 attempt는 초기 상수, 이후 직전 실측으로 갱신
     est_ratio = (openai_service._SNAP_INFLATION if start_end_km is None
                  else _ONE_WAY_INFLATION)
+    initial_ratio = est_ratio  # v2.6 §4 — 사용된 초기 조준값(지역 보정 효과 사후 검증용)
 
     for i, radius_km in enumerate(_radius_schedule(target_km, start_end_km)):
         # v2.5 시간 예산 게이트: 총 경과 20s 초과 + 이미 1 attempt 완료면 신규
@@ -365,6 +371,14 @@ async def create_running_route(
         # 버려진 롤 수(계측): 채택 1개 제외 전부(밴드 밖·예외 포함)
         attempt_rejects = len(results) - 1
         _perf["pre_rejects"] += attempt_rejects
+        # v2.6 재추첨 롤 학습: 채택 롤 하나가 아니라 병렬 3롤 체인 **중앙값**의
+        # aim 대비 순응 편차를 est_ratio 보정에 반영. Gemini가 aim보다 과대한
+        # 체인을 내는 경향(chain_compliance>1)이면 스냅도 초과 → 다음 aim을
+        # 낮추도록 est_ratio를 상향(반려 롤 정보가 이제 다음 조준에 기여).
+        median_chain = statistics.median([ck for _, ck in cands])
+        chain_compliance = (median_chain / chain_aim_km) if chain_aim_km > 0 else 1.0
+        chain_compliance = min(max(chain_compliance, _COMPLIANCE_CLAMP[0]),
+                               _COMPLIANCE_CLAMP[1])  # ±10% dampening(진동 억제)
 
         # Step 2: snap the pitstop to a real place if a keyword was given.
         if req.pitstop_keyword:
@@ -423,10 +437,11 @@ async def create_running_route(
                 # 경계를 뭉개던 것 제거: 5.55는 표시 5.5여도 밴드 밖으로 판정)
                 actual_km = raw_km
                 status = "OK" if _within_band(raw_km, target_km) else "MISS"
-                # 적응형 피드백: 이 attempt의 실측 팽창비를 다음 조준에 반영
+                # 적응형 피드백(v2.6): 채택 롤 팽창비 × 3롤 순응 편차 → 다음 조준.
+                # chain_compliance>1(Gemini 과대 순응)이면 est_ratio 상향 → aim↓.
                 if chain_km > 0:
-                    est_ratio = min(max(raw_km / chain_km, _RATIO_CLAMP[0]),
-                                    _RATIO_CLAMP[1])
+                    est_ratio = min(max(raw_km / chain_km * chain_compliance,
+                                        _RATIO_CLAMP[0]), _RATIO_CLAMP[1])
             except map_service.LegNotRoutable:
                 # traversability 게이트(리포트 A): 실보행 불가 leg가 있는 후보 —
                 # 폐기(어떤 candidate에도 미보관 → 서빙 불가). 물 위 직선 코스를
@@ -536,7 +551,8 @@ async def create_running_route(
                 "pre_rejects": _perf["pre_rejects"],
                 "one_way": req.end is not None,
                 "snaps": snaps,  # attempt별 스냅(v2.4 — 버려진 후보 관측)
-                "elapsed_s": round(_total, 1)}  # 총 소요(v2.5 — 시간 계측 영속)
+                "elapsed_s": round(_total, 1),  # 총 소요(v2.5 — 시간 계측 영속)
+                "initial_ratio": round(initial_ratio, 3)}  # 초기 조준값(v2.6 §4)
 
     # Step 4: persist the generated route to Supabase (best-effort).
     await _save_route(req, best, user_id, target_distance_km=target_km, gen_meta=gen_meta)
