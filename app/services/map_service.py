@@ -137,6 +137,16 @@ class LegNotRoutable(Exception):
     구간이 물 위를 직선 횡단하게 보인다(Ivan 리포트 A). 좌표 미기록(프라이버시)."""
 
 
+class TmapQuotaExceeded(Exception):
+    """T-map 무료 쿼터 소진 — HTTP 429 QUOTA_EXCEEDED (일시적 인프라 한계).
+
+    LegNotRoutable(지오 문제, 후보 자체 결함)과 **반드시 구분**한다: 이건 후보가
+    아니라 우리 쪽 일일 콜 예산이 바닥난 것 — 상위(route_service)가 AI추정 nopath
+    폴백(폴리라인 없는 가짜 코스)을 서빙하는 대신 503으로 정직하게 실패하게 한다
+    ("앱은 거짓말하지 않는다", 2026-07-21 E2E 실증: 429 전패가 5/5 nopath 200 서빙).
+    무료 티어는 자정(KST) 리셋. 좌표 미기록(프라이버시)."""
+
+
 async def get_pedestrian_route(
     origin: Coordinate,
     destination: Coordinate,
@@ -303,6 +313,10 @@ async def _tmap_walk_leg(
     }
 
     resp = await client.post(TMAP_PEDESTRIAN_URL, headers=headers, json=body)
+    # T-map 무료 쿼터 소진은 429 QUOTA_EXCEEDED — 일반 HTTP 장애와 구분해 전용
+    # 예외로 승격(상위가 nopath 폴백 금지·503 정직화). 다른 4xx/5xx는 그대로 전파.
+    if resp.status_code == 429:
+        raise TmapQuotaExceeded()
     resp.raise_for_status()
     data = resp.json()
 

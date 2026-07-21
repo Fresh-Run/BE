@@ -68,7 +68,7 @@
 
 ## 기능 백로그 (트리거 대기)
 
-- **코스 생성 에러 구분 — 쿼터 소진 vs 산포 전패** (2026-07-21 등록, 검토만). 현재 생성 실패는 전부 502 `route_generation_failed`("조건에 맞는 코스를 못 찾았어요 — 조건을 바꿔보라"). **산포 전패엔 정확하나, 외부 API(T-map/Gemini) 쿼터 소진 시엔 거짓 안내**(조건 바꿔도 소용없음). 진단(2026-07-21): 사용자 502 2건은 T-map·Gemini 직접 1콜 200 정상 → **산포 502 확정**(쿼터 아님). 하지만 무료 T-map 815/1000 도달 이력상 소진 상황이 실제로 임박. **제안**: T-map 429/Gemini 429(RESOURCE_EXHAUSTED)를 잡아 `route_generation_unavailable` + "잠시 후 다시 시도해주세요"로 구분(HTTP 503). **트리거: 오너 결정 or 쿼터 소진 재발 시 승격.** 알려진 함정(Gemini 429→502 변환)과 연계.
+- ~~**코스 생성 에러 구분 — 쿼터 소진 vs 산포 전패**~~ **[해결 2026-07-21]** (등록 2026-07-21). 계기 승격: 같은 날 v2.7 E2E가 실증 — T-map 429(QUOTA_EXCEEDED) 전패 시 nopath 폴백이 **폴리라인 없는 가짜 코스를 200으로 서빙**("앱은 거짓말하지 않는다" 위반). **구현**: (1) `map_service.TmapQuotaExceeded` 예외 — `_tmap_walk_leg`가 429를 LegNotRoutable/일반 장애와 구분 승격. (2) `route_service`가 스냅 실패를 `snap_errors{quota,legnotroutable,other}`로 분류·로그·gen_meta 영속화(무기록 삼킴 수정 — 이 삼킴이 당일 진단을 막았음). (3) `_quota_dominant`(쿼터가 스냅 시도 **엄격 과반**)면 nopath 폴백 금지 → **503 `route_generation_unavailable`**("잠시 후 다시 시도"). 보수적: 과반 미달·실 스냅 존재·지오 no-path 지배면 기존 동작 유지. (4) 잠복 버그 수정: `_log_perf_failed`가 폐기된 `attempts`/`pre_rejects` 키 참조 → 실패 경로에서 KeyError→502로 삼켜지며 503 분기를 가리던 것. 테스트: `test_quota_honesty_integration.py`(5케이스) + v2.7 회귀 10건. Gemini 429(RESOURCE_EXHAUSTED)는 별건(현 502 변환 유지 — 알려진 함정) — T-map 축만 처리.
 
 - ~~**인앱 개인 초대**~~ — **처리됨(2026-07-13)**: `POST /crews/{id}/invitations {user_id}`(크루원 발송, 비크루원·차단 404·이미 멤버 409). `crew_invited` 알림 payload에 초대코드 → 수신자 preview→join 재사용. 푸시 템플릿+crewJoin 카테고리(M-11 정합). SQL 0(선등록 type). 초대코드 생성 단일 소스화(`_issue_invite_code`).
 - **알림 중복 억제 (감사 2차 L-2)** — 팔로우/kudos 토글 반복이 알림+푸시를 매번 재발송(기존 인앱 축의 푸시 증폭). 최근 N시간 내 동일 (actor, recipient, type) 억제안. **트리거: 베타 중 테스터 불만 시 승격.**

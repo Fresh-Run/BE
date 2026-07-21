@@ -68,6 +68,9 @@ async def _mock_pedestrian(origin, destination, waypoints=None) -> PedestrianRou
     if item.get("untraversable"):
         # 강 위 등 보행 불가 leg (리포트 A) → traversability 게이트가 폐기해야
         raise map_service.LegNotRoutable()
+    if item.get("quota"):
+        # T-map 429 QUOTA_EXCEEDED (2026-07-21 정직화) → 쿼터 지배면 503 유도
+        raise map_service.TmapQuotaExceeded()
     km = float(item["snap_km"])
     return PedestrianRoute(
         provider="tmap", distance_m=km * 1000.0, duration_s=km * 360.0,

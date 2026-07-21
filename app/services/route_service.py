@@ -49,6 +49,15 @@ class RouteGenerationFailed(Exception):
     """Gemini never produced a usable route across all radius attempts."""
 
 
+class RouteGenerationUnavailable(Exception):
+    """일시적 인프라 한계로 코스를 만들 수 없음 — 현재는 T-map 쿼터 소진(429).
+
+    RouteGenerationFailed(산포 전패, 우리가 시도했으나 밴드 후보 0)과 구분: 이건
+    외부 의존(T-map 일일 콜 예산)이 바닥나 스냅 자체를 못 한 것. API 층이 502가
+    아니라 503 route_generation_unavailable("잠시 후 다시")로 매핑 — nopath 폴백
+    (폴리라인 없는 가짜 코스 200 서빙)을 대체하는 정직한 실패(2026-07-21 오너 승격)."""
+
+
 class OneWayEndTooFar(Exception):
     """일방(end) 요청의 직선거리가 target×0.8 초과 — 물리적으로 불가(422).
 
@@ -196,13 +205,30 @@ _RUN_PACE_MIN_PER_KM = 6.5
 
 
 def _log_perf_failed(t0: float, perf: dict) -> None:
-    """생성 실패(502) 경로의 계측 요약 — 성공 PERF와 동형(관측 공백 방지)."""
+    """생성 실패(502/503) 경로의 계측 요약 — 성공 PERF와 동형(관측 공백 방지).
+
+    v2.7 배치 풀 키(gemini_calls·tmap_legs)만 참조 — 구 attempts/pre_rejects는
+    attempt 루프와 함께 폐기됐다(그 키 잔존 참조가 실패 경로에서 KeyError→502로
+    삼켜지며 503 분기를 가리던 잠복 버그, 2026-07-21 수정)."""
     logger.info(
         "[PERF] route generate FAILED: total=%.1fs | gemini=%.1fs(%d call) | "
-        "tmap=%.1fs(%d leg) | attempts=%d | pre_rejects=%d",
+        "tmap=%.1fs(%d leg)",
         time.perf_counter() - t0, perf["gemini_s"], perf["gemini_calls"],
-        perf["tmap_s"], perf["tmap_legs"], perf["attempts"], perf["pre_rejects"],
+        perf["tmap_s"], perf["tmap_legs"],
     )
+
+
+def _quota_dominant(snap_errs: dict, n_success: int) -> bool:
+    """스냅 실패의 지배 원인이 T-map 429(쿼터)인가 — 503 정직화 분기 판정.
+
+    **보수적**(오너 지시 "애매하면 기존 동작"): 쿼터 실패가 전체 스냅 시도의
+    **엄격 과반**일 때만 True. 즉 quota > success + (legnotroutable + other).
+    실 스냅이 하나라도 성공했거나 지오 문제(LegNotRoutable)가 섞여 과반 미달이면
+    False → 기존 nopath 폴백/502 유지. 2026-07-21 E2E 전패(429 100%)는 True로
+    잡히고, 뚝섬-1(성공 2 + 쿼터 1)은 False(성공했으니 쿼터 탓 아님)로 걸러진다."""
+    quota = snap_errs.get("quota", 0)
+    others = n_success + snap_errs.get("legnotroutable", 0) + snap_errs.get("other", 0)
+    return quota > 0 and quota > others
 
 
 def _within_band(actual_km: float, target_km: float) -> bool:
@@ -420,14 +446,24 @@ async def create_running_route(
     scored: list[tuple[float, RouteResponse]] = []  # (raw_km, route) — 스냅 성공
     nopath_fallback: RouteResponse | None = None    # T-map 장애 시 AI추정 폴백
     snaps: list[float | None] = []
+    # 스냅 실패 분류(오늘 진단을 막았던 무기록 삼킴 수정) — 지배 원인 판정·계측용.
+    snap_errs = {"quota": 0, "legnotroutable": 0, "other": 0}
     for (r, ck, rad), out in zip(to_snap, snap_out):
         r.search_radius_km = rad
         r.radius_expanded = (rad != radii[0])
+        if isinstance(out, map_service.TmapQuotaExceeded):
+            snaps.append(None)  # 쿼터 소진 — nopath 폴백 후보로 삼지 않음(정직 503 유도)
+            snap_errs["quota"] += 1
+            continue
         if isinstance(out, map_service.LegNotRoutable):
             snaps.append(None)  # 물 위 등 보행 불가 — 폐기
+            snap_errs["legnotroutable"] += 1
             continue
         if isinstance(out, BaseException):
-            snaps.append(None)  # T-map 장애 — AI추정 폴백 후보로 보관
+            snaps.append(None)  # T-map 장애(네트워크·5xx 등) — AI추정 폴백 후보로 보관
+            snap_errs["other"] += 1
+            logger.warning("스냅 실패(nopath 폴백 후보): %s: %s",
+                           type(out).__name__, out)
             if nopath_fallback is None:
                 nopath_fallback = r
             continue
@@ -436,10 +472,14 @@ async def create_running_route(
         r.total_distance_km = round(raw_km, 1)
         scored.append((raw_km, r))
         snaps.append(round(raw_km, 1))
+    if snap_errs["quota"]:
+        logger.warning("T-map 429 쿼터 소진 %d/%d leg-batch — 정직 503 분기 검토",
+                       snap_errs["quota"], len(to_snap))
 
-    # 5) 선택: 밴드 최근접 → 캡 내 초과 최선(missed) → AI추정 폴백 → 502
+    # 5) 선택: 밴드 최근접 → 캡 내 초과 최선(missed) → [쿼터 지배면 503] → AI추정
+    #    폴백 → 502
     _meta = {"pool_size": len(gen_cands), "snapped_count": len(scored),
-             "tmap_legs": leg_budget}
+             "tmap_legs": leg_budget, "snap_errors": snap_errs}
     in_band = [(k, r) for k, r in scored if _within_band(k, target_km)]
     if in_band:
         _k, best = min(in_band, key=lambda t: abs(t[0] - target_km))
@@ -453,8 +493,18 @@ async def create_running_route(
             best.target_missed = True
             best_meta = {**_meta, "verdict": "missed",
                          "ratio": round(_k / _waypoint_chain_km(best), 3)}
+        elif _quota_dominant(snap_errs, len(scored)):
+            # T-map 429가 스냅 시도의 과반 — 폴백은 폴리라인 없는 가짜 코스다.
+            # nopath로 200 서빙하는 대신 정직하게 503(잠시 후 재시도). 보수적:
+            # 지배(과반) 아닐 때만 기존 폴백 유지(2026-07-21 오너 승격).
+            _log_perf_failed(_t0, _perf)
+            logger.warning("스냅 실패 지배 원인=쿼터(429) — route_generation_unavailable 503 "
+                           "(quota=%d success=%d other=%d)",
+                           snap_errs["quota"], len(scored),
+                           snap_errs["legnotroutable"] + snap_errs["other"])
+            raise RouteGenerationUnavailable()
         elif nopath_fallback is not None:
-            best = nopath_fallback  # AI추정(polyline 없음)
+            best = nopath_fallback  # AI추정(polyline 없음) — 진짜 no-path(지오 장애)
             best.target_missed = not _within_band(best.total_distance_km, target_km)
             best_meta = {**_meta, "verdict": "nopath", "ratio": 0.0}
         else:

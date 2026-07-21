@@ -748,6 +748,19 @@ async def generate_route(
                 "min_target_km": exc.min_target_km,
             },
         )
+    except route_service.RouteGenerationUnavailable:
+        # T-map 쿼터 소진(429 지배) — 산포 전패(502)와 구분한 정직한 일시 실패.
+        # nopath 폴백(폴리라인 없는 가짜 코스 200)을 대체(2026-07-21 오너 승격).
+        # 생성 실패 = 무료: 예약 해제(쿼터 미소모 시맨틱 보존).
+        await quota_service.release_ai_generation(reservation_id)
+        logger.warning("코스 생성 불가 — T-map 쿼터 소진(503)")
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "route_generation_unavailable",
+                "message": "일시적인 문제로 코스를 만들 수 없어요. 잠시 후 다시 시도해주세요.",
+            },
+        )
     except Exception:  # noqa: BLE001
         # 생성 실패 = 무료: 예약 해제 (기존 "실패는 쿼터 미소모" 시맨틱 보존)
         await quota_service.release_ai_generation(reservation_id)
