@@ -52,7 +52,10 @@ async def _mock_pedestrian(origin, destination, waypoints=None) -> PedestrianRou
     item = seq[min(_state["i"], len(seq) - 1)] if seq else {"snap_km": 4.0}
     _state["i"] += 1
     if item.get("no_path"):
-        raise RuntimeError("mock: no pedestrian path")
+        raise RuntimeError("mock: no pedestrian path")  # T-map 장애 → NO_PATH 폴백
+    if item.get("untraversable"):
+        # 강 위 등 보행 불가 leg (리포트 A) → traversability 게이트가 폐기해야
+        raise map_service.LegNotRoutable()
     km = float(item["snap_km"])
     return PedestrianRoute(
         provider="tmap", distance_m=km * 1000.0, duration_s=km * 360.0,

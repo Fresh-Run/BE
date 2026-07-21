@@ -392,6 +392,8 @@ async def create_running_route(
         #   NO_PATH — 연결 실패(또는 waypoint<2) → AI 추정 폴백 보관, 반경 확장
         # (반경 확장은 미달에 유효 — 초과 케이스도 스케줄 그대로 진행: 프롬프트가
         #  체인 목표를 고정하므로 반경이 커져도 오버슈트를 키우지 않고 재추첨 효과만)
+        # status: OK / MISS / NO_PATH(T-map 장애 → AI추정 폴백) /
+        #         UNTRAVERSABLE(강 위 등 보행 불가 leg → 후보 폐기, 리포트 A)
         status = "NO_PATH"
         actual_km = route.total_distance_km
         # chain_km은 사전 게이트에서 이미 계산됨 (Gemini 기하 의도 — 팽창비 재료)
@@ -419,7 +421,16 @@ async def create_running_route(
                 if chain_km > 0:
                     est_ratio = min(max(raw_km / chain_km, _RATIO_CLAMP[0]),
                                     _RATIO_CLAMP[1])
+            except map_service.LegNotRoutable:
+                # traversability 게이트(리포트 A): 실보행 불가 leg가 있는 후보 —
+                # 폐기(어떤 candidate에도 미보관 → 서빙 불가). 물 위 직선 코스를
+                # 주느니 재추첨/다음 반경, 최종엔 정직한 502가 낫다. pre-snap
+                # 게이트는 거리만 보므로 강 양안 웨이포인트를 못 거른다(스냅 후에만
+                # 보행 가능성 판정 가능) — 이 게이트가 그 공백을 메운다.
+                status = "UNTRAVERSABLE"
             except Exception:  # noqa: BLE001 - keep AI estimates if routing fails
+                # T-map API 장애(HTTP/네트워크) — AI 추정 폴백(polyline 없음).
+                # 좌표는 Gemini가 육지 기반이라 물 위 직선 문제와 무관.
                 logger.warning(
                     "Pedestrian routing (%s) failed; falling back to AI distance "
                     "estimate. Polyline will be unavailable.",
@@ -443,8 +454,9 @@ async def create_running_route(
             break
         if status == "MISS":
             miss_candidates.append((actual_km, route))
-        else:
+        elif status == "NO_PATH":
             nopath_candidate = route
+        # UNTRAVERSABLE: 폐기 — 어떤 후보에도 안 담는다(서빙 금지)
 
     if best is None:
         # 루프 소진: |오차| 최소 후보 채택 + target_missed 플래그(반려 대신
@@ -539,6 +551,9 @@ async def _save_route(
             if route.polyline is not None
             else None
         ),
+        # 일방통행 여부 (리포트 D) — end 좌표 동봉 요청이면 일방. end 좌표 자체는
+        # 저장 안 하므로 이 플래그가 유일한 사후 판별 수단.
+        "is_one_way": req.end is not None,
     }
 
     try:
@@ -767,6 +782,59 @@ async def unbookmark_route(route_id: str, user_id: str) -> None:
         .eq("user_id", user_id)
         .execute()
     )
+
+
+async def delete_route(route_id: str, user_id: str) -> None:
+    """본인 코스 하드 삭제 (run-delete의 단순 동생). 복구 없음.
+
+    소유 확인(타인/없음/기삭제 전부 404 은닉 — 존재 숨김 표준) → 행 삭제.
+    캐스케이드는 전부 DB FK로 처리(실증 2026-07-21):
+      - route_bookmarks·route_likes·route_comments·coach_scripts: on delete
+        **cascade** → 자동 소멸(유일한 커밋 지점, 앱 재계산 코드 없음)
+      - runs.route_id·routes.copied_from: on delete **set null** → run 기록·
+        복사본 코스는 잔존(연결만 끊김 — 러닝 기록/파생 코스는 독립 자산)
+    피드 route_summary는 runs.route_id JOIN routes.summary 라이브 계산이라
+    route_id가 null 되면 자동으로 null(코스 피드는 routes 직접 조회라 그냥 빠짐).
+    채팅 공유는 run_share(run 대상)만 있고 route 공유 기능은 없음 — 무관.
+
+    best-effort 정리: route 대상 알림(route_liked·route_commented) — target_id가
+    route_id인 polymorphic 알림이라 FK 없음, 방치 시 stale 404 탭(run-delete 선례).
+    코스엔 Storage 자산 없음(코스 이미지는 크루 전용) — 사진 정리 불필요.
+    """
+    supabase = get_supabase_admin()
+    res = await asyncio.to_thread(
+        lambda: supabase.table("routes")
+        .select("id")
+        .eq("id", route_id)
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+    if not res.data:
+        raise RouteNotFound()  # 타인/없음/기삭제 — 동일 404(은닉)
+
+    deleted = await asyncio.to_thread(
+        lambda: supabase.table("routes")
+        .delete()
+        .eq("id", route_id)
+        .eq("user_id", user_id)
+        .execute()
+    )
+    if not deleted.data:
+        raise RouteNotFound()  # 동시 삭제 레이스 — 패자 반환행 0 → 404 (L8 패턴)
+
+    # best-effort 정리 — route 대상 알림 (실패는 로그만, CLAUDE.md)
+    try:
+        await asyncio.to_thread(
+            lambda: supabase.table("notifications")
+            .delete()
+            .eq("target_type", "route")
+            .eq("target_id", route_id)
+            .execute()
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("route %s 알림 정리 실패 — stale 알림 잔존(탭 404)",
+                       route_id, exc_info=True)
 
 
 async def list_bookmarked_routes(

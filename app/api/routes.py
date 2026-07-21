@@ -1020,6 +1020,27 @@ async def publish_route(
     return route
 
 
+@router.delete(
+    "/routes/{route_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="코스 삭제 (소유자 · 하드 삭제 · 복구 없음)",
+)
+async def delete_route(
+    route_id: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> Response:
+    """본인 코스 하드 삭제 — 성공 **204**. 타인·없음·재삭제 전부 **404 은닉**.
+    북마크·좋아요·댓글·오디오코치 캐시는 FK cascade 소멸, 연결된 러닝 기록과
+    복사본 코스는 잔존(연결만 끊김). run-delete 계약 관성(재삭제 404)."""
+    try:
+        await route_service.delete_route(route_id, user_id=user.user_id)
+    except route_service.RouteNotFound:
+        raise HTTPException(status_code=404, detail="Route not found")
+    except Exception as exc:  # noqa: BLE001
+        raise _bad_gateway("Failed to delete route", exc)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.post(
     "/routes/{route_id}/copy",
     response_model=StoredRoute,

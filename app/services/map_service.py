@@ -128,6 +128,15 @@ async def _naver_search_places(
 # --- Pedestrian routing ------------------------------------------------------
 
 
+class LegNotRoutable(Exception):
+    """T-map이 이 leg(두 점 사이)의 실보행 경로를 못 찾음 — 200이지만 빈 경로.
+
+    강 위·철로 등 보행 불가 구간의 양안 웨이포인트를 이을 때 발생. HTTP/네트워크
+    장애(raise_for_status)와 구분해 상위(route_service)가 이 후보를 traversability
+    실패로 폐기하게 한다 — 그냥 두면 그 leg가 폴리라인에서 누락돼 렌더 시 인접
+    구간이 물 위를 직선 횡단하게 보인다(Ivan 리포트 A). 좌표 미기록(프라이버시)."""
+
+
 async def get_pedestrian_route(
     origin: Coordinate,
     destination: Coordinate,
@@ -314,5 +323,11 @@ async def _tmap_walk_leg(
         if geometry.get("type") == "LineString":
             for lng, lat in geometry.get("coordinates", []):
                 path.append(Coordinate(lat=lat, lng=lng))
+
+    # T-map은 보행 불가 구간에 200 + 빈/무의미 응답을 준다(에러코드가 아님).
+    # 유효 경로(거리>0·점 존재) 없으면 이 leg는 실보행 불가 — 조용히 distance=0,
+    # path=[]로 통과시키면 폴리라인에 구멍이 나 물 위 직선 횡단이 생긴다(리포트 A).
+    if not path or distance_m <= 0:
+        raise LegNotRoutable()
 
     return distance_m, duration_s, path

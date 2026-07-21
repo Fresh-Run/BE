@@ -260,6 +260,27 @@ def run_tests():
             f"end-aware r0 = max(1.2, |s−e|/2+1.0) ≈ 2.7 기대(구식 1.2면 기하 모순), got {r1}"
         ok(f"일방(3.5km) attempt1 radius={r1} (corridor 커버) · 5.2 합격")
 
+        step("11b. ★traversability 게이트 (리포트 A) — 강 위 leg 후보 폐기")
+        # attempt1: untraversable(강 횡단) → 폐기 / attempt2: 정상 5.2 → 채택
+        scenario(c, [{"untraversable": True}, {"snap_km": 5.2}])
+        d = gen(c, tok, target=5.0).json()
+        assert d["total_distance_km"] == 5.2 and d["target_missed"] is False, d
+        assert d.get("polyline"), "채택 후보는 폴리라인 존재"
+        ok("강 위 leg 후보 폐기 → 정상 후보 5.2 채택 (물 위 직선 서빙 안 됨)")
+
+        step("11c. ★전 attempt untraversable → 502 (물 위 코스 주느니 실패)")
+        scenario(c, [{"untraversable": True}] * 4)
+        r = gen(c, tok, target=5.0)
+        assert r.status_code == 502, f"전부 보행 불가 → 502, got {r.status_code}: {r.text[:120]}"
+        assert r.json()["detail"]["error"] == "route_generation_failed", r.text[:150]
+        ok("전 attempt 보행 불가 → 502 (폐기라 candidate 0)")
+
+        step("11d. NO_PATH(T-map 장애)는 여전히 AI추정 폴백 — untraversable과 구분")
+        scenario(c, [{"no_path": True}] * 4)
+        d = gen(c, tok, target=4.0).json()
+        assert d["total_distance_km"] == 4.0, "T-map 장애는 AI추정 폴백 유지(리포트 A와 별개)"
+        ok("T-map 장애 → NO_PATH 폴백 유지 (traversability 폐기와 구분됨)")
+
         step("11. ★일방 실행가능성 게이트 (v2.3 마감) — 경계 통과 / 초과 422 / 루프 무영향")
         # 경계 직전(직선 ≈3.99km ≤ 5×0.8=4.0) → 통과
         scenario(c, [{"snap_km": 5.2}])

@@ -683,6 +683,10 @@ class StoredRoute(BaseModel):
     copied_from: Optional[str] = Field(
         None, description="Source route id if this route was copied from another."
     )
+    is_one_way: bool = Field(
+        False,
+        description="일방통행 코스(생성 시 end 좌표 동봉) 여부. 기존 코스는 false(루프). 2026-07-21 additive.",
+    )
 
 
 class PublicRouteResponse(BaseModel):
