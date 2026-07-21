@@ -163,11 +163,9 @@ _SNAP_INFLATION = 1.6
 # 비대칭 밴드 [target−0.1, target+0.5] 중심 조준 오프셋 — 체인 목표를
 # (target+0.2) 기준으로 계산해 미달 확률을 구조적으로 낮춘다(v2.1 룰링과 세트).
 _BAND_AIM_KM = 0.2
-# v2.6 체인 양방향 배수 — 프롬프트 [aim×0.90, aim×1.15]로 밴드 중앙 유도.
-# 게이트 [0.75, 1.25]보다 좁게(모델엔 엄격, 게이트는 여유 검증). 상한만이던
-# v2.3에서 하한 추가(후보 초과 편향 교정 — 사용자 좌표 snaps 전부 초과 실증).
+# 체인 상한 배수 — 프롬프트 "MUST NOT exceed aim×1.15" + 사전 게이트 [0.75,1.25].
+# (v2.6 양방향 하한 _CHAIN_FLOOR_FACTOR는 미달 유발로 롤백 — 2026-07-21 오너 결정.)
 _CHAIN_CAP_FACTOR = 1.15
-_CHAIN_FLOOR_FACTOR = 0.90
 
 
 def _build_prompt(
@@ -240,15 +238,14 @@ def _build_prompt(
     # 계산 가능한 직선 체인 목표를 준다. 조준점은 밴드 중심(target+0.2).
     # chain_target_km이 오면 그 값 사용(적응형 — route_service가 직전 attempt의
     # 실측 팽창비로 재계산해 전달), 없으면 초기 상수(_SNAP_INFLATION)로 계산.
-    # v2.6: 체인을 **양방향** 제약으로 강제 — 실측(사용자 좌표 snaps 전부 초과)상
-    # 상한만 있으면 후보가 초과로 몰린다. 하한(aim×0.90)도 명시해 밴드 중앙으로
-    # 유도. 프롬프트 [0.90, 1.15]는 route_service 사전 게이트 [0.75, 1.25]보다
-    # 좁게 — 모델엔 엄격히 요구하고 게이트는 여유 검증(정합).
+    # 체인 상한 제약 — 상한만("MUST NOT exceed aim×1.15"). v2.6 양방향
+    # [aim×0.90, aim×1.15] "aim for the middle"은 E2E에서 미달 편향을 유발해
+    # 롤백(2026-07-21 오너 결정): 모델이 하한을 안 지키면서 "middle" 지시가
+    # 오히려 짧은 체인을 유도 → 여의도 snaps 3.38/3.60 미달. 상한만 유지.
     chain_target = chain_target_km if chain_target_km is not None else round(
         (target_distance_km + _BAND_AIM_KM) / _SNAP_INFLATION, 1
     )
-    chain_lo = round(chain_target * _CHAIN_FLOOR_FACTOR, 1)
-    chain_hi = round(chain_target * _CHAIN_CAP_FACTOR, 1)
+    chain_cap = round(chain_target * _CHAIN_CAP_FACTOR, 1)
     distance_text = (
         f"Design a running route in South Korea whose final on-road length is "
         f"about {target_distance_km} km. Note: the route will be snapped to real "
@@ -256,8 +253,9 @@ def _build_prompt(
         f"straight lines between waypoints. Therefore place the waypoints so that "
         f"the SUM OF STRAIGHT-LINE distances between consecutive waypoints "
         f"(including the return to start for loops) is about {chain_target} km. "
-        f"The total chain distance MUST be between {chain_lo} and {chain_hi} km — "
-        f"routes outside this range are invalid. Aim for the middle of that range. "
+        f"The chain MUST NOT exceed {chain_cap} km — longer routes are invalid. "
+        f"If unsure within that limit, err slightly longer — a route a bit over "
+        f"{target_distance_km} km is acceptable, but shorter is not. "
     )
 
     return (

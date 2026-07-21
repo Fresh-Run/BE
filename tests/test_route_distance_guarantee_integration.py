@@ -227,17 +227,16 @@ def run_tests():
         assert "avoid overshooting" not in p, "과소 기하 유도 문구 삭제"
         expect_chain = round((4.0 + 0.2) / 1.6, 1)
         assert f"about {expect_chain} km" in p, f"기본 체인 목표({expect_chain}) 명시, got: {p[:200]}"
-        # v2.6 양방향 체인 제약 — [aim×0.90, aim×1.15]
-        c_lo = round(expect_chain * 0.90, 1)
-        c_hi = round(expect_chain * 1.15, 1)
-        assert f"MUST be between {c_lo} and {c_hi} km" in p, "체인 양방향 제약(v2.6)"
-        assert "Aim for the middle" in p, "밴드 중앙 유도(v2.6)"
-        assert "MUST NOT exceed" not in p, "상한만 문구 제거(v2.6 양방향으로 대체)"
+        # 상한만 (v2.6 양방향은 미달 유발로 롤백 — 오너 결정 2026-07-21)
+        cap = round(expect_chain * 1.15, 1)
+        assert f"MUST NOT exceed {cap} km" in p, "체인 상한 강제 문구"
+        assert "err slightly longer" in p, "오버슈트 바이어스(하한 미명시 — 미달 방지)"
+        assert "Aim for the middle" not in p, "양방향 middle 문구 롤백"
         # 적응형 오버라이드 — chain_target_km이 오면 그 값이 프롬프트에 실림
         p2 = _build_prompt(4.0, Coordinate(lat=37.5445, lng=127.0374), None, None, None,
                            radius_km=1.0, chain_target_km=2.4)
         assert "about 2.4 km" in p2, "적응형 체인 목표 오버라이드"
-        ok(f"프롬프트: 체인 {expect_chain}km · 양방향 [{c_lo},{c_hi}] · Aim for the middle (v2.6)")
+        ok(f"프롬프트: 체인 {expect_chain}km · 상한 {cap}(롤백) · err slightly longer")
 
         step("7. ★적응형 피드백 — [5.6, 5.3] → aim 3.2 → ratio 1.75 관측 → aim 3.0 → 합격")
         scenario(c, [{"snap_km": 5.6}, {"snap_km": 5.3}])
