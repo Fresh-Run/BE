@@ -62,10 +62,12 @@ def api(c, method, path, token, **kw):
     return c.request(method, f"{BASE}{path}", headers={"Authorization": f"Bearer {token}"}, **kw)
 
 
-def gps(n=12, dlat=0.0001, dlng=0.0):
-    """직선 트랙 — dlng=0이면 끝점이 시작 근처(루프성), dlng 크면 편도."""
-    return [{"lat": round(37.5445 + i * dlat, 7), "lng": round(127.0374 + i * dlng, 7),
-             "t": 1_783_300_000_000 + i * 4000, "acc": 8.0} for i in range(n)]
+def gps(n=50, dlat=0.0009, dt=36000):
+    """직선 편도 트랙 ~5km — 러닝 속도(100m/36초 ≈ 10km/h, 과속 필터 회피).
+    n=50 × 100m = ~4.9km(신고 5.0과 ±10% 내 → verified, distance 유지).
+    끝점이 시작에서 멀어 is_one_way=true(편도)."""
+    return [{"lat": round(37.5445 + i * dlat, 7), "lng": 127.0374,
+             "t": 1_783_300_000_000 + i * dt, "acc": 8.0} for i in range(n)]
 
 
 def save_run(c, tok, km=5.0, pace=360, vis="public", **extra):
@@ -90,8 +92,8 @@ def run_tests():
         tk = {k: sb_login(c, f"crr-{k}-{TS}@test.com") for k in uids}
         for k in uids:
             assert api(c, "PATCH", "/me/profile", tk[k], json={"nickname": f"CRR{k}{TS}"}).status_code == 200
-        # O의 public GPS run (편도 트랙 — is_one_way true 확인용) + 제목 없음
-        run_pub = save_run(c, tk["o"], km=5.0, gps_track=gps(dlat=0.0, dlng=0.0005))  # 동쪽 편도
+        # O의 public GPS run (편도 트랙 ~266m — is_one_way true 확인용) + 제목 없음
+        run_pub = save_run(c, tk["o"], km=5.0, gps_track=gps())  # n=25 편도(북쪽 266m)
         ok("유저 3 + O의 public 편도 GPS run")
 
         step("1. 복사 성공 201 + 필드 정확 + 내 코스 리스팅")
