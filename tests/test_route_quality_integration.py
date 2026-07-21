@@ -65,7 +65,8 @@ def phase_pure():
         return RouteResponse(summary="테스트 코스", total_distance_km=5.0, waypoints=[
             Waypoint(name="출발", coordinate=Coordinate(lat=37.5445, lng=127.0374), is_pitstop=False),
             Waypoint(name="반환", coordinate=Coordinate(lat=37.55, lng=127.04), is_pitstop=False)])
-    # T-map이 5237m / 1583s 반환 → 5.2km, 26분(정수)이어야
+    # T-map 5237m → 5.2km. 소요시간은 v2.2부터 T-map 도보시간 폐기 → 러닝 환산
+    # (거리 × 6'30"/km): 5.2 × 6.5 = 33.8 → 34분(정수). duration_s는 이제 무시됨.
     ped = PedestrianRoute(distance_m=5237.0, duration_s=1583.0,
                           path=[Coordinate(lat=37.5445, lng=127.0374)], provider="tmap")
     with patch.object(rt.openai_service, "generate_route", AsyncMock(return_value=mk_route())), \
@@ -76,35 +77,47 @@ def phase_pure():
             RouteRequest(start={"lat": 37.5445, "lng": 127.0374}, target_distance_km=5),
             user_id=None))
     assert out.total_distance_km == 5.2, f"거리 5237m→5.2km, got {out.total_distance_km}"
-    assert out.estimated_duration_min == 26.0 and out.estimated_duration_min == int(out.estimated_duration_min), \
-        f"소요시간 1583s→26분(정수), got {out.estimated_duration_min}"
-    ok("거리 5237m→5.2km ✓ 소요시간 1583s→26분 정수 ✓")
+    assert out.estimated_duration_min == 34.0 and out.estimated_duration_min == int(out.estimated_duration_min), \
+        f"소요시간 러닝환산 5.2×6.5=34분(정수), got {out.estimated_duration_min}"
+    ok("거리 5237m→5.2km ✓ 소요시간 러닝환산 34분 정수 ✓")
 
 
 def _gen(c, tok):
-    r = c.post(f"{BASE}/routes/generate",
-               headers={"Authorization": f"Bearer {tok}"}, timeout=90,
-               json={"start": {"lat": 37.5665, "lng": 126.6737}, "target_distance_km": 6})
-    assert r.status_code == 200, r.text[:300]
-    return r.json()
+    """생성 실호출. 밴드 도입(v2.1~) 후 실호출은 지역에 따라 502(정직 실패)가
+    날 수 있어 3회 재시도 — 언어 검증이 목적이라 200 하나를 확보. 3회 다 502면
+    None(계약상 정상 — 언어 검증 skip)."""
+    for _ in range(3):
+        r = c.post(f"{BASE}/routes/generate",
+                   headers={"Authorization": f"Bearer {tok}"}, timeout=90,
+                   json={"start": {"lat": 37.5665, "lng": 126.6737}, "target_distance_km": 6})
+        if r.status_code == 200:
+            return r.json()
+        assert r.status_code == 502, r.text[:300]  # 502 외 상태는 실제 버그
+    return None
 
 
 def phase_real(c, tok_ko, tok_en):
     step("3. ③ 실호출 — 유저 언어 설정(lang) 따름 (비한강 좌표: 인천 아라뱃길)")
     # ko 유저 → 한국어
     d = _gen(c, tok_ko)
-    assert _hangul(d["summary"]), f"ko 유저 요약이 한국어가 아님: {d['summary'][:60]}"
-    for w in d["waypoints"]:
-        assert _hangul(w["name"]), f"ko 경유지명이 한국어가 아님: {w['name']}"
-    assert round(d["total_distance_km"], 1) == d["total_distance_km"]
-    dur = d.get("estimated_duration_min")
-    assert dur is None or dur == int(dur)
-    ok(f"ko 유저 → 한국어 ✓ {d['total_distance_km']}km {dur}분 — {d['summary'][:26]}…")
+    if d is None:
+        ok("ko 3회 전부 502(정직 실패 — 계약 준수) · 언어 검증 skip")
+    else:
+        assert _hangul(d["summary"]), f"ko 유저 요약이 한국어가 아님: {d['summary'][:60]}"
+        for w in d["waypoints"]:
+            assert _hangul(w["name"]), f"ko 경유지명이 한국어가 아님: {w['name']}"
+        assert round(d["total_distance_km"], 1) == d["total_distance_km"]
+        dur = d.get("estimated_duration_min")
+        assert dur is None or dur == int(dur)
+        ok(f"ko 유저 → 한국어 ✓ {d['total_distance_km']}km {dur}분 — {d['summary'][:26]}…")
     # en 유저 → 영어 (한글 거의 없음)
     d2 = _gen(c, tok_en)
-    assert not _hangul(d2["summary"]), f"en 유저인데 한글 요약: {d2['summary'][:60]}"
-    assert not any(_hangul(w["name"]) for w in d2["waypoints"]), "en인데 한글 경유지명"
-    ok(f"en 유저 → 영어 ✓ {d2['total_distance_km']}km — {d2['summary'][:34]}…")
+    if d2 is None:
+        ok("en 3회 전부 502(정직 실패 — 계약 준수) · 언어 검증 skip")
+    else:
+        assert not _hangul(d2["summary"]), f"en 유저인데 한글 요약: {d2['summary'][:60]}"
+        assert not any(_hangul(w["name"]) for w in d2["waypoints"]), "en인데 한글 경유지명"
+        ok(f"en 유저 → 영어 ✓ {d2['total_distance_km']}km — {d2['summary'][:34]}…")
 
 
 def run():

@@ -1,0 +1,51 @@
+-- routes.gen_meta — 생성 계측 영속화 (Ivan 리포트 B).
+-- route_gen 계측이 stdout 링버퍼에만 있어 몇 분 만에 유실 → "20건 축적 트리거"가
+-- 구조적으로 관측 불가했다. 채택 attempt 메타를 코스 행에 함께 저장해 해소.
+-- jsonb 1컬럼 · additive · nullable(기존 코스·저장 실패 시 null). 위치·유저 식별
+-- 미포함(코스 행 자체에 start_lat/lng 있음 — 중복 저장 불요).
+-- 형태: {"ratio":1.58,"attempt":3,"pre_reject":1,"verdict":"hit",
+--        "attempts":3,"pre_rejects":1,"one_way":false}
+--   verdict: hit(밴드 내)·missed(초과 서빙)·nopath(AI추정 폴백). 502는 행 없음
+--   (실패 계측은 PERF FAILED 로그 유지 — 별도 테이블 미신설, 과설계 금지).
+-- RLS: routes는 기존 테이블(이미 enable) — 컬럼 추가만이라 정책 무관.
+-- ✅ 실행 완료 여부: 미실행 — 사용자가 SQL Editor에서 실행.
+
+-- [APPLY]
+-- alter table public.routes
+--   add column if not exists gen_meta jsonb;
+
+-- [확인쿼리] — 컬럼 존재 + 신규 생성분부터 채워지는지(기존은 null 정상)
+-- select count(*) filter (where gen_meta is not null) as with_meta,
+--        count(*)                                     as total
+--   from public.routes;
+
+-- [ROLLBACK]
+-- alter table public.routes drop column if exists gen_meta;
+
+-- ── 재보정 조회 (리포트 B — 20건 트리거 도달·ratio 분포·지역별) ──────────────
+-- 계측이 쌓인 뒤 아래로 현황 확인. 지역은 좌표 반올림(≈11km 격자)으로 근사 집계.
+--
+-- (a) 전체 축적 건수 + ratio 분포 (verdict별)
+-- select gen_meta->>'verdict' as verdict, count(*) as n,
+--        round(avg((gen_meta->>'ratio')::numeric), 3)     as ratio_avg,
+--        round(stddev_pop((gen_meta->>'ratio')::numeric), 3) as ratio_sd,
+--        round(avg((gen_meta->>'attempts')::numeric), 2)  as attempts_avg
+--   from public.routes
+--  where gen_meta is not null and (gen_meta->>'ratio')::numeric > 0
+--  group by 1 order by n desc;
+--
+-- (b) ratio 중앙값 (재보정 _SNAP_INFLATION 후보 — 20건 이상일 때 신뢰)
+-- select count(*) as n,
+--        percentile_cont(0.5) within group (order by (gen_meta->>'ratio')::numeric) as ratio_median
+--   from public.routes
+--  where gen_meta is not null and (gen_meta->>'ratio')::numeric > 0;
+--
+-- (c) 지역별(≈11km 격자) ratio 분포 — 강변 고난도 지역 식별
+-- select round(start_lat::numeric, 1) as lat_grid,
+--        round(start_lng::numeric, 1) as lng_grid,
+--        count(*) as n,
+--        round(avg((gen_meta->>'ratio')::numeric), 2)  as ratio_avg,
+--        round(stddev_pop((gen_meta->>'ratio')::numeric), 2) as ratio_sd
+--   from public.routes
+--  where gen_meta is not null and (gen_meta->>'ratio')::numeric > 0
+--  group by 1, 2 having count(*) >= 3 order by ratio_sd desc nulls last;

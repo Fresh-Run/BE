@@ -12,10 +12,10 @@ from fastapi import Request
 
 from app.main import app
 from app.models.schemas import Coordinate, PedestrianRoute, RouteResponse, Waypoint
-from app.services import map_service, openai_service
+from app.services import map_service, openai_service, route_service
 
 _state: dict = {"seq": [], "i": 0, "gemini_calls": 0, "chain_targets": [],
-                "gemini_seq": [], "g": 0, "radii": []}
+                "gemini_seq": [], "g": 0, "radii": [], "last_gen_meta": None}
 
 # 기준 기하(d=0.0045)의 체인 길이 ≈ 1.537km — chain_target에 비례 스케일해
 # "순응하는 Gemini"를 모사한다(v2.3 사전 게이트가 기본 시나리오를 안 막게).
@@ -63,9 +63,16 @@ async def _mock_pedestrian(origin, destination, waypoints=None) -> PedestrianRou
     )
 
 
+async def _capture_save(req, route, user_id=None, target_distance_km=None, gen_meta=None):
+    """_save_route 가로채기 — gen_meta 캡처 + DB 저장 스킵(gen_meta 컬럼 의존·
+    스테이징 오염 회피). 계측 영속화(리포트 B) 검증용."""
+    _state["last_gen_meta"] = gen_meta
+
+
 # 모듈 속성 패치 — route_service는 호출 시점에 모듈 속성을 조회하므로 이걸로 충분
 openai_service.generate_route = _mock_generate_route
 map_service.get_pedestrian_route = _mock_pedestrian
+route_service._save_route = _capture_save
 
 
 @app.post("/__mock/scenario")
@@ -84,4 +91,5 @@ async def set_scenario(req: Request):
 @app.get("/__mock/stats")
 async def mock_stats():
     return {"gemini_calls": _state["gemini_calls"], "tmap_calls": _state["i"],
-            "chain_targets": _state["chain_targets"], "radii": _state["radii"]}
+            "chain_targets": _state["chain_targets"], "radii": _state["radii"],
+            "last_gen_meta": _state["last_gen_meta"]}

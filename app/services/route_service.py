@@ -264,8 +264,9 @@ async def create_running_route(
     # Step 1~3을 동적 탐색 반경 루프로: 좁은 반경에서 시작해 실패(경로 연결
     # 불가 / 실측 미달)하면 반경을 넓혀 재시도. 출발지는 고정.
     best: RouteResponse | None = None
-    miss_candidates: list[tuple[float, RouteResponse]] = []  # (실측 km, route) — 미달·초과 양쪽
-    nopath_candidate: RouteResponse | None = None
+    best_meta: dict | None = None  # 채택 attempt 계측(리포트 B — 영속화)
+    miss_candidates: list[tuple[float, RouteResponse, dict]] = []  # (실측 km, route, meta)
+    nopath_candidate: tuple[RouteResponse, dict] | None = None  # (route, meta)
     pitstop_places: list | None = None  # Kakao 검색은 결정적 — 첫 성공 결과 재사용
 
     # 구간별 계측 (병목 관측용 — 항상 켜둔 경량 타이머)
@@ -440,22 +441,32 @@ async def create_running_route(
 
         # 시도별 계측 1줄 — 팽창비 재보정 재료(_SNAP_INFLATION, 20건 축적 시
         # 중앙값 재산정). 좌표·유저 id 미기록(위치 프라이버시), 키 없음.
+        snap_ratio = ((actual_km / chain_km)
+                      if (chain_km > 0 and status != "NO_PATH") else 0.0)
         logger.info(
             "route_gen attempt=%d radius=%.1f chain_km=%.2f snapped_km=%.2f "
             "ratio=%.2f target=%.1f aim=%.1f pre_reject=%d verdict=%s",
             i + 1, radius_km, chain_km,
             actual_km if status != "NO_PATH" else 0.0,
-            (actual_km / chain_km) if (chain_km > 0 and status != "NO_PATH") else 0.0,
-            target_km, chain_aim_km, attempt_rejects, status.lower(),
+            snap_ratio, target_km, chain_aim_km, attempt_rejects, status.lower(),
         )
+
+        # 계측 영속화 재료(리포트 B): 이 attempt의 채택 시 저장할 메타.
+        # 위치·유저 식별은 담지 않는다(코스 행 자체에 좌표 있음 — 중복 불요).
+        attempt_meta = {
+            "ratio": round(snap_ratio, 3),
+            "attempt": i + 1,
+            "pre_reject": attempt_rejects,
+        }
 
         if status == "OK":
             best = route
+            best_meta = {**attempt_meta, "verdict": "hit"}
             break
         if status == "MISS":
-            miss_candidates.append((actual_km, route))
+            miss_candidates.append((actual_km, route, attempt_meta))
         elif status == "NO_PATH":
-            nopath_candidate = route
+            nopath_candidate = (route, attempt_meta)
         # UNTRAVERSABLE: 폐기 — 어떤 후보에도 안 담는다(서빙 금지)
 
     if best is None:
@@ -468,20 +479,22 @@ async def create_running_route(
             # "5km 요청의 답이 아니다"(오너). 서빙 가능 초과가 없으면 생성 실패
             # (502, 쿼터 미소모 — 프론트 "다시 설정" 유도).
             over = [
-                (k, r) for k, r in miss_candidates
+                (k, r, m) for k, r, m in miss_candidates
                 if target_km < k <= target_km + _OVER_SERVE_CAP_KM + 1e-9
             ]
             if over:
-                best = min(over, key=lambda t: t[0] - target_km)[1]
+                _k, best, _meta = min(over, key=lambda t: t[0] - target_km)
                 best.target_missed = True
+                best_meta = {**_meta, "verdict": "missed"}
             else:
                 _log_perf_failed(_t0, _perf)  # 502도 계측(관측 공백 방지)
                 raise RouteGenerationFailed()
         elif nopath_candidate is not None:
-            best = nopath_candidate
+            best, _meta = nopath_candidate
             best.target_missed = not _within_band(
                 best.total_distance_km, target_km
             )
+            best_meta = {**_meta, "verdict": "nopath"}
         else:
             _log_perf_failed(_t0, _perf)
             raise RouteGenerationFailed()
@@ -504,8 +517,17 @@ async def create_running_route(
         _perf["pre_rejects"], best.radius_expanded,
     )
 
+    # 계측 영속화(리포트 B): 채택 attempt 메타 + 전체 시도/재추첨 카운트를 코스
+    # 행에 함께 저장 → 링버퍼 유실과 무관하게 ratio 분포·재보정 트리거를 조회 가능.
+    # verdict: hit(밴드 내)·missed(초과 서빙)·nopath(AI 추정 폴백). 502는 행 없음
+    # (실패 계측은 별도 테이블 없이 PERF FAILED 로그 유지 — 과설계 금지).
+    gen_meta = {**(best_meta or {"verdict": "unknown"}),
+                "attempts": _perf["attempts"],
+                "pre_rejects": _perf["pre_rejects"],
+                "one_way": req.end is not None}
+
     # Step 4: persist the generated route to Supabase (best-effort).
-    await _save_route(req, best, user_id, target_distance_km=target_km)
+    await _save_route(req, best, user_id, target_distance_km=target_km, gen_meta=gen_meta)
 
     return best
 
@@ -515,6 +537,7 @@ async def _save_route(
     route: RouteResponse,
     user_id: str | None = None,
     target_distance_km: float | None = None,
+    gen_meta: dict | None = None,
 ) -> None:
     """Insert the generated route into the Supabase `routes` table.
 
@@ -556,6 +579,9 @@ async def _save_route(
         # 일방통행 여부 (리포트 D) — end 좌표 동봉 요청이면 일방. end 좌표 자체는
         # 저장 안 하므로 이 플래그가 유일한 사후 판별 수단.
         "is_one_way": req.end is not None,
+        # 생성 계측 (리포트 B) — ratio·attempt·pre_reject·verdict. 위치·유저
+        # 식별 없음(코스 행 자체에 좌표 있음). None이면 컬럼 default(null).
+        "gen_meta": gen_meta,
     }
 
     try:

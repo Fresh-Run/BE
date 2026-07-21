@@ -129,8 +129,13 @@ def run_tests():
         assert d["total_distance_km"] == round(4.95, 1) and d["target_missed"] is False, d
         assert d["estimated_duration_min"] == round(round(4.95, 1) * 6.5), \
             f"러닝 환산(6'30\"/km) 기대, got {d['estimated_duration_min']}"
-        assert stats(c)["gemini_calls"] == 1, stats(c)
-        ok(f"4.95(−0.05) 합격 · missed=false · duration={d['estimated_duration_min']}분(러닝 환산) · gemini 1회")
+        st = stats(c)
+        assert st["gemini_calls"] == 1, st
+        # 계측 영속화(리포트 B): 채택 attempt 메타가 _save_route로 전달됐는지
+        gm = st["last_gen_meta"]
+        assert gm and gm["verdict"] == "hit", f"hit verdict 메타, got {gm}"
+        assert gm["attempts"] == 1 and gm["ratio"] > 0 and "pre_rejects" in gm, gm
+        ok(f"4.95(−0.05) 합격 · duration 러닝환산 · gen_meta verdict=hit ratio={gm['ratio']}")
 
         step("2. 하한 밖 반려 — [4.85, 4.95] → 4.85 반려·4.95 채택")
         scenario(c, [{"snap_km": 4.85}, {"snap_km": 4.95}])
@@ -161,8 +166,10 @@ def run_tests():
         assert d["total_distance_km"] == 5.6, \
             f"초과 최선(5.6 < 5.8, 둘 다 캡 6.0 내), 미달(4.0·4.2)은 반환 금지, got {d['total_distance_km']}"
         assert d["target_missed"] is True, "전패 플래그"
-        assert stats(c)["gemini_calls"] == 4, "cap 4 유지"
-        ok("전패 → 초과 최선 5.6 채택 · target_missed=true · gemini 4회(cap)")
+        st = stats(c)
+        assert st["gemini_calls"] == 4, "cap 4 유지"
+        assert st["last_gen_meta"]["verdict"] == "missed", f"missed verdict, got {st['last_gen_meta']}"
+        ok("전패 → 초과 최선 5.6 채택 · missed=true · gen_meta verdict=missed · gemini 4회(cap)")
 
         step("4b. 전패(미달만) — [4.0, 4.2, 4.5, 4.7] → 502 실패")
         scenario(c, [{"snap_km": 4.0}, {"snap_km": 4.2}, {"snap_km": 4.5}, {"snap_km": 4.7}])
@@ -192,7 +199,8 @@ def run_tests():
         assert d["total_distance_km"] == 4.0, "AI 추정(=target mock) 폴백 유지"
         assert d["target_missed"] is False, "4.0 ∈ [3.9, 4.5] → 플래그 없음"
         assert d.get("polyline") in (None, []), "폴백은 폴리라인 없음(기존 동작)"
-        ok("NO_PATH 4연속 → AI 추정 폴백 · 기존 동작 불변")
+        assert stats(c)["last_gen_meta"]["verdict"] == "nopath", "nopath verdict 메타"
+        ok("NO_PATH 4연속 → AI 추정 폴백 · gen_meta verdict=nopath")
 
         step("6. 프롬프트 단위 검증 (호출 0회)")
         from app.services.openai_service import _build_prompt, _SNAP_INFLATION, _BAND_AIM_KM
