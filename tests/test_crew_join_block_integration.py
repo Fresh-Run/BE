@@ -64,6 +64,13 @@ def join(c, tok, code):
     return api(c, "POST", "/crews/join-by-code", tok, json={"code": code})
 
 
+def notif_count(c, recipient, typ, actor, target):
+    # target_id(크루)로 스코프 — 다른 크루의 정상 가입 알림과 섞이지 않게.
+    r = c.get(f"{_SB}/rest/v1/notifications?user_id=eq.{recipient}&type=eq.{typ}"
+              f"&actor_id=eq.{actor}&target_id=eq.{target}&select=id", headers=_ADM)
+    return len(r.json()) if r.status_code == 200 else f"ERR{r.status_code}"
+
+
 def run_tests():
     c = httpx.Client(timeout=60)
     uids = {}
@@ -74,6 +81,8 @@ def run_tests():
         tok = {k: login(c, f"cjb-{k}-{TS}@test.com") for k in uids}
         for k in uids:
             assert api(c, "PATCH", "/me/profile", tok[k], json={"nickname": f"CJB{k}{TS}"}).status_code == 200
+        # O는 여러 크루 생성(무료 한도 1 회피) — premium
+        c.patch(f"{_SB}/rest/v1/profiles?user_id=eq.{uids['o']}", headers=_ADM, json={"tier": "premium"})
         crew = api(c, "POST", "/crews", tok["o"],
                    json={"name": f"JoinBlk{TS}", "is_public": True}).json()["id"]
         code = api(c, "POST", f"/crews/{crew}/invite", tok["o"]).json()["code"]
@@ -113,6 +122,27 @@ def run_tests():
         assert r.status_code == 200, \
             f"owner와 무관한 멤버 차단은 가입 무관(200), got {r.status_code} — invite와 기준 다르면 플래그"
         ok("멤버 M이 J를 차단해도 J 가입 200 (owner 기준만 — 멤버 차단 무관)")
+
+        step("5. open-join / approval-신청 — 차단하면 경로 불문 404 (L1 완전 일관)")
+        # X 재차단 (step 3에서 해제됐음)
+        assert api(c, "POST", f"/users/{uids['x']}/block", tok["o"]).status_code == 204
+        open_crew = api(c, "POST", "/crews", tok["o"],
+                        json={"name": f"OpenBlk{TS}", "is_public": True, "join_policy": "open"}).json()["id"]
+        appr_crew = api(c, "POST", "/crews", tok["o"],
+                        json={"name": f"ApprBlk{TS}", "is_public": True, "join_policy": "approval"}).json()["id"]
+        # 차단 X: open-join·approval-신청 둘 다 404 (owner 존재 은닉)
+        rc_open = api(c, "POST", f"/crews/{open_crew}/join", tok["x"]).status_code
+        rc_appr = api(c, "POST", f"/crews/{appr_crew}/join", tok["x"]).status_code
+        assert rc_open == 404, f"차단 X open-join 404, got {rc_open}"
+        assert rc_appr == 404, f"차단 X approval-신청 404, got {rc_appr}"
+        # owner에게 알림 0 (가입 자체가 막혀 crew_joined·join_requested 미발생)
+        nj = notif_count(c, uids["o"], "crew_joined", uids["x"], open_crew)
+        nr = notif_count(c, uids["o"], "join_requested", uids["x"], appr_crew)
+        assert nj == 0 and nr == 0, f"차단 X발 알림 crew_joined={nj} join_requested={nr} (전 0)"
+        # 정상 N 회귀: open 200 · approval 202(pending)
+        assert api(c, "POST", f"/crews/{open_crew}/join", tok["n"]).status_code == 200, "정상 open-join 200"
+        assert api(c, "POST", f"/crews/{appr_crew}/join", tok["n"]).status_code == 202, "정상 approval-신청 202"
+        ok("차단 X open·approval 둘 다 404 · owner 알림 0 · 정상 N 200/202 회귀")
 
         print("\n" + "=" * 50 + "\n  ALL TESTS PASSED\n" + "=" * 50)
     finally:

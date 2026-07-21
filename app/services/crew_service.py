@@ -525,6 +525,12 @@ async def join_crew(crew_id: str, user_id: str) -> CrewResponse:
     if not res.data:
         raise CrewNotFound()
     crew = res.data[0]
+    # L(감사 2026-07-21): 차단하면 경로 불문 크루 진입 불가 — owner와 양방향 차단이면
+    # 존재 은닉(404, join_by_code/L1과 동일 원칙·응답). 이 단일 진입점이 open·approval
+    # 두 브랜치를 모두 덮으므로 가입 자체가 막히고 crew_joined/join_requested 알림 갭도
+    # 자동 봉쇄된다. is_public 판정보다 앞 — 공개 여부와 무관히 차단은 404로 은닉.
+    if await profile_service.is_blocked_either(user_id, crew["owner_id"]):
+        raise CrewNotFound()
     if not crew["is_public"]:
         raise CrewAccessDenied()  # no invite flow yet (join_policy와 무관하게 차단)
     if await _is_member(crew_id, user_id):
