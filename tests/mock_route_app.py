@@ -97,9 +97,10 @@ async def set_scenario(req: Request):
     _state["gemini_calls"] = 0
     _state["chain_targets"] = []
     _state["radii"] = []
-    # v2.5 지연 주입 + 시간 예산 오버라이드(예산 게이트 테스트)
     _state["gen_delay"] = float(data.get("gen_delay_s", 0.0))
-    route_service._TIME_BUDGET_S = float(data.get("budget_s", 20.0))
+    # v2.7 배치 풀 오버라이드 — 풀 크기·leg 상한(테스트 케이스 단순화)
+    route_service._POOL_SIZE = int(data.get("pool_size", 9))
+    route_service._TMAP_LEG_CAP = int(data.get("tmap_leg_cap", 40))
     return {"ok": True}
 
 

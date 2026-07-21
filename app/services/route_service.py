@@ -148,7 +148,17 @@ _COMPLIANCE_CLAMP = (0.90, 1.10)
 # T-map 없이 Gemini만 재추첨(attempt당 최대 2회). 소진 시 그 attempt는 miss.
 # T-map 왕복(약 0.6s/leg×N)과 무효 후보 적재를 아낀다.
 _PRE_GATE_BAND = (0.75, 1.25)
-_PRE_GATE_REROLLS = 2
+_PRE_GATE_REROLLS = 2  # (v2.7 배치 풀에서 미사용 — attempt 재추첨 개념 폐기)
+
+# v2.7 배치 풀 (§2 생성 전략, 오너 확정): attempt 루프 폐기 → 처음부터 N개
+# 체인 병렬 생성 → pre-gate 통과분 전부 병렬 스냅 → 밴드 최근접 서빙. 스냅 표본을
+# 4→다수로 늘려 Gemini 산포를 흡수(현행은 12콜 생성에 스냅 4개뿐이던 낭비 제거).
+# 적응형 폐기(1패스라 attempt 간 피드백 없음 — est_ratio는 초기 조준에만).
+_POOL_SIZE = 9              # 병렬 생성 후보 수(Gemini 9콜 고정)
+# T-map leg 상한 안전핀(§4.1) — 무료 쿼터(일 1000 leg) 방어. 통과분 스냅 leg
+# 누적이 이 값 넘으면 나머지 후보 미스냅(예산 게이트 성격 백스톱). 오늘 815/1000
+# 도달이 근거. gen_meta.tmap_legs로 실소모 관측.
+_TMAP_LEG_CAP = 40
 # v2.5 지연 통제 (오너 결정 — 콜 3배 폭증 대응):
 # ① 시간 예산 — 총 경과 이 값 초과 시 신규 attempt 진입 금지, 그 시점 최선 판정
 #    (진행 중 attempt는 완주 허용, 중간 절단 없음). 첫 attempt는 무조건 1회 보장.
@@ -246,6 +256,13 @@ def _radius_schedule(target_km: float, start_end_km: float | None = None) -> lis
     return out
 
 
+def _pool_radii(target_km: float, start_end_km: float | None, n: int) -> list[float]:
+    """v2.7 배치 풀 N개의 반경 — 스케줄(좁은~넓은)을 순환 분산해 다양성 확보.
+    예: 스케줄 [1.2,2.2,3.7,8.0], n=9 → [1.2,2.2,3.7,8.0,1.2,2.2,3.7,8.0,1.2]."""
+    sched = _radius_schedule(target_km, start_end_km)
+    return [sched[i % len(sched)] for i in range(n)]
+
+
 def _filter_conflicting_avoid_tags(
     avoid_tags: list[str], prefs: AiCourseSettings
 ) -> list[str]:
@@ -298,26 +315,18 @@ async def create_running_route(
     target_km, prefs = _resolve_course_prefs(req, saved_prefs)
     avoid_tags = _filter_conflicting_avoid_tags(avoid_tags, prefs)
 
-    # Step 1~3을 동적 탐색 반경 루프로: 좁은 반경에서 시작해 실패(경로 연결
-    # 불가 / 실측 미달)하면 반경을 넓혀 재시도. 출발지는 고정.
+    # v2.7 배치 풀 (§2): attempt 루프 폐기 → N개 병렬 생성 → pre-gate 통과분
+    # 전부 병렬 스냅 → 밴드 최근접 서빙. 스냅 표본을 4→다수로 늘려 Gemini 산포
+    # 흡수. 게이트(밴드·캡·salvage·traversability·시간 예산)는 전부 불변, 선택 층만.
+    pitstop_places: list | None = None
     best: RouteResponse | None = None
-    best_meta: dict | None = None  # 채택 attempt 계측(리포트 B — 영속화)
-    snaps: list[float | None] = []  # attempt별 스냅 거리(v2.4 — 버려진 후보 관측).
-    #   스냅까지 간 것만: pre_reject로 T-map 안 간 롤은 미기록, no_path는 None
-    miss_candidates: list[tuple[float, RouteResponse, dict]] = []  # (실측 km, route, meta)
-    nopath_candidate: tuple[RouteResponse, dict] | None = None  # (route, meta)
-    pitstop_places: list | None = None  # Kakao 검색은 결정적 — 첫 성공 결과 재사용
+    best_meta: dict | None = None
 
-    # 구간별 계측 (병목 관측용 — 항상 켜둔 경량 타이머)
     _t0 = time.perf_counter()
-    _perf = {"gemini_s": 0.0, "gemini_calls": 0, "tmap_s": 0.0, "tmap_legs": 0,
-             "attempts": 0, "pre_rejects": 0}
+    _perf = {"gemini_s": 0.0, "gemini_calls": 0, "tmap_s": 0.0, "tmap_legs": 0}
 
-    # v2.3 end-aware: 일방(end 좌표) 요청은 탐색 원을 corridor 중점 기준으로,
-    # 초기 팽창비도 낮게(직선형 경로 — E2E 부검에서 aim 3.2로 4/4 pre_miss 전멸).
+    # end-aware(v2.3) + 실행가능성 게이트(v2.3 마감): 직선거리 > target×0.8이면 422
     start_end_km = _dist_km(req.start, req.end) if req.end else None
-    # 실행가능성 게이트(v2.3 마감): 직선거리 > target×0.8이면 시작 전에 422 —
-    # Gemini/T-map 비용 0으로 반려(전패 502보다 정직·저렴).
     if (start_end_km is not None
             and start_end_km > target_km * _ONE_WAY_MAX_DIST_FACTOR + 1e-9):
         min_target = math.ceil(start_end_km / _ONE_WAY_MAX_DIST_FACTOR * 10) / 10
@@ -329,220 +338,134 @@ async def create_running_route(
             lng=(req.start.lng + req.end.lng) / 2,
         )
 
-    # 적응형 팽창비 추정치 — 첫 attempt는 초기 조준(일방·지역 보정 반영), 이후 실측 갱신
+    # 초기 조준(적응형 폐기 — 1패스 풀이라 attempt 간 피드백 없음)
     est_ratio = _initial_est_ratio(req.start, start_end_km)
-    initial_ratio = est_ratio  # v2.6 §4 — 사용된 초기 조준값(gen_meta에 자동 기록 = 오버라이드 관측)
+    initial_ratio = est_ratio
+    chain_aim_km = (target_km + openai_service._BAND_AIM_KM) / est_ratio
+    if start_end_km is not None:
+        chain_aim_km = max(chain_aim_km, start_end_km * 1.05)  # 체인 물리 하한
+    chain_aim_km = round(chain_aim_km, 1)
 
-    for i, radius_km in enumerate(_radius_schedule(target_km, start_end_km)):
-        # v2.5 시간 예산 게이트: 총 경과 20s 초과 + 이미 1 attempt 완료면 신규
-        # attempt 진입 금지 → 그 시점 최선 후보로 판정(아래 best 선정 블록).
-        # 첫 attempt(i==0)는 무조건 보장, 진행 중 attempt는 완주(중간 절단 없음).
-        if i > 0 and (time.perf_counter() - _t0) > _TIME_BUDGET_S:
-            logger.info("route_gen 시간 예산(%.0fs) 초과 — attempt %d 진입 금지, 최선 판정",
-                        _TIME_BUDGET_S, i + 1)
-            break
-
-        _perf["attempts"] += 1
-        chain_aim_km = (target_km + openai_service._BAND_AIM_KM) / est_ratio
-        if start_end_km is not None:
-            # 체인 물리 하한: start→…→end 체인은 직선거리보다 짧을 수 없다
-            chain_aim_km = max(chain_aim_km, start_end_km * 1.05)
-        chain_aim_km = round(chain_aim_km, 1)
-
-        # v2.5 사전 게이트 (병렬): 3롤(1+재추첨2)을 gather로 동시 발사 — 순차 합
-        # 대신 max 1콜 시간. 게이트(체인 aim×[0.75,1.25]) 통과 후보 중 aim 최근접
-        # 채택, 통과 0이면 전체 최근접 salvage(전략 불변, 발사 방식만 병렬화).
-        # 개별 롤의 타임아웃(8s)·파싱 실패는 return_exceptions로 그 롤만 실패.
-        route = None
-        chain_km = 0.0
-        attempt_rejects = 0
-        rolls = [
-            openai_service.generate_route(
-                target_distance_km=target_km, start=req.start, end=req.end,
-                pitstop_keyword=req.pitstop_keyword, notes=req.notes,
-                avoid_tags=avoid_tags, prefs=prefs, radius_km=radius_km, lang=lang,
-                chain_target_km=chain_aim_km, radius_center=radius_center,
-            )
-            for _ in range(1 + _PRE_GATE_REROLLS)
-        ]
-        _g = time.perf_counter()
-        results = await asyncio.gather(*rolls, return_exceptions=True)
-        _perf["gemini_s"] += time.perf_counter() - _g  # 병렬이라 wall-clock(=max롤)
-        _perf["gemini_calls"] += len(results)
-
-        cands = [(r, _waypoint_chain_km(r)) for r in results
-                 if isinstance(r, RouteResponse)]
-        if not cands:
-            # 전 롤 실패 — 예외 종류로 분기(기존 순차 흐름과 동일 시맨틱).
-            excs = [r for r in results if isinstance(r, BaseException)]
-            _perf["pre_rejects"] += len(results)
-            if any(isinstance(e, OpenAIAPIError) for e in excs):
-                if miss_candidates or nopath_candidate is not None:
-                    logger.warning("Gemini API 장애 (radius=%skm) — 기존 후보로 마무리", radius_km)
-                    break
-                raise next(e for e in excs if isinstance(e, OpenAIAPIError))
-            logger.warning("Gemini 전 롤 파싱/검증 실패 (radius=%skm) — 다음 반경", radius_km)
-            continue
-
-        lo, hi = chain_aim_km * _PRE_GATE_BAND[0], chain_aim_km * _PRE_GATE_BAND[1]
-        in_band = [(r, ck) for r, ck in cands if lo <= ck <= hi]
-        pool = in_band or cands  # 통과 없으면 전체에서 최근접 salvage
-        route, chain_km = min(pool, key=lambda t: abs(t[1] - chain_aim_km))
-        # 버려진 롤 수(계측): 채택 1개 제외 전부(밴드 밖·예외 포함)
-        attempt_rejects = len(results) - 1
-        _perf["pre_rejects"] += attempt_rejects
-        # v2.6 재추첨 롤 학습: 채택 롤 하나가 아니라 병렬 3롤 체인 **중앙값**의
-        # aim 대비 순응 편차를 est_ratio 보정에 반영. Gemini가 aim보다 과대한
-        # 체인을 내는 경향(chain_compliance>1)이면 스냅도 초과 → 다음 aim을
-        # 낮추도록 est_ratio를 상향(반려 롤 정보가 이제 다음 조준에 기여).
-        median_chain = statistics.median([ck for _, ck in cands])
-        chain_compliance = (median_chain / chain_aim_km) if chain_aim_km > 0 else 1.0
-        chain_compliance = min(max(chain_compliance, _COMPLIANCE_CLAMP[0]),
-                               _COMPLIANCE_CLAMP[1])  # ±10% dampening(진동 억제)
-
-        # Step 2: snap the pitstop to a real place if a keyword was given.
-        if req.pitstop_keyword:
-            try:
-                if pitstop_places is None:
-                    pitstop_places = await map_service.search_places(
-                        req.pitstop_keyword, near=req.start
-                    )
-                if pitstop_places:
-                    nearest = pitstop_places[0]
-                    for wp in route.waypoints:
-                        if wp.is_pitstop:
-                            wp.name = nearest.name
-                            wp.coordinate = nearest.coordinate
-                            wp.description = nearest.address
-                            break
-            except Exception:  # noqa: BLE001 - map enrichment is best-effort
-                # If the Map API fails, keep the AI-suggested pitstop as-is.
-                logger.warning(
-                    "Pitstop place lookup failed for %r; keeping AI suggestion.",
-                    req.pitstop_keyword,
-                    exc_info=True,
-                )
-
-        route.search_radius_km = radius_km
-        route.radius_expanded = i > 0
-
-        # Step 3: 보행 경로 연결 + 실측 거리로 성공 판정 (비대칭 밴드).
-        #   OK      — 연결됐고 target−0.3 ≤ 실측 ≤ target+0.5 → 즉시 채택 (v2.4)
-        #   MISS    — 연결됐지만 밴드 밖(미달·초과) → 후보 보관, 재시도
-        #   NO_PATH — 연결 실패(또는 waypoint<2) → AI 추정 폴백 보관, 반경 확장
-        # (반경 확장은 미달에 유효 — 초과 케이스도 스케줄 그대로 진행: 프롬프트가
-        #  체인 목표를 고정하므로 반경이 커져도 오버슈트를 키우지 않고 재추첨 효과만)
-        # status: OK / MISS / NO_PATH(T-map 장애 → AI추정 폴백) /
-        #         UNTRAVERSABLE(강 위 등 보행 불가 leg → 후보 폐기, 리포트 A)
-        status = "NO_PATH"
-        actual_km = route.total_distance_km
-        # chain_km은 사전 게이트에서 이미 계산됨 (Gemini 기하 의도 — 팽창비 재료)
-        if len(route.waypoints) >= 2:
-            try:
-                via = [wp.coordinate for wp in route.waypoints[1:-1]] or None
-                _m = time.perf_counter()
-                pedestrian = await map_service.get_pedestrian_route(
-                    origin=route.waypoints[0].coordinate,
-                    destination=route.waypoints[-1].coordinate,
-                    waypoints=via,
-                )
-                _perf["tmap_s"] += time.perf_counter() - _m
-                _perf["tmap_legs"] += len(route.waypoints) - 1
-                route.polyline = pedestrian.path
-                # 표시용: 거리 소수 1자리 (소수점 노출 방지). 시간은 루프 뒤
-                # 일괄 러닝 환산(_RUN_PACE_MIN_PER_KM) — T-map 도보 시간 미사용.
-                raw_km = pedestrian.distance_m / 1000.0
-                route.total_distance_km = round(raw_km, 1)
-                # 게이트는 반올림 전 원값으로 (v2.1 — 0.1 표시 반올림이 ±50m
-                # 경계를 뭉개던 것 제거: 5.55는 표시 5.5여도 밴드 밖으로 판정)
-                actual_km = raw_km
-                status = "OK" if _within_band(raw_km, target_km) else "MISS"
-                # 적응형 피드백(v2.6): 채택 롤 팽창비 × 3롤 순응 편차 → 다음 조준.
-                # chain_compliance>1(Gemini 과대 순응)이면 est_ratio 상향 → aim↓.
-                if chain_km > 0:
-                    est_ratio = min(max(raw_km / chain_km * chain_compliance,
-                                        _RATIO_CLAMP[0]), _RATIO_CLAMP[1])
-            except map_service.LegNotRoutable:
-                # traversability 게이트(리포트 A): 실보행 불가 leg가 있는 후보 —
-                # 폐기(어떤 candidate에도 미보관 → 서빙 불가). 물 위 직선 코스를
-                # 주느니 재추첨/다음 반경, 최종엔 정직한 502가 낫다. pre-snap
-                # 게이트는 거리만 보므로 강 양안 웨이포인트를 못 거른다(스냅 후에만
-                # 보행 가능성 판정 가능) — 이 게이트가 그 공백을 메운다.
-                status = "UNTRAVERSABLE"
-            except Exception:  # noqa: BLE001 - keep AI estimates if routing fails
-                # T-map API 장애(HTTP/네트워크) — AI 추정 폴백(polyline 없음).
-                # 좌표는 Gemini가 육지 기반이라 물 위 직선 문제와 무관.
-                logger.warning(
-                    "Pedestrian routing (%s) failed; falling back to AI distance "
-                    "estimate. Polyline will be unavailable.",
-                    map_service.settings.map_provider,
-                    exc_info=True,
-                )
-
-        # 시도별 계측 1줄 — 팽창비 재보정 재료(_SNAP_INFLATION, 20건 축적 시
-        # 중앙값 재산정). 좌표·유저 id 미기록(위치 프라이버시), 키 없음.
-        snap_ratio = ((actual_km / chain_km)
-                      if (chain_km > 0 and status != "NO_PATH") else 0.0)
-        logger.info(
-            "route_gen attempt=%d radius=%.1f chain_km=%.2f snapped_km=%.2f "
-            "ratio=%.2f target=%.1f aim=%.1f pre_reject=%d verdict=%s",
-            i + 1, radius_km, chain_km,
-            actual_km if status != "NO_PATH" else 0.0,
-            snap_ratio, target_km, chain_aim_km, attempt_rejects, status.lower(),
+    # 1) N개 병렬 생성 — 반경 스케줄 순환 분산(좁은~넓은 다양성)
+    radii = _pool_radii(target_km, start_end_km, _POOL_SIZE)
+    rolls = [
+        openai_service.generate_route(
+            target_distance_km=target_km, start=req.start, end=req.end,
+            pitstop_keyword=req.pitstop_keyword, notes=req.notes,
+            avoid_tags=avoid_tags, prefs=prefs, radius_km=radii[j], lang=lang,
+            chain_target_km=chain_aim_km, radius_center=radius_center,
         )
+        for j in range(_POOL_SIZE)
+    ]
+    _g = time.perf_counter()
+    results = await asyncio.gather(*rolls, return_exceptions=True)
+    _perf["gemini_s"] += time.perf_counter() - _g  # 병렬 → wall-clock
+    _perf["gemini_calls"] = len(results)
 
-        # v2.4 snaps: 이 attempt의 스냅 결과 기록(버려진 후보 관측). 스냅까지
-        # 간 것만 — OK/MISS는 실측값(round 1), no_path·untraversable(유효 거리
-        # 없음)은 None. pre_reject로 T-map 안 간 롤은 애초에 여기 도달 안 함.
-        snaps.append(round(actual_km, 1) if status in ("OK", "MISS") else None)
+    gen_cands = [(r, _waypoint_chain_km(r), radii[j])
+                 for j, r in enumerate(results) if isinstance(r, RouteResponse)]
+    if not gen_cands:
+        excs = [r for r in results if isinstance(r, BaseException)]
+        _log_perf_failed(_t0, _perf)
+        if any(isinstance(e, OpenAIAPIError) for e in excs):
+            raise next(e for e in excs if isinstance(e, OpenAIAPIError))
+        raise RouteGenerationFailed()  # 전 롤 파싱/검증 실패
 
-        # 계측 영속화 재료(리포트 B): 이 attempt의 채택 시 저장할 메타.
-        # 위치·유저 식별은 담지 않는다(코스 행 자체에 좌표 있음 — 중복 불요).
-        attempt_meta = {
-            "ratio": round(snap_ratio, 3),
-            "attempt": i + 1,
-            "pre_reject": attempt_rejects,
-        }
+    # 2) pre-gate: 체인 aim×[0.75,1.25] 통과분. 통과 0이면 전체(salvage). aim
+    #    최근접 순 정렬 — 좋은 후보 먼저 스냅(leg 상한 컷 시 유리).
+    lo, hi = chain_aim_km * _PRE_GATE_BAND[0], chain_aim_km * _PRE_GATE_BAND[1]
+    passed = [c for c in gen_cands if lo <= c[1] <= hi] or gen_cands
+    passed.sort(key=lambda c: abs(c[1] - chain_aim_km))
 
-        if status == "OK":
-            best = route
-            best_meta = {**attempt_meta, "verdict": "hit"}
+    # 3) T-map leg 상한(40) 내에서 스냅 대상 선정 — 무료 쿼터 백스톱(§4.1)
+    to_snap: list[tuple[RouteResponse, float, float]] = []  # (route, chain, radius)
+    leg_budget = 0
+    for r, ck, rad in passed:
+        legs = len(r.waypoints) - 1
+        if legs < 1:
+            continue
+        if leg_budget + legs > _TMAP_LEG_CAP:
             break
-        if status == "MISS":
-            miss_candidates.append((actual_km, route, attempt_meta))
-        elif status == "NO_PATH":
-            nopath_candidate = (route, attempt_meta)
-        # UNTRAVERSABLE: 폐기 — 어떤 후보에도 안 담는다(서빙 금지)
+        to_snap.append((r, ck, rad))
+        leg_budget += legs
+    _perf["tmap_legs"] = leg_budget
 
-    if best is None:
-        # 루프 소진: |오차| 최소 후보 채택 + target_missed 플래그(반려 대신
-        # 최선+정직한 표시 — 프론트가 "요청 거리와 달라요" 안내). 연결 후보가
-        # 없으면 AI 추정 폴백(동일 기준으로 플래그). 유효 응답 0이면 실패.
-        if miss_candidates:
-            # v2.1: 미달(<target−0.1) 후보는 반환 금지. v2.2: 초과도
-            # target+_OVER_SERVE_CAP_KM(1.0)까지만 서빙 — 그보다 큰 이탈은
-            # "5km 요청의 답이 아니다"(오너). 서빙 가능 초과가 없으면 생성 실패
-            # (502, 쿼터 미소모 — 프론트 "다시 설정" 유도).
-            over = [
-                (k, r, m) for k, r, m in miss_candidates
-                if target_km < k <= target_km + _OVER_SERVE_CAP_KM + 1e-9
-            ]
-            if over:
-                _k, best, _meta = min(over, key=lambda t: t[0] - target_km)
-                best.target_missed = True
-                best_meta = {**_meta, "verdict": "missed"}
-            else:
-                _log_perf_failed(_t0, _perf)  # 502도 계측(관측 공백 방지)
-                raise RouteGenerationFailed()
-        elif nopath_candidate is not None:
-            best, _meta = nopath_candidate
-            best.target_missed = not _within_band(
-                best.total_distance_km, target_km
-            )
-            best_meta = {**_meta, "verdict": "nopath"}
+    # pitstop 스냅 (키워드 있으면) — 첫 성공 결과를 스냅 대상 전부에 재사용
+    if req.pitstop_keyword and to_snap:
+        try:
+            pitstop_places = await map_service.search_places(req.pitstop_keyword, near=req.start)
+            if pitstop_places:
+                nearest = pitstop_places[0]
+                for r, _ck, _rad in to_snap:
+                    for wp in r.waypoints:
+                        if wp.is_pitstop:
+                            wp.name, wp.coordinate, wp.description = (
+                                nearest.name, nearest.coordinate, nearest.address)
+                            break
+        except Exception:  # noqa: BLE001 — best-effort
+            logger.warning("Pitstop lookup failed for %r; keeping AI suggestion.",
+                           req.pitstop_keyword, exc_info=True)
+
+    # 4) 통과분 전부 병렬 스냅 (T-map). LegNotRoutable(강 위)→폐기, 장애→스킵.
+    async def _snap(r: RouteResponse):
+        via = [wp.coordinate for wp in r.waypoints[1:-1]] or None
+        return await map_service.get_pedestrian_route(
+            origin=r.waypoints[0].coordinate, destination=r.waypoints[-1].coordinate,
+            waypoints=via)
+
+    _m = time.perf_counter()
+    snap_out = await asyncio.gather(*[_snap(r) for r, _, _ in to_snap], return_exceptions=True)
+    _perf["tmap_s"] += time.perf_counter() - _m
+
+    scored: list[tuple[float, RouteResponse]] = []  # (raw_km, route) — 스냅 성공
+    nopath_fallback: RouteResponse | None = None    # T-map 장애 시 AI추정 폴백
+    snaps: list[float | None] = []
+    for (r, ck, rad), out in zip(to_snap, snap_out):
+        r.search_radius_km = rad
+        r.radius_expanded = (rad != radii[0])
+        if isinstance(out, map_service.LegNotRoutable):
+            snaps.append(None)  # 물 위 등 보행 불가 — 폐기
+            continue
+        if isinstance(out, BaseException):
+            snaps.append(None)  # T-map 장애 — AI추정 폴백 후보로 보관
+            if nopath_fallback is None:
+                nopath_fallback = r
+            continue
+        raw_km = out.distance_m / 1000.0
+        r.polyline = out.path
+        r.total_distance_km = round(raw_km, 1)
+        scored.append((raw_km, r))
+        snaps.append(round(raw_km, 1))
+
+    # 5) 선택: 밴드 최근접 → 캡 내 초과 최선(missed) → AI추정 폴백 → 502
+    _meta = {"pool_size": len(gen_cands), "snapped_count": len(scored),
+             "tmap_legs": leg_budget}
+    in_band = [(k, r) for k, r in scored if _within_band(k, target_km)]
+    if in_band:
+        _k, best = min(in_band, key=lambda t: abs(t[0] - target_km))
+        best_meta = {**_meta, "verdict": "hit",
+                     "ratio": round(_k / _waypoint_chain_km(best), 3)}
+    else:
+        over = [(k, r) for k, r in scored
+                if target_km < k <= target_km + _OVER_SERVE_CAP_KM + 1e-9]
+        if over:
+            _k, best = min(over, key=lambda t: t[0] - target_km)
+            best.target_missed = True
+            best_meta = {**_meta, "verdict": "missed",
+                         "ratio": round(_k / _waypoint_chain_km(best), 3)}
+        elif nopath_fallback is not None:
+            best = nopath_fallback  # AI추정(polyline 없음)
+            best.target_missed = not _within_band(best.total_distance_km, target_km)
+            best_meta = {**_meta, "verdict": "nopath", "ratio": 0.0}
         else:
             _log_perf_failed(_t0, _perf)
-            raise RouteGenerationFailed()
+            raise RouteGenerationFailed()  # 밴드·캡 서빙 후보 0 — 정직한 502
+
+    logger.info(
+        "route_gen POOL n=%d snapped=%d tmap_legs=%d aim=%.1f target=%.1f verdict=%s",
+        _POOL_SIZE, len(scored), leg_budget, chain_aim_km, target_km,
+        best_meta["verdict"],
+    )
 
     # 예상 시간 = 러닝 기준 일괄 환산 (오너 확정 2026-07-20) — T-map 도보 시간·
     # AI 추정 무관하게 최종 거리 × 6'30"/km. NO_PATH 폴백 경로 포함 단일 소스.
@@ -552,26 +475,22 @@ async def create_running_route(
     # 일방통행 플래그(리포트 D) — 생성 응답에도 노출(_save_route의 DB 저장과 동일 기준)
     best.is_one_way = req.end is not None
 
-    # 계측 요약 — 병목 분포 관측 (총합/Gemini/T-map/재시도)
+    # 계측 요약 — 병목 분포 관측 (v2.7 배치 풀: pool·snapped·tmap_legs)
     _total = time.perf_counter() - _t0
     logger.info(
         "[PERF] route generate: total=%.1fs | gemini=%.1fs(%d call) | "
-        "tmap=%.1fs(%d leg) | attempts=%d | pre_rejects=%d | expanded=%s",
+        "tmap=%.1fs(%d leg) | pool=%d snapped=%d | expanded=%s",
         _total, _perf["gemini_s"], _perf["gemini_calls"],
-        _perf["tmap_s"], _perf["tmap_legs"], _perf["attempts"],
-        _perf["pre_rejects"], best.radius_expanded,
+        _perf["tmap_s"], _perf["tmap_legs"], _POOL_SIZE,
+        best_meta["snapped_count"], best.radius_expanded,
     )
 
-    # 계측 영속화(리포트 B): 채택 attempt 메타 + 전체 시도/재추첨 카운트를 코스
-    # 행에 함께 저장 → 링버퍼 유실과 무관하게 ratio 분포·재보정 트리거를 조회 가능.
-    # verdict: hit(밴드 내)·missed(초과 서빙)·nopath(AI 추정 폴백). 502는 행 없음
-    # (실패 계측은 별도 테이블 없이 PERF FAILED 로그 유지 — 과설계 금지).
+    # 계측 영속화(리포트 B) — 링버퍼 유실 무관 조회. verdict: hit·missed·nopath.
+    # v2.7: pool_size·snapped_count·tmap_legs(쿼터 관측) 추가, attempt/pre_reject 폐기.
     gen_meta = {**(best_meta or {"verdict": "unknown"}),
-                "attempts": _perf["attempts"],
-                "pre_rejects": _perf["pre_rejects"],
                 "one_way": req.end is not None,
-                "snaps": snaps,  # attempt별 스냅(v2.4 — 버려진 후보 관측)
-                "elapsed_s": round(_total, 1),  # 총 소요(v2.5 — 시간 계측 영속)
+                "snaps": snaps,  # 스냅된 후보 전부(v2.4 → v2.7 풀 표본)
+                "elapsed_s": round(_total, 1),  # 총 소요(v2.5)
                 "initial_ratio": round(initial_ratio, 3)}  # 초기 조준값(v2.6 §4)
 
     # Step 4: persist the generated route to Supabase (best-effort).
