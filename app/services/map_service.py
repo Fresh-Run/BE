@@ -28,6 +28,7 @@ import httpx
 from pydantic import ValidationError
 
 from app.core.config import settings
+from app.core.json_util import loads_lenient
 from app.models.schemas import Coordinate, PedestrianRoute, Place
 
 # --- Endpoints ---------------------------------------------------------------
@@ -89,7 +90,7 @@ async def _kakao_search_places(
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         resp = await client.get(KAKAO_KEYWORD_SEARCH_URL, headers=headers, params=params)
         resp.raise_for_status()
-        data = resp.json()
+        data = loads_lenient(resp.text, context="kakao search")  # 제어문자 방어
 
     places: list[Place] = []
     for doc in data.get("documents", []):
@@ -185,7 +186,7 @@ async def _kakao_route(
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         resp = await client.get(KAKAO_DIRECTIONS_URL, headers=headers, params=params)
         resp.raise_for_status()
-        data = resp.json()
+        data = loads_lenient(resp.text, context="kakao directions")  # 제어문자 방어
 
     # Parse the first route's summary + geometry.
     route = data["routes"][0]
@@ -226,7 +227,7 @@ async def _naver_route(
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         resp = await client.get(NAVER_DRIVING_URL, headers=headers, params=params)
         resp.raise_for_status()
-        data = resp.json()
+        data = loads_lenient(resp.text, context="naver driving")  # 제어문자 방어
 
     route = data["route"]["traoptimal"][0]
     summary = route["summary"]
@@ -318,7 +319,9 @@ async def _tmap_walk_leg(
     if resp.status_code == 429:
         raise TmapQuotaExceeded()
     resp.raise_for_status()
-    data = resp.json()
+    # T-map GeoJSON 응답의 도로/POI명에 간헐적 미이스케이프 제어문자 → E2E 성수
+    # nopath의 실블로커(2026-07-22). 표준 resp.json() 대신 제어문자 방어 파싱.
+    data = loads_lenient(resp.text, context="tmap pedestrian")
 
     # Totals live on the first (Point) feature's properties; the geometry is
     # the concatenation of all LineString features.

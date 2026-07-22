@@ -18,28 +18,18 @@ from app.core.config import settings
 from app.models.schemas import AiCourseSettings, CoachCue, Coordinate, RouteResponse
 
 import os
-import re
+
+from app.core.json_util import loads_lenient
 
 logger = logging.getLogger(__name__)
 
-# Gemini tool_call arguments가 간헐적으로 미이스케이프 제어문자(U+0000~U+001F)를
-# 문자열 안에 담아 표준 json.loads가 "Invalid control character"로 깨진다(2026-07-22
-# E2E 성수 실측: char 18152). 보수적 방어: 정상은 그대로, 제어문자 파싱 실패에만
-# strip 후 1회 재시도. 제어문자 외 진짜 깨진 JSON은 여전히 raise → 후보 탈락(기존 동작).
-_CONTROL_CHARS = re.compile(r"[\x00-\x1f]")
-
 
 def _loads_tool_args(raw: str) -> dict:
-    """모델 tool_call arguments 파싱 (미이스케이프 제어문자 방어).
+    """모델 tool_call arguments 파싱 (미이스케이프 제어문자 방어 — 공용 단일 소스).
 
-    구조 whitespace(\\t\\n\\r) 제거는 JSON 무해(토큰은 구두점으로 구분)이고,
-    문자열 내부 리터럴 제어문자(파싱 파괴 원인)만 실제로 사라진다. cleaned도
-    실패하면(문법 자체가 깨짐) 그대로 전파해 상위가 후보를 버린다."""
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        logger.warning("tool_call JSON 제어문자 감지 — strip 후 재파싱 시도")
-        return json.loads(_CONTROL_CHARS.sub("", raw))
+    Gemini가 간헐적으로 U+0000~U+001F를 이스케이프 없이 문자열에 담는 케이스 방어.
+    파싱 로직은 app.core.json_util.loads_lenient에 일원화(T-map 응답 파싱과 동일)."""
+    return loads_lenient(raw, context="gemini tool_call")
 
 # Resolve the base URL: prefer the value loaded from .env via Settings, but if
 # it is empty or still the OpenAI default, fall back to the OPENAI_BASE_URL
