@@ -21,7 +21,7 @@ from app.services import map_service, openai_service, route_service
 
 _state: dict = {"seq": [], "i": 0, "gemini_calls": 0, "chain_targets": [],
                 "gemini_seq": [], "g": 0, "radii": [], "last_gen_meta": None,
-                "gen_delay": 0.0, "call_times": []}
+                "gen_delay": 0.0, "call_times": [], "last_failure": None}
 
 # 기준 기하(d=0.0045)의 체인 길이 ≈ 1.537km — chain_target에 비례 스케일해
 # "순응하는 Gemini"를 모사한다(v2.3 사전 게이트가 기본 시나리오를 안 막게).
@@ -86,9 +86,15 @@ async def _capture_save(req, route, user_id=None, target_distance_km=None, gen_m
     _state["last_gen_meta"] = gen_meta
 
 
+async def _capture_failure(req, target_km, t0, snaps, meta, initial_ratio, fail):
+    """_record_gen_failure 가로채기 — 502 관측을 캡처만(실 gen_failures 오염 회피)."""
+    _state["last_failure"] = {**meta, "snaps": snaps, "fail": fail, "initial_ratio": initial_ratio}
+
+
 # 모듈 속성 패치 — route_service는 호출 시점에 모듈 속성을 조회하므로 이걸로 충분
 openai_service.generate_route = _mock_generate_route
 map_service.get_pedestrian_route = _mock_pedestrian
+route_service._record_gen_failure = _capture_failure
 route_service._save_route = _capture_save
 
 
@@ -103,6 +109,7 @@ async def set_scenario(req: Request):
     _state["chain_targets"] = []
     _state["radii"] = []
     _state["call_times"] = []
+    _state["last_failure"] = None
     _state["gen_delay"] = float(data.get("gen_delay_s", 0.0))
     # v2.7 배치 풀 오버라이드 — 풀 크기·leg 상한(테스트 케이스 단순화)
     route_service._POOL_SIZE = int(data.get("pool_size", 9))
@@ -117,4 +124,5 @@ async def mock_stats():
     return {"gemini_calls": _state["gemini_calls"], "tmap_calls": _state["i"],
             "chain_targets": _state["chain_targets"], "radii": _state["radii"],
             "last_gen_meta": _state["last_gen_meta"],
+            "last_failure": _state["last_failure"],
             "call_gaps": spans, "call_span": round(ct[-1] - ct[0], 3) if len(ct) > 1 else 0.0}

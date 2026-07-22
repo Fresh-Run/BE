@@ -184,25 +184,39 @@ _TIME_BUDGET_S = 20.0
 # 스냅 팽창이 낮다(E2E 실측: 루프 1.6 vs 일방 체인≈직선). 적응형이 이후 보정.
 _ONE_WAY_INFLATION = 1.25
 
-# v2.6.2 §1 부분 선행 — 뚝섬/서울숲/성수 수변권 핀포인트 초기 조준 보정.
-# 근거: 웨이포인트 해부 실측(leg 팽창 1.4~1.8·전체 ×1.44) + gen_meta·502 로그
-# ratio 1.385~2.25. 이 지역 도로망(수변 접근 제한·하천 합류부 우회)이 직선 대비
-# 1.4~1.8배라 초기 상수 1.6이 과소 조준 → aim 과대 → 초과 편향. 초기만 1.8로
-# 올려 aim을 낮춘다(적응형이 이후 미세보정). ⚠️ 전국 격자는 20건 대기 —
-# 실측 근거 확보된 이 좌표 1건만 하드코딩(격자 테이블 발명 금지, §1 본수술 때 일반화).
-_TTUKSEOM_CENTER = (37.5219, 127.0561)  # 해부 실측 시작 좌표(서울숲/성수 수변)
-_TTUKSEOM_RADIUS_KM = 2.0               # 이 반경 원 안이면 오버라이드
-_TTUKSEOM_INFLATION = 1.8               # 해부 leg 팽창 상단(1.79) 근사
+# 격자 est_ratio 테이블 (§1 본수술, §3 STEP 2, 2026-07-22) — 캠페인 40건 실측
+# ratio 중앙값을 seed로 좌표별 초기 조준 보정. 기존 뚝섬 단일 1.8 override를 대체·
+# 일반화. 도로망 팽창(수변 고팽창~격자 저팽창)이 좌표별로 달라 단일 default 1.6이
+# 양극에서 틀림(목동 1.41 undershoot / 뚝섬 1.84 overshoot 실측). 각 (lat,lng,반경km,
+# ratio) 반경 내 첫 매치 적용, 미등록 격자는 default(_SNAP_INFLATION 1.6).
+# ⚠️ 하드코딩 시작 — 실측 좌표만 등록(발명 금지). gen_failures 축적으로 격자 늘면
+# DB 테이블화. initial_ratio가 gen_meta·gen_failures에 저장돼 적용·효과 자동 관측.
+_GRID_RATIOS = [
+    # (lat, lng, radius_km, ratio) — 실측 ratio 중앙값
+    (37.5219, 127.0561, 2.0, 1.84),  # 뚝섬권 (기존 1.8 override 대체 — overshoot 상단)
+    (37.5445, 127.0374, 2.0, 1.62),  # 성수권 (수변, overshoot)
+    (37.5285, 126.9328, 2.0, 1.58),  # 여의도권 (bimodal 산포)
+    (37.5242, 126.6303, 2.0, 1.58),  # 청라권 (신도시 수변)
+    (37.5265, 126.8620, 2.0, 1.41),  # 목동권 (내륙 격자, 저팽창 — undershoot 교정)
+]
+
+
+def _grid_ratio(start: Coordinate) -> float | None:
+    """등록 격자 반경 내면 실측 est_ratio, 아니면 None(→ 전국 default)."""
+    for lat, lng, rad, ratio in _GRID_RATIOS:
+        if _dist_km(start, Coordinate(lat=lat, lng=lng)) <= rad:
+            return ratio
+    return None
 
 
 def _initial_est_ratio(start: Coordinate, start_end_km: float | None) -> float:
-    """초기 팽창비 조준 — 일방 corridor(1.25) > 뚝섬 수변권(1.8) > 전국 기본(1.6).
-    적응형은 attempt 2부터 실측으로 갱신하므로 이 값은 첫 조준에만 쓰인다."""
+    """초기 팽창비 조준 — 일방 corridor(1.25) > 등록 격자 실측 > 전국 기본(1.6).
+    적응형 폐기(1패스 풀)라 이 값이 유일 조준. 격자 실측이 좌표별 팽창을 보정한다."""
     if start_end_km is not None:
         return _ONE_WAY_INFLATION
-    if _dist_km(start, Coordinate(lat=_TTUKSEOM_CENTER[0], lng=_TTUKSEOM_CENTER[1])) \
-            <= _TTUKSEOM_RADIUS_KM:
-        return _TTUKSEOM_INFLATION
+    grid = _grid_ratio(start)
+    if grid is not None:
+        return grid
     return openai_service._SNAP_INFLATION
 
 # 예상 시간 = 러닝 기준 (2026-07-20 오너 확정): T-map 도보 시간(~13분/km)을
@@ -222,6 +236,29 @@ def _log_perf_failed(t0: float, perf: dict) -> None:
         time.perf_counter() - t0, perf["gemini_s"], perf["gemini_calls"],
         perf["tmap_s"], perf["tmap_legs"],
     )
+
+
+async def _record_gen_failure(
+    req: RouteRequest, target_km: float, t0: float, snaps: list,
+    meta: dict, initial_ratio: float, fail: str,
+) -> None:
+    """502 관측 영속(§3 STEP 1, 2026-07-22) — gen_failures. best-effort: 저장 실패가
+    502 계약을 못 막는다. 실패 케이스 snap 분포 가시화(survivorship bias 제거)용.
+    프라이버시: 유저 미저장, 시작점은 격자 수준(소수 2자리≈1.1km)만."""
+    try:
+        record = {"meta": {
+            **meta, "snaps": snaps,
+            "elapsed_s": round(time.perf_counter() - t0, 1),
+            "initial_ratio": round(initial_ratio, 3),
+            "one_way": req.end is not None, "target_km": target_km,
+            "grid_lat": round(req.start.lat, 2), "grid_lng": round(req.start.lng, 2),
+            "fail": fail,
+        }}
+        supabase = get_supabase_admin()
+        await asyncio.to_thread(
+            lambda: supabase.table("gen_failures").insert(record).execute())
+    except Exception:  # noqa: BLE001 — 관측 저장 실패가 502를 못 막음
+        logger.warning("gen_failures 관측 저장 실패 — 무시", exc_info=True)
 
 
 def _quota_dominant(snap_errs: dict, n_success: int) -> bool:
@@ -405,6 +442,9 @@ async def create_running_route(
         _log_perf_failed(_t0, _perf)
         if any(isinstance(e, OpenAIAPIError) for e in excs):
             raise next(e for e in excs if isinstance(e, OpenAIAPIError))
+        await _record_gen_failure(req, target_km, _t0, [],
+                                  {"pool_size": 0, "snapped_count": 0, "tmap_legs": 0,
+                                   "snap_errors": {}}, initial_ratio, "no_gen_cands")
         raise RouteGenerationFailed()  # 전 롤 파싱/검증 실패
 
     # 2) pre-gate: 체인 aim×[0.75,1.25] 통과분. 통과 0이면 전체(salvage). aim
@@ -519,6 +559,8 @@ async def create_running_route(
             best_meta = {**_meta, "verdict": "nopath", "ratio": 0.0}
         else:
             _log_perf_failed(_t0, _perf)
+            await _record_gen_failure(req, target_km, _t0, snaps, _meta,
+                                      initial_ratio, "band_cap_zero")
             raise RouteGenerationFailed()  # 밴드·캡 서빙 후보 0 — 정직한 502
 
     logger.info(

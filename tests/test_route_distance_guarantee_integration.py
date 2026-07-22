@@ -71,7 +71,9 @@ def sb_login(c, email):
 
 
 def gen(c, token, base=B8001, target=5.0, start=None, end=None):
-    body = {"start": start or {"lat": 37.5445, "lng": 127.0374}, "target_distance_km": target}
+    # 기본 좌표는 미등록 격자(강남 37.4995,127.036 → est_ratio default 1.6) — 격자
+    # 테이블 등록 좌표(성수 1.62 등)를 피해 mock 기하 baseline(initial_ratio 1.6) 유지.
+    body = {"start": start or {"lat": 37.4995, "lng": 127.0360}, "target_distance_km": target}
     if end:
         body["end"] = end
     return c.post(f"{base}/api/routes/generate",
@@ -167,10 +169,13 @@ def run_tests():
         cap = round(round((4.0 + 0.2) / 1.6, 1) * 1.15, 1)
         assert f"MUST NOT exceed {cap} km" in p and "Aim for the middle" not in p, "상한만(양방향 롤백)"
         # 뚝섬 초기 조준
-        assert _initial_est_ratio(Coordinate(lat=37.5219, lng=127.0561), None) == 1.8, "뚝섬 1.8"
-        assert _initial_est_ratio(Coordinate(lat=37.5285, lng=126.9328), None) == 1.6, "밖 1.6"
+        # 격자 est_ratio 테이블(§3 STEP 2): 실측 ratio로 좌표별 보정
+        assert _initial_est_ratio(Coordinate(lat=37.5219, lng=127.0561), None) == 1.84, "뚝섬권 1.84"
+        assert _initial_est_ratio(Coordinate(lat=37.5265, lng=126.8620), None) == 1.41, "목동권 1.41"
+        assert _initial_est_ratio(Coordinate(lat=37.5285, lng=126.9328), None) == 1.58, "여의도권 1.58"
+        assert _initial_est_ratio(Coordinate(lat=37.4995, lng=127.0360), None) == 1.6, "미등록 격자 default 1.6"
         assert _initial_est_ratio(Coordinate(lat=37.5219, lng=127.0561), 3.5) == 1.25, "일방 우선"
-        ok("프롬프트 상한만 · 뚝섬 1.8/밖 1.6/일방 1.25")
+        ok("격자 est_ratio: 뚝섬 1.84/목동 1.41/여의도 1.58/미등록 1.6/일방 1.25")
 
         step("7. traversability 폐기 — 강 위 2개 제외하고 정상 5.0 서빙")
         scenario(c, [{"untraversable": True}, {"untraversable": True}, {"snap_km": 5.0}], pool_size=3)
@@ -200,12 +205,14 @@ def run_tests():
         ok("부분 타임아웃 → 성공분 서빙 · 전 타임아웃 → 502")
 
         step("10. end-aware 일방 + 실행가능성 게이트 + is_one_way")
-        # 실행가능 일방(직선 ~3.5km ≤ target×0.8=4.0)
+        # 실행가능 일방(직선 ~3.5km ≤ target×0.8=4.0) — end가 성수 기준 상대좌표라
+        # start도 명시 성수(기본 강남과 분리)
+        _su = {"lat": 37.5445, "lng": 127.0374}
         scenario(c, [{"snap_km": 5.0}], pool_size=3)
-        d = gen(c, tok, target=5.0, end={"lat": 37.5445, "lng": 127.0374 + 0.0396}).json()
+        d = gen(c, tok, target=5.0, start=_su, end={"lat": 37.5445, "lng": 127.0374 + 0.0396}).json()
         assert d["total_distance_km"] == 5.0 and d.get("is_one_way") is True, d
         # 초과(직선 ~5.0km > 4.0) → 422
-        r = gen(c, tok, target=5.0, end={"lat": 37.5445, "lng": 127.0374 + 0.0567})
+        r = gen(c, tok, target=5.0, start=_su, end={"lat": 37.5445, "lng": 127.0374 + 0.0567})
         assert r.status_code == 422 and r.json()["detail"]["error"] == "one_way_end_too_far", r.text[:150]
         # 루프는 is_one_way false
         scenario(c, [{"snap_km": 5.0}], pool_size=3)
