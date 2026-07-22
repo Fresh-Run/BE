@@ -71,9 +71,9 @@ def sb_login(c, email):
 
 
 def gen(c, token, base=B8001, target=5.0, start=None, end=None):
-    # 기본 좌표는 미등록 격자(강남 37.4995,127.036 → est_ratio default 1.6) — 격자
-    # 테이블 등록 좌표(성수 1.62 등)를 피해 mock 기하 baseline(initial_ratio 1.6) 유지.
-    body = {"start": start or {"lat": 37.4995, "lng": 127.0360}, "target_distance_km": target}
+    # 기본 좌표는 far 미등록 격자(37.20,127.00 — 등록 6좌표서 30km+) → est_ratio
+    # default 1.6. 격자 테이블 등록 좌표를 피해 mock 기하 baseline(initial_ratio 1.6) 유지.
+    body = {"start": start or {"lat": 37.2000, "lng": 127.0000}, "target_distance_km": target}
     if end:
         body["end"] = end
     return c.post(f"{base}/api/routes/generate",
@@ -169,13 +169,14 @@ def run_tests():
         cap = round(round((4.0 + 0.2) / 1.6, 1) * 1.15, 1)
         assert f"MUST NOT exceed {cap} km" in p and "Aim for the middle" not in p, "상한만(양방향 롤백)"
         # 뚝섬 초기 조준
-        # 격자 est_ratio 테이블(§3 STEP 2): 실측 ratio로 좌표별 보정
+        # 격자 est_ratio 테이블(§3 STEP 2·3): 실측 ratio로 좌표별 보정
         assert _initial_est_ratio(Coordinate(lat=37.5219, lng=127.0561), None) == 1.84, "뚝섬권 1.84"
         assert _initial_est_ratio(Coordinate(lat=37.5265, lng=126.8620), None) == 1.41, "목동권 1.41"
-        assert _initial_est_ratio(Coordinate(lat=37.5285, lng=126.9328), None) == 1.58, "여의도권 1.58"
-        assert _initial_est_ratio(Coordinate(lat=37.4995, lng=127.0360), None) == 1.6, "미등록 격자 default 1.6"
+        assert _initial_est_ratio(Coordinate(lat=37.5242, lng=126.6303), None) == 1.85, "청라권 1.85(STEP3 상향)"
+        assert _initial_est_ratio(Coordinate(lat=37.4995, lng=127.0360), None) == 1.38, "강남권 1.38(STEP3 등록)"
+        assert _initial_est_ratio(Coordinate(lat=37.2000, lng=127.0000), None) == 1.6, "미등록 far 격자 default 1.6"
         assert _initial_est_ratio(Coordinate(lat=37.5219, lng=127.0561), 3.5) == 1.25, "일방 우선"
-        ok("격자 est_ratio: 뚝섬 1.84/목동 1.41/여의도 1.58/미등록 1.6/일방 1.25")
+        ok("격자 est_ratio: 뚝섬1.84/목동1.41/청라1.85/강남1.38/미등록1.6/일방1.25")
 
         step("7. traversability 폐기 — 강 위 2개 제외하고 정상 5.0 서빙")
         scenario(c, [{"untraversable": True}, {"untraversable": True}, {"snap_km": 5.0}], pool_size=3)
