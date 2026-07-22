@@ -240,22 +240,18 @@ def _build_prompt(
     if radius_km is not None and radius_center is not None:
         # end-aware(v2.3): 일방 요청은 start-end corridor 중점 기준 원 —
         # start 중심 원은 |start−end|≈target일 때 도착지에 못 닿는 기하 모순.
-        area_text = (
+        area_line = (
             f"Keep every waypoint within {radius_km} km (straight-line) of "
             f"({radius_center.lat}, {radius_center.lng}) — the midpoint of the "
-            "start-to-end corridor. Provide ordered waypoints with realistic "
-            "WGS84 coordinates, "
+            "start-to-end corridor."
         )
     elif radius_km is not None:
-        area_text = (
+        area_line = (
             f"Keep every waypoint within {radius_km} km (straight-line) of the "
-            "start point. Provide ordered waypoints with realistic WGS84 "
-            "coordinates, "
+            "start point."
         )
     else:
-        area_text = (
-            "Provide ordered waypoints with realistic WGS84 coordinates near the start, "
-        )
+        area_line = "Keep every waypoint near the start point."
 
     # 거리 보장 v2.2: 도보 스냅 팽창을 프롬프트가 선보정 — 모델에게 어림이 아닌
     # 계산 가능한 직선 체인 목표를 준다. 조준점은 밴드 중심(target+0.2).
@@ -269,27 +265,48 @@ def _build_prompt(
         (target_distance_km + _BAND_AIM_KM) / _SNAP_INFLATION, 1
     )
     chain_cap = round(chain_target * _CHAIN_CAP_FACTOR, 1)
-    distance_text = (
-        f"Design a running route in South Korea whose final on-road length is "
-        f"about {target_distance_km} km. Note: the route will be snapped to real "
-        f"pedestrian roads, which typically makes it 1.3-1.7x longer than the "
-        f"straight lines between waypoints. Therefore place the waypoints so that "
-        f"the SUM OF STRAIGHT-LINE distances between consecutive waypoints "
-        f"(including the return to start for loops) is about {chain_target} km. "
-        f"The chain MUST NOT exceed {chain_cap} km — longer routes are invalid. "
-        f"If unsure within that limit, err slightly longer — a route a bit over "
-        f"{target_distance_km} km is acceptable, but shorter is not. "
+
+    # v87 프롬프트 재구성(진단 G) — hard/strong/soft/forbidden 섹션화. 진단 근본:
+    # 거리-단독 압력("shorter is not acceptable")이 무명 지점·지그재그 패딩을 유도.
+    # 절충(오너): 상한 cap은 유지(오버슈트 방지·v2.6 미달 롤백 교훈), 대신 하한
+    # 압력을 "지그재그로 채우지 마라"로 교체. 미달 재발 시 프롬프트만 롤백(E#2 유지).
+    hard = (
+        "HARD CONSTRAINTS — a route violating any of these is invalid:\n"
+        f"1. Final on-road length: about {target_distance_km} km. The route is "
+        f"snapped to real pedestrian roads, typically 1.3-1.7x longer than the "
+        f"straight lines between waypoints, so place waypoints such that the SUM "
+        f"OF STRAIGHT-LINE distances between consecutive waypoints (including the "
+        f"return to start for loops) is about {chain_target} km. This chain MUST "
+        f"NOT exceed {chain_cap} km — a longer route is invalid.\n"
+        f"2. {area_line}\n"
+        f"3. Start at ({start.lat}, {start.lng}) and {end_text}."
     )
+    strong = (
+        "\n\nSTRONG PREFERENCES:\n"
+        "- Prefer well-known, established running areas close to the start — "
+        "riversides, parks, waterfront promenades, and main sidewalks. Choose "
+        "recognizable spots a local runner would name.\n"
+        f"- {pitstop_text}"
+    )
+    forbidden = (
+        "\n\nFORBIDDEN:\n"
+        "- Do NOT pad the route with zigzags, backtracks, or meaningless detours "
+        "just to reach the target distance. A slightly shorter, clean route is "
+        "better than a padded one that hits the number exactly.\n"
+        "- Do NOT invent obscure or unnamed spots, and do NOT route through the "
+        "inside of apartment complexes, parking lots, or private/enclosed areas.\n"
+        "- Do NOT invent place names, descriptions, or a title — return ordered "
+        "waypoints as realistic WGS84 coordinates only."
+    )
+    # 소프트(선호·메모·회피)는 있을 때만 SOFT 섹션으로. 없으면 생략(잡음 최소).
+    soft_bits = "".join(
+        s for s in (_prefs_text(prefs), notes_text, avoid_text) if s
+    )
+    soft = f"\n\nSOFT PREFERENCES (honor when they don't conflict with the above):{soft_bits}" if soft_bits else ""
 
     return (
-        f"{distance_text}"
-        f"Start at ({start.lat}, {start.lng}) and {end_text}. "
-        f"{pitstop_text} "
-        f"{area_text}"
-        "mark any pitstop with is_pitstop=true, and call build_running_route with the result."
-        f"{_prefs_text(prefs)}"
-        f"{notes_text}"
-        f"{avoid_text}"
+        f"{hard}{strong}{forbidden}{soft}\n\n"
+        "Mark any pitstop with is_pitstop=true and call build_running_route with the result."
     )
 
 
