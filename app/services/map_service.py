@@ -23,6 +23,7 @@ API references:
 from __future__ import annotations
 
 import logging
+import math
 
 import httpx
 from pydantic import ValidationError
@@ -58,6 +59,7 @@ async def search_places(
     near: Coordinate | None = None,
     radius_m: int = 2000,
     limit: int = 5,
+    sort: str = "distance",
 ) -> list[Place]:
     """Search for places (e.g. '편의점') near a coordinate, or nationwide.
 
@@ -67,13 +69,18 @@ async def search_places(
     Place (keyword) search always uses Kakao, independent of MAP_PROVIDER
     (which only selects the *routing* provider, e.g. T-map for walking).
     """
-    return await _kakao_search_places(keyword, near, radius_m, limit)
+    return await _kakao_search_places(keyword, near, radius_m, limit, sort)
 
 
 async def _kakao_search_places(
-    keyword: str, near: Coordinate | None, radius_m: int, limit: int
+    keyword: str, near: Coordinate | None, radius_m: int, limit: int,
+    sort: str = "distance",
 ) -> list[Place]:
-    """Kakao Local keyword search. Kakao expects x=lng, y=lat."""
+    """Kakao Local keyword search. Kakao expects x=lng, y=lat.
+
+    sort='distance'(기본, 근접) / 'accuracy'(관련도). 랜드마크형 pitstop은
+    accuracy가 실제 공원을 상위로 올림(distance는 근접 상호가 실제 공원을 묻음 —
+    청라 실측: distance는 밴드 내 공원 0, accuracy는 청라호수공원 포함 9개)."""
     if not settings.kakao_rest_api_key:
         raise RuntimeError(
             "Kakao place search is not configured. Set KAKAO_REST_API_KEY "
@@ -84,7 +91,7 @@ async def _kakao_search_places(
     params = {"query": keyword, "size": limit}
     if near is not None:
         params.update({"x": near.lng, "y": near.lat,
-                       "radius": radius_m, "sort": "distance"})
+                       "radius": radius_m, "sort": sort})
     else:
         params["sort"] = "accuracy"  # 좌표 없이 sort=distance는 카카오 400
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
@@ -150,12 +157,37 @@ def _adequacy(name: str, token: str) -> int:
     return 0
 
 
-def rank_places_for_keyword(keyword: str, places: list[Place]) -> list[Place]:
+# 위치 밴드(루프 자연 지점, 2026-07-22 (b)): pitstop이 시작점 코앞(84m)이면 5km
+# 루프 기하가 핀치돼 overshoot→502(청라 실사용 검증). 시작 거리 [target×0.15,
+# target×0.5] 구간 후보를 우대(중간 쉼터로도 의미). 밴드 내 후보 0이면 적합도·최근접 폴백.
+_POS_BAND_LO_FACTOR = 0.15
+_POS_BAND_HI_FACTOR = 0.50
+
+
+def _haversine_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """두 좌표 간 great-circle 거리(m) — pitstop 위치 밴드용."""
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp, dl = math.radians(lat2 - lat1), math.radians(lng2 - lng1)
+    x = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * 6371000.0 * math.asin(math.sqrt(x))
+
+
+def _in_position_band(start: Coordinate, place: Place, target_km: float) -> bool:
+    """pitstop이 루프 자연 지점(시작 거리 [target×0.15, target×0.5]) 안인가."""
+    d = _haversine_m(start.lat, start.lng, place.coordinate.lat, place.coordinate.lng) / 1000.0
+    return target_km * _POS_BAND_LO_FACTOR <= d <= target_km * _POS_BAND_HI_FACTOR
+
+
+def rank_places_for_keyword(
+    keyword: str, places: list[Place],
+    start: Coordinate | None = None, target_km: float | None = None,
+) -> list[Place]:
     """pitstop 의도 존중 재랭킹/필터. 통과 후보 리스트(빈 리스트면 상위가 폴백).
 
     - unknown 의도: 원본(거리순) 그대로 — 현행 동작 보존.
     - commercial 의도: 그 카테고리 코드만 남김(거리순 유지).
-    - landmark 의도: 상업 카테고리 제외 후 [적합도 desc, 원 거리순] 안정 정렬.
+    - landmark 의도: 상업 카테고리 제외 후 [적합도 desc, **위치밴드 desc**, 시작거리 asc]
+      안정 정렬. 위치밴드는 루프 자연 지점(핀치 회피) 우대 — start·target 있을 때만.
     """
     intent, param = _keyword_intent(keyword)
     if intent == "unknown":
@@ -165,7 +197,20 @@ def rank_places_for_keyword(keyword: str, places: list[Place]) -> list[Place]:
     kept = [p for p in places if p.category_code not in _COMMERCIAL_CODES]
     if not kept:
         return []
-    return sorted(kept, key=lambda p: -_adequacy(p.name, param))
+    has_band = start is not None and target_km is not None
+
+    def _key(p: Place):
+        adeq = _adequacy(p.name, param)
+        if has_band:
+            d = _haversine_m(start.lat, start.lng,
+                             p.coordinate.lat, p.coordinate.lng) / 1000.0
+            in_band = 1 if _in_position_band(start, p, target_km) else 0
+        else:
+            d, in_band = 0.0, 0
+        # 적합도 우선(실제 공원>상호차용) → 위치밴드(루프 자연 지점) → 시작거리 근접
+        return (-adeq, -in_band, d)
+
+    return sorted(kept, key=_key)
 
 
 async def _naver_search_places(

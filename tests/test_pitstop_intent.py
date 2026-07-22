@@ -91,6 +91,29 @@ def run_tests():
     assert r == [], f"전부 상업이면 [], got {[p.name for p in r]}"
     ok("공원인데 후보 전부 상업 → [] (route_service가 무필터 최근접 폴백)")
 
+    # ── 위치 밴드 (2026-07-22 (b)) — 시작 거리 [target×0.15, target×0.5] 우대 ──
+    ST = Coordinate(lat=37.5242, lng=126.6303)  # 청라 시작
+    def at(name, dlat):  # dlat 북쪽 이동으로 거리 지정(0.00076deg≈84m, 0.0117≈1.3km)
+        return Place(name=name, coordinate=Coordinate(lat=37.5242+dlat, lng=126.6303),
+                     category=None, category_code=None, address="인천")
+    NEAR = at("모래성공원", 0.00076)   # ~84m (시작 코앞, 밴드 밖)
+    FAR  = at("청라호수공원", 0.0117)   # ~1.3km (밴드 [0.75,2.5] 안)
+
+    print("\n[8. 위치 밴드: 밴드 내 대공원(1.3km) > 코앞 소공원(84m) — target 5.0]")
+    r = rank_places_for_keyword("공원", [NEAR, FAR], start=ST, target_km=5.0)
+    assert r[0].name == "청라호수공원", f"밴드 내(1.3km) 우선, got {r[0].name}"
+    ok("코앞 84m 소공원보다 밴드 내 1.3km 대공원 채택(핀치 회피)")
+
+    print("\n[9. 밴드 내 후보 0 → 최근접(적합도) 폴백]")
+    r = rank_places_for_keyword("공원", [NEAR], start=ST, target_km=5.0)
+    assert r[0].name == "모래성공원", "밴드 후보 없으면 최근접이라도 채택(가용성)"
+    ok("밴드 내 0 → 최근접 소공원 폴백(적합도 유지)")
+
+    print("\n[10. start/target 없으면 위치밴드 미적용(현행 적합도만)]")
+    r = rank_places_for_keyword("공원", [NEAR, FAR])  # start·target 생략
+    assert set(p.name for p in r) == {"모래성공원", "청라호수공원"}, "둘 다 유지"
+    ok("start/target 없으면 위치밴드 비활성(하위호환)")
+
     print("\n" + "=" * 50 + "\n  ALL TESTS PASSED\n" + "=" * 50)
 
 

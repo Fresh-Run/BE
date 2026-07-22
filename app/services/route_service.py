@@ -496,11 +496,20 @@ async def create_running_route(
     pitstop_obs: dict | None = None
     if req.pitstop_keyword and to_snap:
         try:
-            pitstop_places = await map_service.search_places(req.pitstop_keyword, near=req.start)
-            # 의도 존중(백로그 (b), 2026-07-22): 상업 카테고리 제외·적합도 랭킹 통과
-            # 후보를 우선 채택. 통과 0이면 무필터 최근접 폴백(가용성 우선 — pitstop
-            # 없다고 502 내지 않음). Kakao [0] 맹목 채택이 음식점을 뽑던 것 교정.
-            ranked = map_service.rank_places_for_keyword(req.pitstop_keyword, pitstop_places)
+            # 검색 반경·정렬을 target·의도 연동으로(2026-07-22 (b)): 위치 밴드 상한이
+            # target×0.5라 반경이 그만큼 커야 자연 지점 후보를 덮는다. ⚠️ **핵심**: 랜드마크형은
+            # sort='accuracy' — distance 정렬은 근접 상호가 실제 공원을 묻어 밴드 내 공원 0이지만
+            # accuracy는 청라호수공원(986m) 등 실제 공원을 상위로(청라 실측). limit 15.
+            _intent, _ = map_service._keyword_intent(req.pitstop_keyword)
+            _radius_m = max(2000, round(target_km * map_service._POS_BAND_HI_FACTOR * 1000))
+            _sort = "accuracy" if _intent == "landmark" else "distance"
+            pitstop_places = await map_service.search_places(
+                req.pitstop_keyword, near=req.start, radius_m=_radius_m, limit=15, sort=_sort)
+            # 의도 존중(백로그 (b)): 상업 카테고리 제외·적합도·**위치밴드** 랭킹 통과
+            # 후보 채택. 통과 0이면 무필터 최근접 폴백(가용성 우선 — 502 안 냄). 위치밴드
+            # 우대로 시작 코앞(84m) pitstop이 루프 핀치→overshoot 유발하던 것 교정.
+            ranked = map_service.rank_places_for_keyword(
+                req.pitstop_keyword, pitstop_places, start=req.start, target_km=target_km)
             pick = None
             if ranked:
                 pick = ranked[0]
@@ -508,12 +517,14 @@ async def create_running_route(
                 pick = pitstop_places[0]
                 logger.info("pitstop 적합후보 0 — 무필터 최근접 폴백: %r (kw=%r)",
                             pick.name, req.pitstop_keyword)
+            in_band = bool(pick and map_service._in_position_band(req.start, pick, target_km))
             pitstop_obs = {
                 "kw": req.pitstop_keyword,
                 "name": pick.name if pick else None,
                 "cat": pick.category_code if pick else None,
                 "raw_n": len(pitstop_places), "ranked_n": len(ranked),
                 "fallback": bool(pick and not ranked),  # 무필터 최근접 폴백 여부
+                "in_band": in_band,  # 위치 밴드(루프 자연 지점) 내 채택 여부
             }
             if pick is not None:
                 for r, _ck, _rad in to_snap:
