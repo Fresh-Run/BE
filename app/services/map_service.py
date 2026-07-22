@@ -158,10 +158,12 @@ def _adequacy(name: str, token: str) -> int:
 
 
 # 위치 밴드(루프 자연 지점, 2026-07-22 (b)): pitstop이 시작점 코앞(84m)이면 5km
-# 루프 기하가 핀치돼 overshoot→502(청라 실사용 검증). 시작 거리 [target×0.15,
-# target×0.5] 구간 후보를 우대(중간 쉼터로도 의미). 밴드 내 후보 0이면 적합도·최근접 폴백.
-_POS_BAND_LO_FACTOR = 0.15
-_POS_BAND_HI_FACTOR = 0.50
+# 루프 기하가 핀치돼 overshoot→502(청라 실사용 검증). 상한은 target×0.5, **하한은 절대
+# 200m**(2026-07-22 좌표민감도 부검: target×0.15=750m 하한이 랜드마크 근접 출발점에서
+# 대표 park(청라호수공원 354m)를 잘라내 소공원이 뽑히던 것 교정. 핀치는 target 무관 절대
+# 기하라 절대 하한이 맞다 — 200m 미만만 핀치 보호로 제외). 밴드 내 0이면 적합도·최근접 폴백.
+_POS_BAND_LO_M = 200.0          # 절대 하한(핀치 보호) — 200m 미만만 제외
+_POS_BAND_HI_FACTOR = 0.50      # 상한은 target 비례 유지
 
 
 def _haversine_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
@@ -173,9 +175,10 @@ def _haversine_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
 
 
 def _in_position_band(start: Coordinate, place: Place, target_km: float) -> bool:
-    """pitstop이 루프 자연 지점(시작 거리 [target×0.15, target×0.5]) 안인가."""
-    d = _haversine_m(start.lat, start.lng, place.coordinate.lat, place.coordinate.lng) / 1000.0
-    return target_km * _POS_BAND_LO_FACTOR <= d <= target_km * _POS_BAND_HI_FACTOR
+    """pitstop이 루프 자연 지점(시작 거리 [절대 200m, target×0.5]) 안인가.
+    하한 절대 200m: 핀치(코앞 pitstop→overshoot)만 제외, 300~700m 대표 park는 통과."""
+    d_m = _haversine_m(start.lat, start.lng, place.coordinate.lat, place.coordinate.lng)
+    return _POS_BAND_LO_M <= d_m <= target_km * _POS_BAND_HI_FACTOR * 1000.0
 
 
 def rank_places_for_keyword(

@@ -104,6 +104,13 @@ def run_tests():
     assert r[0].name == "청라호수공원", f"밴드 내(1.3km) 우선, got {r[0].name}"
     ok("코앞 84m 소공원보다 밴드 내 1.3km 대공원 채택(핀치 회피)")
 
+    print("\n[8b. 하한 200m(부검 교정): 354m 대공원 채택 · 84m 소공원 제외]")
+    BIG354  = at("청라호수공원", 0.00319)  # ~354m (오너 실좌표 거리, 새 하한 200m 안)
+    SMALL84 = at("모래성공원",   0.00076)  # ~84m (핀치, 200m 미만 제외)
+    r = rank_places_for_keyword("공원", [SMALL84, BIG354], start=ST, target_km=5.0)
+    assert r[0].name == "청라호수공원", f"354m 대공원 밴드 안 채택, got {r[0].name}"
+    ok("354m 대공원 밴드 진입·채택 · 84m 소공원만 핀치 제외(구 750m 하한이 잘라내던 것)")
+
     print("\n[9. 밴드 내 후보 0 → 최근접(적합도) 폴백]")
     r = rank_places_for_keyword("공원", [NEAR], start=ST, target_km=5.0)
     assert r[0].name == "모래성공원", "밴드 후보 없으면 최근접이라도 채택(가용성)"
@@ -124,13 +131,13 @@ def run_tests():
     assert r[0].name == "청라호수공원", f"밴드 내 대표성(accuracy #1)이 근접 이김, got {r[0].name}"
     ok("밴드 내 근접(초록 759m)보다 accuracy 상위 대공원(청라호수공원) 채택")
 
-    print("\n[12. C: 밴드 밖은 대표성 무시·거리 유지 — 근접이 이김]")
-    # 둘 다 밴드 밖(84m·200m), accuracy 순서 무관하게 최근접 채택(거리 tiebreak)
-    OUT_FAR  = at("먼소공원", 0.0018)    # ~200m (밴드 밖), 리스트 먼저(accuracy 상위)
+    print("\n[12. C: 밴드 밖(둘 다 <200m 핀치)은 대표성 무시·거리 유지 — 근접이 이김]")
+    # 둘 다 하한 200m 미만(84m·150m), accuracy 순서 무관하게 최근접 채택(거리 tiebreak)
+    OUT_FAR  = at("먼핀공원", 0.00135)   # ~150m (밴드 밖), 리스트 먼저(accuracy 상위)
     OUT_NEAR = at("코앞공원", 0.00076)   # ~84m (밴드 밖), 뒤
     r = rank_places_for_keyword("공원", [OUT_FAR, OUT_NEAR], start=ST, target_km=5.0)
     assert r[0].name == "코앞공원", f"밴드 밖은 거리 tiebreak(최근접), got {r[0].name}"
-    ok("밴드 밖은 accuracy 무시·최근접 유지(오너 C — 대표성은 밴드 내에서만)")
+    ok("밴드 밖(둘 다 핀치)은 accuracy 무시·최근접 유지(오너 C — 대표성은 밴드 내에서만)")
 
     print("\n" + "=" * 50 + "\n  ALL TESTS PASSED\n" + "=" * 50)
 
