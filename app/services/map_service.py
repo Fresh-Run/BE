@@ -106,10 +106,66 @@ async def _kakao_search_places(
                 name=doc.get("place_name", keyword),
                 coordinate=coordinate,
                 category=doc.get("category_group_name") or None,
+                category_code=doc.get("category_group_code") or None,
                 address=doc.get("road_address_name") or doc.get("address_name"),
             )
         )
     return places
+
+
+# ── pitstop 의도 존중 재랭킹 (2026-07-22, 백로그 (b)) ─────────────────────────
+# 실사용 부검: pitstop "공원"이 category 무필터 텍스트+거리순이라 "…청라호수공원점"
+# 상호를 가진 음식점이 실제 공원을 밀어냄. 랜드마크형 키워드는 상업 카테고리를
+# 제외하고 적합도로 재랭킹, 상업형 키워드는 그 카테고리만, 미분류는 현행 유지.
+_COMMERCIAL_CODES = {"FD6", "CE7", "CS2", "HP8", "PM9", "BK9", "OL7", "AD5"}  # 음식점·카페·편의점·병원·약국·은행·주유소·숙박
+# 상업형 키워드 → include-only 코드(필터 반전)
+_COMMERCIAL_KEYWORD_CODES = {"카페": "CE7", "커피": "CE7", "편의점": "CS2",
+                             "음식점": "FD6", "식당": "FD6", "맛집": "FD6"}
+# 랜드마크형 토큰(이 중 하나라도 키워드에 있으면 랜드마크 의도)
+_LANDMARK_TOKENS = ("공원", "호수", "산", "천", "강변", "하천", "놀이터", "숲",
+                    "해변", "저수지", "수목원", "둘레길", "생태")
+
+
+def _keyword_intent(keyword: str) -> tuple[str, str | None]:
+    """키워드→의도: (commercial, 코드) / (landmark, 토큰) / (unknown, None). 소규모
+    매핑 — 미분류는 현행 무필터(과설계 금지)."""
+    k = (keyword or "").strip()
+    for kw, code in _COMMERCIAL_KEYWORD_CODES.items():
+        if kw in k:
+            return "commercial", code
+    for t in _LANDMARK_TOKENS:
+        if t in k:
+            return "landmark", t
+    return "unknown", None
+
+
+def _adequacy(name: str, token: str) -> int:
+    """이름 적합도 — 상호 차용(…공원점/캠퍼스) 최하, 실제 명칭(…공원) 우대."""
+    if any(f"{token}{s}" in name for s in ("점", "캠퍼스", "지점", "타운")):
+        return 0  # 랜드마크 상호 차용 — 실제 그곳이 아님
+    if name.endswith(token):
+        return 2  # 실제 명칭(예: 모래성공원)
+    if token in name:
+        return 1
+    return 0
+
+
+def rank_places_for_keyword(keyword: str, places: list[Place]) -> list[Place]:
+    """pitstop 의도 존중 재랭킹/필터. 통과 후보 리스트(빈 리스트면 상위가 폴백).
+
+    - unknown 의도: 원본(거리순) 그대로 — 현행 동작 보존.
+    - commercial 의도: 그 카테고리 코드만 남김(거리순 유지).
+    - landmark 의도: 상업 카테고리 제외 후 [적합도 desc, 원 거리순] 안정 정렬.
+    """
+    intent, param = _keyword_intent(keyword)
+    if intent == "unknown":
+        return places
+    if intent == "commercial":
+        return [p for p in places if p.category_code == param]
+    kept = [p for p in places if p.category_code not in _COMMERCIAL_CODES]
+    if not kept:
+        return []
+    return sorted(kept, key=lambda p: -_adequacy(p.name, param))
 
 
 async def _naver_search_places(

@@ -664,6 +664,9 @@ class Place(BaseModel):
     name: str
     coordinate: Coordinate
     category: Optional[str] = None
+    # Kakao category_group_code (FD6 음식점·CE7 카페·CS2 편의점 등) — pitstop 의도
+    # 필터/랭킹용(2026-07-22). category(표시명)와 별도, 코드가 필터 기준.
+    category_code: Optional[str] = None
     address: Optional[str] = None
 
 

@@ -471,13 +471,23 @@ async def create_running_route(
     if req.pitstop_keyword and to_snap:
         try:
             pitstop_places = await map_service.search_places(req.pitstop_keyword, near=req.start)
-            if pitstop_places:
-                nearest = pitstop_places[0]
+            # 의도 존중(백로그 (b), 2026-07-22): 상업 카테고리 제외·적합도 랭킹 통과
+            # 후보를 우선 채택. 통과 0이면 무필터 최근접 폴백(가용성 우선 — pitstop
+            # 없다고 502 내지 않음). Kakao [0] 맹목 채택이 음식점을 뽑던 것 교정.
+            ranked = map_service.rank_places_for_keyword(req.pitstop_keyword, pitstop_places)
+            pick = None
+            if ranked:
+                pick = ranked[0]
+            elif pitstop_places:
+                pick = pitstop_places[0]
+                logger.info("pitstop 적합후보 0 — 무필터 최근접 폴백: %r (kw=%r)",
+                            pick.name, req.pitstop_keyword)
+            if pick is not None:
                 for r, _ck, _rad in to_snap:
                     for wp in r.waypoints:
                         if wp.is_pitstop:
                             wp.name, wp.coordinate, wp.description = (
-                                nearest.name, nearest.coordinate, nearest.address)
+                                pick.name, pick.coordinate, pick.address)
                             break
         except Exception:  # noqa: BLE001 — best-effort
             logger.warning("Pitstop lookup failed for %r; keeping AI suggestion.",
