@@ -86,9 +86,10 @@ async def _capture_save(req, route, user_id=None, target_distance_km=None, gen_m
     _state["last_gen_meta"] = gen_meta
 
 
-async def _capture_failure(req, target_km, t0, snaps, meta, initial_ratio, fail):
+async def _capture_failure(req, target_km, t0, snaps, meta, initial_ratio, fail, pitstop=None):
     """_record_gen_failure 가로채기 — 502 관측을 캡처만(실 gen_failures 오염 회피)."""
-    _state["last_failure"] = {**meta, "snaps": snaps, "fail": fail, "initial_ratio": initial_ratio}
+    _state["last_failure"] = {**meta, "snaps": snaps, "fail": fail,
+                              "initial_ratio": initial_ratio, "pitstop": pitstop}
 
 
 # 모듈 속성 패치 — route_service는 호출 시점에 모듈 속성을 조회하므로 이걸로 충분

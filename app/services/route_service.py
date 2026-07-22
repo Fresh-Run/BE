@@ -241,11 +241,12 @@ def _log_perf_failed(t0: float, perf: dict) -> None:
 
 async def _record_gen_failure(
     req: RouteRequest, target_km: float, t0: float, snaps: list,
-    meta: dict, initial_ratio: float, fail: str,
+    meta: dict, initial_ratio: float, fail: str, pitstop: dict | None = None,
 ) -> None:
     """502 관측 영속(§3 STEP 1, 2026-07-22) — gen_failures. best-effort: 저장 실패가
     502 계약을 못 막는다. 실패 케이스 snap 분포 가시화(survivorship bias 제거)용.
-    프라이버시: 유저 미저장, 시작점은 격자 수준(소수 2자리≈1.1km)만."""
+    프라이버시: 유저 미저장, 시작점은 격자 수준(소수 2자리≈1.1km)만.
+    pitstop: 채택 pitstop 관측(gen_meta와 대칭 — "pitstop이 실패에 관여했나" 진단용)."""
     try:
         record = {"meta": {
             **meta, "snaps": snaps,
@@ -253,7 +254,7 @@ async def _record_gen_failure(
             "initial_ratio": round(initial_ratio, 3),
             "one_way": req.end is not None, "target_km": target_km,
             "grid_lat": round(req.start.lat, 2), "grid_lng": round(req.start.lng, 2),
-            "fail": fail,
+            "fail": fail, "pitstop": pitstop,
         }}
         supabase = get_supabase_admin()
         await asyncio.to_thread(
@@ -467,7 +468,11 @@ async def create_running_route(
         leg_budget += legs
     _perf["tmap_legs"] = leg_budget
 
-    # pitstop 스냅 (키워드 있으면) — 첫 성공 결과를 스냅 대상 전부에 재사용
+    # pitstop 스냅 (키워드 있으면) — 첫 성공 결과를 스냅 대상 전부에 재사용.
+    # pitstop_obs: 관측 대칭(2026-07-22) — 채택 name·category_code + 필터 축소 수치를
+    # gen_meta(성공)·gen_failures(실패) 양쪽에 기록해 "pitstop이 실패에 관여했나"를
+    # 데이터로 즉답. 키워드 없으면 None(키 미기록).
+    pitstop_obs: dict | None = None
     if req.pitstop_keyword and to_snap:
         try:
             pitstop_places = await map_service.search_places(req.pitstop_keyword, near=req.start)
@@ -482,6 +487,13 @@ async def create_running_route(
                 pick = pitstop_places[0]
                 logger.info("pitstop 적합후보 0 — 무필터 최근접 폴백: %r (kw=%r)",
                             pick.name, req.pitstop_keyword)
+            pitstop_obs = {
+                "kw": req.pitstop_keyword,
+                "name": pick.name if pick else None,
+                "cat": pick.category_code if pick else None,
+                "raw_n": len(pitstop_places), "ranked_n": len(ranked),
+                "fallback": bool(pick and not ranked),  # 무필터 최근접 폴백 여부
+            }
             if pick is not None:
                 for r, _ck, _rad in to_snap:
                     for wp in r.waypoints:
@@ -492,6 +504,7 @@ async def create_running_route(
         except Exception:  # noqa: BLE001 — best-effort
             logger.warning("Pitstop lookup failed for %r; keeping AI suggestion.",
                            req.pitstop_keyword, exc_info=True)
+            pitstop_obs = {"kw": req.pitstop_keyword, "error": True}
 
     # 4) 통과분 전부 병렬 스냅 (T-map). LegNotRoutable(강 위)→폐기, 장애→스킵.
     async def _snap(r: RouteResponse):
@@ -571,7 +584,7 @@ async def create_running_route(
         else:
             _log_perf_failed(_t0, _perf)
             await _record_gen_failure(req, target_km, _t0, snaps, _meta,
-                                      initial_ratio, "band_cap_zero")
+                                      initial_ratio, "band_cap_zero", pitstop=pitstop_obs)
             raise RouteGenerationFailed()  # 밴드·캡 서빙 후보 0 — 정직한 502
 
     logger.info(
@@ -608,7 +621,8 @@ async def create_running_route(
                 "one_way": req.end is not None,
                 "snaps": snaps,  # 스냅된 후보 전부(v2.4 → v2.7 풀 표본)
                 "elapsed_s": round(_total, 1),  # 총 소요(v2.5)
-                "initial_ratio": round(initial_ratio, 3)}  # 초기 조준값(v2.6 §4)
+                "initial_ratio": round(initial_ratio, 3),  # 초기 조준값(v2.6 §4)
+                "pitstop": pitstop_obs}  # 채택 pitstop 관측(2026-07-22, gen_failures와 대칭)
 
     # Step 4: persist the generated route to Supabase (best-effort).
     await _save_route(req, best, user_id, target_distance_km=target_km, gen_meta=gen_meta)
