@@ -114,6 +114,24 @@ def run_tests():
     assert set(p.name for p in r) == {"모래성공원", "청라호수공원"}, "둘 다 유지"
     ok("start/target 없으면 위치밴드 비활성(하위호환)")
 
+    # ── 대표성 tiebreak (2026-07-22 (나)) — 밴드 내에서만 Kakao accuracy 순위 우선 ──
+    BIG   = at("청라호수공원", 0.00888)  # ~986m, 밴드 내, accuracy 상위(리스트 먼저)
+    SMALL = at("초록공원",   0.00683)   # ~759m, 밴드 내, 더 가까움, accuracy 하위(뒤)
+
+    print("\n[11. 대표성: 밴드 내 accuracy #1(대공원 986m) > 근접(초록 759m)]")
+    # 리스트 순서 = Kakao accuracy 순 → 청라호수공원(#0) 먼저, 초록공원(#1) 뒤
+    r = rank_places_for_keyword("공원", [BIG, SMALL], start=ST, target_km=5.0)
+    assert r[0].name == "청라호수공원", f"밴드 내 대표성(accuracy #1)이 근접 이김, got {r[0].name}"
+    ok("밴드 내 근접(초록 759m)보다 accuracy 상위 대공원(청라호수공원) 채택")
+
+    print("\n[12. C: 밴드 밖은 대표성 무시·거리 유지 — 근접이 이김]")
+    # 둘 다 밴드 밖(84m·200m), accuracy 순서 무관하게 최근접 채택(거리 tiebreak)
+    OUT_FAR  = at("먼소공원", 0.0018)    # ~200m (밴드 밖), 리스트 먼저(accuracy 상위)
+    OUT_NEAR = at("코앞공원", 0.00076)   # ~84m (밴드 밖), 뒤
+    r = rank_places_for_keyword("공원", [OUT_FAR, OUT_NEAR], start=ST, target_km=5.0)
+    assert r[0].name == "코앞공원", f"밴드 밖은 거리 tiebreak(최근접), got {r[0].name}"
+    ok("밴드 밖은 accuracy 무시·최근접 유지(오너 C — 대표성은 밴드 내에서만)")
+
     print("\n" + "=" * 50 + "\n  ALL TESTS PASSED\n" + "=" * 50)
 
 

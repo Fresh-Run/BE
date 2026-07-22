@@ -186,8 +186,10 @@ def rank_places_for_keyword(
 
     - unknown 의도: 원본(거리순) 그대로 — 현행 동작 보존.
     - commercial 의도: 그 카테고리 코드만 남김(거리순 유지).
-    - landmark 의도: 상업 카테고리 제외 후 [적합도 desc, **위치밴드 desc**, 시작거리 asc]
-      안정 정렬. 위치밴드는 루프 자연 지점(핀치 회피) 우대 — start·target 있을 때만.
+    - landmark 의도: 상업 카테고리 제외 후 [적합도 desc, **위치밴드 desc**, **대표성**,
+      시작거리 asc] 안정 정렬. **대표성 = Kakao accuracy 순위**(places는 accuracy 정렬로
+      들어옴 → 원 인덱스가 순위, 작을수록 대표). ★밴드 내에서만 대표성 tiebreak(오너 C) —
+      밴드 밖은 기존 거리순. 청라 실측: accuracy가 청라호수공원을 밴드 내 #1로 올림.
     """
     intent, param = _keyword_intent(keyword)
     if intent == "unknown":
@@ -198,17 +200,20 @@ def rank_places_for_keyword(
     if not kept:
         return []
     has_band = start is not None and target_km is not None
+    acc_rank = {id(p): i for i, p in enumerate(places)}  # accuracy 정렬 원 순위
 
     def _key(p: Place):
         adeq = _adequacy(p.name, param)
         if has_band:
             d = _haversine_m(start.lat, start.lng,
                              p.coordinate.lat, p.coordinate.lng) / 1000.0
-            in_band = 1 if _in_position_band(start, p, target_km) else 0
+            in_band = _in_position_band(start, p, target_km)
         else:
-            d, in_band = 0.0, 0
-        # 적합도 우선(실제 공원>상호차용) → 위치밴드(루프 자연 지점) → 시작거리 근접
-        return (-adeq, -in_band, d)
+            d, in_band = 0.0, False
+        # 적합도 → 위치밴드 → (밴드 내면 accuracy 순위=대표성, 밴드 밖이면 거리 상수)
+        # → 최종 거리. 밴드 내에서만 대표성이 거리를 이긴다(오너 C).
+        rep = acc_rank[id(p)] if in_band else 10 ** 9
+        return (-adeq, -int(in_band), rep, d)
 
     return sorted(kept, key=_key)
 

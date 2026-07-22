@@ -518,6 +518,8 @@ async def create_running_route(
                 logger.info("pitstop 적합후보 0 — 무필터 최근접 폴백: %r (kw=%r)",
                             pick.name, req.pitstop_keyword)
             in_band = bool(pick and map_service._in_position_band(req.start, pick, target_km))
+            # 채택 pitstop의 Kakao accuracy 순위(대표성 tiebreak 효과 자동 검증, 오너 E).
+            acc_rank = pitstop_places.index(pick) if pick in pitstop_places else None
             pitstop_obs = {
                 "kw": req.pitstop_keyword,
                 "name": pick.name if pick else None,
@@ -525,6 +527,7 @@ async def create_running_route(
                 "raw_n": len(pitstop_places), "ranked_n": len(ranked),
                 "fallback": bool(pick and not ranked),  # 무필터 최근접 폴백 여부
                 "in_band": in_band,  # 위치 밴드(루프 자연 지점) 내 채택 여부
+                "acc_rank": acc_rank,  # Kakao accuracy 순위(대표성, 0=최상위)
             }
             if pick is not None:
                 for r, _ck, _rad in to_snap:
