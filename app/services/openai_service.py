@@ -62,33 +62,46 @@ def _lang_name(lang: str | None) -> str:
     return _LANG_NAME.get(lang or "ko", _LANG_NAME["ko"])
 
 
-def _looks_lang(text: str, lang: str | None) -> bool:
-    """결과 언어가 요청 언어와 대략 일치하는지 (관측용, 느슨함).
+# ── 중립 라벨/제목 (2026-07-22, §3 축 B — 지명 hallucination 근절) ─────────────
+# Gemini가 지명·서사를 못 만들게 스키마에서 뺐으므로, 표시 라벨은 서버가 좌표
+# 순서만으로 중립 생성한다. pitstop 라벨은 route_service의 Kakao 실해석이 덮어씀.
+def _neutral_label(idx: int, n: int, is_one_way: bool, lang: str | None) -> str:
+    """순서 기반 중립 라벨 — 출발/지점 N/복귀(loop)·도착(one-way)."""
+    ko = (lang or "ko") != "en"
+    if idx == 0:
+        return "출발" if ko else "Start"
+    if idx == n - 1:
+        if is_one_way:
+            return "도착" if ko else "Finish"
+        return "복귀" if ko else "Return"
+    return f"지점 {idx}" if ko else f"Point {idx}"
 
-    ko → 한글 음절이 하나라도 있으면 OK. en → 한글이 거의 없으면 OK.
-    """
-    has_hangul = any("가" <= ch <= "힣" for ch in (text or ""))
-    if (lang or "ko") == "en":
-        return not has_hangul
-    return has_hangul
+
+def _neutral_summary(km: float, is_one_way: bool, lang: str | None) -> str:
+    """거리·구성 중심 중립 제목 — 지명 창작 여지 0. 표시명은 프론트 역지오코딩."""
+    ko = (lang or "ko") != "en"
+    if ko:
+        return f"{km}km {'편도' if is_one_way else '순환'} 코스"
+    return f"{km}km {'one-way' if is_one_way else 'loop'} course"
 
 
-# JSON Schema builder — 출력 언어를 description에 주입 (function calling에도 반영).
-def _route_tool(lang: str | None) -> dict:
-    ln = _lang_name(lang)
+def _route_tool(lang: str | None = None) -> dict:
+    """중립 라벨 전환(2026-07-22, §3 축 B): 웨이포인트 name·description·summary를
+    스키마에서 제거 — Gemini가 지명·서사를 **창작하지 못하게 원천 차단**(청라 라벨
+    hallucination 근절). 좌표+순서+is_pitstop만 받고, 표시 라벨·제목은 서버가 중립
+    템플릿으로 채운다(pitstop 이름만 Kakao 실해석). 기하 필드(거리)는 불변."""
     return {
         "type": "function",
         "function": {
             "name": "build_running_route",
             "description": (
-                "Return a structured running route for a runner in South Korea, "
-                "including ordered waypoints and an optional pitstop."
+                "Return a structured running route for a runner in South Korea as "
+                "ordered waypoint COORDINATES only (no names or descriptions — the "
+                "server assigns display labels). Mark any pitstop with is_pitstop=true."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "summary": {"type": "string",
-                                "description": f"코스 한 줄 설명 (반드시 {ln}로)."},
                     "total_distance_km": {
                         "type": "number",
                         "description": "Estimated total distance of the route in km.",
@@ -102,8 +115,6 @@ def _route_tool(lang: str | None) -> dict:
                         "items": {
                             "type": "object",
                             "properties": {
-                                "name": {"type": "string",
-                                         "description": f"경유지 이름 (반드시 {ln}로)."},
                                 "coordinate": {
                                     "type": "object",
                                     "properties": {
@@ -113,14 +124,12 @@ def _route_tool(lang: str | None) -> dict:
                                     "required": ["lat", "lng"],
                                 },
                                 "is_pitstop": {"type": "boolean"},
-                                "description": {"type": "string",
-                                                "description": f"이 지점 설명 (반드시 {ln}로)."},
                             },
-                            "required": ["name", "coordinate", "is_pitstop"],
+                            "required": ["coordinate", "is_pitstop"],
                         },
                     },
                 },
-                "required": ["summary", "total_distance_km", "waypoints"],
+                "required": ["total_distance_km", "waypoints"],
             },
         },
     }
@@ -316,7 +325,6 @@ async def generate_route(
     Returns:
         A validated RouteResponse parsed from the model's tool call.
     """
-    ln = _lang_name(lang)
     messages = [
         {
             "role": "system",
@@ -324,9 +332,10 @@ async def generate_route(
                 "You are a local running coach in South Korea. You design safe, "
                 "runnable routes (riversides, parks, sidewalks) and always respond "
                 "by calling the build_running_route function. "
-                f"IMPORTANT: Write ALL human-readable text in {ln} — the summary, "
-                f"every waypoint name, and every waypoint description MUST be in "
-                f"{ln}, regardless of the region."
+                "Return ordered waypoint COORDINATES only — do NOT invent place "
+                "names, descriptions, or a title. The server assigns neutral display "
+                "labels and resolves any pitstop name from the map provider. Focus "
+                "entirely on realistic coordinates and the required geometry."
             ),
         },
         {"role": "user", "content": _build_prompt(
@@ -351,12 +360,18 @@ async def generate_route(
         raise ValueError("Model did not return a tool call for build_running_route.")
 
     arguments = _loads_tool_args(tool_calls[0].function.arguments)
+    # 중립 라벨 주입(§3 축 B): Gemini는 이제 좌표만 주므로 서버가 name·summary를
+    # 채운다. RouteResponse.name/summary는 required라 validate 전에 주입 필수.
+    # 표시 라벨·제목은 서버 중립 템플릿, pitstop 이름은 route_service의 Kakao가 덮어씀.
+    is_one_way = end is not None
+    wps = arguments.get("waypoints") or []
+    for i, w in enumerate(wps):
+        w["name"] = _neutral_label(i, len(wps), is_one_way, lang)
+        w.pop("description", None)  # 서사 필드 방어 제거(스키마에서 뺐으나 만약 오면)
+    arguments["summary"] = _neutral_summary(
+        arguments.get("total_distance_km") or target_distance_km, is_one_way, lang)
     # Validate/coerce the model output against our Pydantic schema.
-    result = RouteResponse.model_validate(arguments)
-    # 후처리 안전망(관측용): 결과 언어가 요청 언어와 다르면 로그 경고 — 거부 안 함.
-    if not _looks_lang(result.summary, lang):
-        logger.warning("코스 요약 언어가 요청(%s)과 다를 수 있음: %r", lang, result.summary[:60])
-    return result
+    return RouteResponse.model_validate(arguments)
 
 
 # ── AI 오디오 코치 ─────────────────────────────────────────────────────────────

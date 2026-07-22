@@ -534,6 +534,10 @@ async def create_running_route(
     )
     # 일방통행 플래그(리포트 D) — 생성 응답에도 노출(_save_route의 DB 저장과 동일 기준)
     best.is_one_way = req.end is not None
+    # 중립 제목 최종 확정(§3 축 B, 2026-07-22) — 표시 거리(스냅 후 최종)와 일치하는
+    # 중립 템플릿으로 override. generate_route가 넣은 추정거리 기반 제목을 최종값으로 갱신.
+    best.summary = openai_service._neutral_summary(
+        best.total_distance_km, best.is_one_way, lang)
 
     # 계측 요약 — 병목 분포 관측 (v2.7 배치 풀: pool·snapped·tmap_legs)
     _total = time.perf_counter() - _t0
