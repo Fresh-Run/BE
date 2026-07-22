@@ -57,6 +57,10 @@ _client = AsyncOpenAI(
     # 대기했다. 평균 콜 ~3.2s이므로 8s는 정상 콜 여유 + 스파이크 방어. 타임아웃
     # 콜은 APITimeoutError → route_service의 gather return_exceptions로 그 롤만 실패.
     timeout=8.0,
+    # Gemini 429/5xx 재시도는 **이 SDK 층에서만** 수행(2026-07-22 명시적 일원화).
+    # route_service는 롤 스태거로 429 발생 자체를 줄이되 앱 레벨 재시도는 두지
+    # 않는다(이중 재시도 금지). 기본값 2 유지 — 지수 백오프로 순간 스로틀 흡수.
+    max_retries=2,
 )
 
 # AI 생성 텍스트의 출력 언어 — 유저 settings.lang(ko/en)을 따른다. lang name은

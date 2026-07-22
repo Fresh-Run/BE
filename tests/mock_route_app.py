@@ -9,6 +9,7 @@ test_push_notification의 mock Expo(8001) 선례를 따른 패턴.
 from __future__ import annotations
 
 import asyncio
+import time
 
 import httpx
 import openai
@@ -20,7 +21,7 @@ from app.services import map_service, openai_service, route_service
 
 _state: dict = {"seq": [], "i": 0, "gemini_calls": 0, "chain_targets": [],
                 "gemini_seq": [], "g": 0, "radii": [], "last_gen_meta": None,
-                "gen_delay": 0.0}
+                "gen_delay": 0.0, "call_times": []}
 
 # 기준 기하(d=0.0045)의 체인 길이 ≈ 1.537km — chain_target에 비례 스케일해
 # "순응하는 Gemini"를 모사한다(v2.3 사전 게이트가 기본 시나리오를 안 막게).
@@ -38,6 +39,7 @@ async def _mock_generate_route(**kw) -> RouteResponse:
     factor = float(gseq[my_g]) if my_g < len(gseq) else 1.0
     _state["chain_targets"].append(aim)
     _state["radii"].append(kw.get("radius_km"))
+    _state["call_times"].append(time.monotonic())  # 스태거 관측용(sleep 후 진입 시각)
     # v2.5 지연 주입(예산 게이트 테스트) — factor 확정 후 sleep
     if _state["gen_delay"]:
         await asyncio.sleep(_state["gen_delay"])
@@ -100,6 +102,7 @@ async def set_scenario(req: Request):
     _state["gemini_calls"] = 0
     _state["chain_targets"] = []
     _state["radii"] = []
+    _state["call_times"] = []
     _state["gen_delay"] = float(data.get("gen_delay_s", 0.0))
     # v2.7 배치 풀 오버라이드 — 풀 크기·leg 상한(테스트 케이스 단순화)
     route_service._POOL_SIZE = int(data.get("pool_size", 9))
@@ -109,6 +112,9 @@ async def set_scenario(req: Request):
 
 @app.get("/__mock/stats")
 async def mock_stats():
+    ct = _state["call_times"]
+    spans = [round(b - a, 3) for a, b in zip(ct, ct[1:])]  # 인접 콜 간격(스태거 관측)
     return {"gemini_calls": _state["gemini_calls"], "tmap_calls": _state["i"],
             "chain_targets": _state["chain_targets"], "radii": _state["radii"],
-            "last_gen_meta": _state["last_gen_meta"]}
+            "last_gen_meta": _state["last_gen_meta"],
+            "call_gaps": spans, "call_span": round(ct[-1] - ct[0], 3) if len(ct) > 1 else 0.0}

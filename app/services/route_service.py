@@ -164,6 +164,12 @@ _PRE_GATE_REROLLS = 2  # (v2.7 배치 풀에서 미사용 — attempt 재추첨 
 # 4→다수로 늘려 Gemini 산포를 흡수(현행은 12콜 생성에 스냅 4개뿐이던 낭비 제거).
 # 적응형 폐기(1패스라 attempt 간 피드백 없음 — est_ratio는 초기 조준에만).
 _POOL_SIZE = 9              # 병렬 생성 후보 수(Gemini 9콜 고정)
+# 롤 간 스태거(2026-07-22): 9콜 동시 발사가 Gemini relay 순간 RPM을 튀겨 429
+# 스로틀→일부 롤 실패→후보 부족→502를 유발(E2E 성수 실측: /chat/completions 재시도
+# 3회). roll j를 j×이 값만큼 늦게 발사해 피크를 평탄화(~9RPS→~4RPS). 총 추가 지연
+# (N-1)×0.25≈2s로 20s 예산 무해. ⚠️ Gemini 콜 실패 재시도는 **SDK 층 단일**
+# (openai_service _client.max_retries=2) — 앱은 추가 재시도 없음(이중 재시도 금지).
+_POOL_STAGGER_S = 0.25
 # T-map leg 상한 안전핀(§4.1) — 무료 쿼터(일 1000 leg) 방어. 통과분 스냅 leg
 # 누적이 이 값 넘으면 나머지 후보 미스냅(예산 게이트 성격 백스톱). 오늘 815/1000
 # 도달이 근거. gen_meta.tmap_legs로 실소모 관측.
@@ -372,17 +378,21 @@ async def create_running_route(
         chain_aim_km = max(chain_aim_km, start_end_km * 1.05)  # 체인 물리 하한
     chain_aim_km = round(chain_aim_km, 1)
 
-    # 1) N개 병렬 생성 — 반경 스케줄 순환 분산(좁은~넓은 다양성)
+    # 1) N개 병렬 생성 — 반경 스케줄 순환 분산(좁은~넓은 다양성). 롤 간 스태거로
+    #    Gemini 순간 RPM 피크를 평탄화(429 스로틀 완화, 2026-07-22). 재시도는 SDK 층.
     radii = _pool_radii(target_km, start_end_km, _POOL_SIZE)
-    rolls = [
-        openai_service.generate_route(
+
+    async def _staggered_roll(j: int) -> RouteResponse:
+        if j:
+            await asyncio.sleep(j * _POOL_STAGGER_S)
+        return await openai_service.generate_route(
             target_distance_km=target_km, start=req.start, end=req.end,
             pitstop_keyword=req.pitstop_keyword, notes=req.notes,
             avoid_tags=avoid_tags, prefs=prefs, radius_km=radii[j], lang=lang,
             chain_target_km=chain_aim_km, radius_center=radius_center,
         )
-        for j in range(_POOL_SIZE)
-    ]
+
+    rolls = [_staggered_roll(j) for j in range(_POOL_SIZE)]
     _g = time.perf_counter()
     results = await asyncio.gather(*rolls, return_exceptions=True)
     _perf["gemini_s"] += time.perf_counter() - _g  # 병렬 → wall-clock
