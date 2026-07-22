@@ -18,8 +18,28 @@ from app.core.config import settings
 from app.models.schemas import AiCourseSettings, CoachCue, Coordinate, RouteResponse
 
 import os
+import re
 
 logger = logging.getLogger(__name__)
+
+# Gemini tool_call arguments가 간헐적으로 미이스케이프 제어문자(U+0000~U+001F)를
+# 문자열 안에 담아 표준 json.loads가 "Invalid control character"로 깨진다(2026-07-22
+# E2E 성수 실측: char 18152). 보수적 방어: 정상은 그대로, 제어문자 파싱 실패에만
+# strip 후 1회 재시도. 제어문자 외 진짜 깨진 JSON은 여전히 raise → 후보 탈락(기존 동작).
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f]")
+
+
+def _loads_tool_args(raw: str) -> dict:
+    """모델 tool_call arguments 파싱 (미이스케이프 제어문자 방어).
+
+    구조 whitespace(\\t\\n\\r) 제거는 JSON 무해(토큰은 구두점으로 구분)이고,
+    문자열 내부 리터럴 제어문자(파싱 파괴 원인)만 실제로 사라진다. cleaned도
+    실패하면(문법 자체가 깨짐) 그대로 전파해 상위가 후보를 버린다."""
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        logger.warning("tool_call JSON 제어문자 감지 — strip 후 재파싱 시도")
+        return json.loads(_CONTROL_CHARS.sub("", raw))
 
 # Resolve the base URL: prefer the value loaded from .env via Settings, but if
 # it is empty or still the OpenAI default, fall back to the OPENAI_BASE_URL
@@ -336,7 +356,7 @@ async def generate_route(
     if not tool_calls:
         raise ValueError("Model did not return a tool call for build_running_route.")
 
-    arguments = json.loads(tool_calls[0].function.arguments)
+    arguments = _loads_tool_args(tool_calls[0].function.arguments)
     # Validate/coerce the model output against our Pydantic schema.
     result = RouteResponse.model_validate(arguments)
     # 후처리 안전망(관측용): 결과 언어가 요청 언어와 다르면 로그 경고 — 거부 안 함.
@@ -468,7 +488,7 @@ async def generate_coach_script(
     if not tool_calls:
         raise ValueError("Model did not return a tool call for build_coach_script.")
 
-    arguments = json.loads(tool_calls[0].function.arguments)
+    arguments = _loads_tool_args(tool_calls[0].function.arguments)
     return [CoachCue.model_validate(c) for c in arguments.get("cues", [])]
 
 
@@ -599,4 +619,4 @@ async def generate_monthly_insight(lang: str = "ko", **kwargs) -> dict:
     if not tool_calls:
         raise ValueError("Model did not return a tool call for build_monthly_insight.")
 
-    return json.loads(tool_calls[0].function.arguments)
+    return _loads_tool_args(tool_calls[0].function.arguments)
