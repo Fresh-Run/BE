@@ -37,6 +37,8 @@
 
 - **[§3 처방 ③] 뚝섬·여의도 pool 증량 (9→13) 보류** (관찰 2026-07-22, STEP3 실측). 두 좌표는 격자 est_ratio로 중심은 잡히나 **순수 산포 σ가 큼**(뚝섬 σ1.53·여의도 σ1.25, 서빙 8/10). 격자/밴드로 안 잡히고 pool 표본↑만 hit율 개선. **보류 근거**: 현 서빙 8/10에 missed는 배너로 정직 표시(베타 수용 가능), pool +4콜은 **전 생성 비용 +44%**인데 이득은 이 두 좌표 hit율뿐 — 비용 비대칭. **트리거: 베타 실사용 gen_meta에서 고σ 격자 유저의 미스율/불만이 실제 문제로 확인될 때.** 그때 후보로 **격자별 pool**(고σ 격자만 증량 — `_GRID_RATIOS`에 pool 필드 추가) 검토(지금은 발명 금지). 저팽창 격자(목동·강남)는 σ 낮아 격자 보정만으로 충분(hit 9~10/10 실증) — pool 무관.
 
+- **[§3 pitstop overshoot] pitstop이 서빙률을 구조적으로 깎음** (관찰 2026-07-22, 오너 실사용 청라 502×2 계기). **A/B 대조 실측(청라 5km, N=5)**: pitstop 없음 med 5.0·σ0.85·hit5/5 vs pitstop "공원"(모래성공원) med **5.75**·σ**1.36**·hit**3/5**·over 5→19. **pitstop via가 aim에 미반영된 detour를 더해 overshoot** → 캡(6.0) 초과 후보 급증 → 502 꼬리↑(오너 502 2건 snaps 전부 6.5~9.0 캡초과, B arm 분포와 일치). **근인**: 최근접 pitstop(84m 모래성공원)이 시작점 근처 via가 돼 5km 루프 기하 핀치 + est_ratio 1.85가 pitstop 없는 조건 캘리브레이션이라 via detour 미반영. ⚠️ **캠페인 "청라 9/10"은 pitstop 없는 조건**(러너 3종 전부 pitstop 미포함) — pitstop 조건은 미측정이었음. **수정 방향**(구현 대기): (a) pitstop-aware est_ratio 상향 or (b) pitstop 배치를 루프 자연 지점(~target/4)으로 or (c) pitstop 조건 정식 캠페인+성적표 재작성. **트리거: pitstop 사용률 높거나 실사용 502 반복 → pitstop 조건 캠페인으로 실효 팽창비 실측 후 (a)/(b) 착수.** v82 pitstop 관측 필드(gen_meta·gen_failures)가 실사용 pitstop-502를 자동 축적.
+
 - **L8 RSVP 마감 창** — `rsvp` 제출의 read→`_rsvp_open`(시간)→upsert 사이 μs wall-clock 경쟁. count 레이스가 아니라 **시간 경계**라 advisory/FOR UPDATE로 안 닫힘 — DB측 `now()` 조건부 upsert RPC가 필요(별도 기법). 마감 순간 정확히 투표하는 극단 엣지라 실질 무해, 필요 시점에 `rsvp_if_open` RPC로 처리 가능.
 
 - **RLS 드리프트 소급 (2026-07-12, H — 채팅 설계 중 발견·즉시 처리)**: 초기
