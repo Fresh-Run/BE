@@ -322,6 +322,50 @@ def _dist_km(a: Coordinate, b: Coordinate) -> float:
     return 2 * 6371.0 * math.asin(math.sqrt(x))
 
 
+# ── 품질 점수 (진단 E#2·#5, 2026-07-22) — 밴드 내 복수 후보 tiebreak + 관측 ──────
+# 문제: 선택이 거리-단독이라 아파트 지그재그(5.0km)가 깔끔한 공원 루프(4.6km)를
+# 이김. park_coverage(공원/수변 근접 웨이포인트 비율)·zigzag_score(급반전 수)를
+# tiebreak로 추가 — 거리는 최종 순위로 강등.
+def _zigzag_score(route: RouteResponse) -> int:
+    """웨이포인트 체인의 급반전(백트랙) 수 — 지그재그/의미없는 우회 프록시(낮을수록
+    매끈). 연속 3점의 턴이 >120°(방향 반전)면 1. 루프 자연 회전(≤120°)은 미집계."""
+    pts = [wp.coordinate for wp in route.waypoints]
+    if len(pts) < 3:
+        return 0
+    kx = math.cos(math.radians(pts[0].lat))  # 경도 스케일 보정(각도 정확도)
+    cnt = 0
+    for a, b, c in zip(pts, pts[1:], pts[2:]):
+        v1 = ((b.lng - a.lng) * kx, b.lat - a.lat)
+        v2 = ((c.lng - b.lng) * kx, c.lat - b.lat)
+        m1, m2 = math.hypot(*v1), math.hypot(*v2)
+        if m1 == 0 or m2 == 0:
+            continue
+        if (v1[0] * v2[0] + v1[1] * v2[1]) / (m1 * m2) < -0.5:  # 턴 > 120°
+            cnt += 1
+    return cnt
+
+
+def _park_coverage(route: RouteResponse, park_coords: list[Coordinate],
+                   radius_m: float = 300.0) -> float:
+    """중간 웨이포인트 중 공원/수변 300m 내 비율(0~1) — 러닝 적합도 프록시.
+    park_coords 없으면(검색 실패) 0.0 — tiebreak는 zigzag로 자연 강등."""
+    mids = route.waypoints[1:-1] or route.waypoints
+    if not mids or not park_coords:
+        return 0.0
+    near = sum(1 for wp in mids
+               if any(_dist_km(wp.coordinate, pc) * 1000 <= radius_m for pc in park_coords))
+    return round(near / len(mids), 2)
+
+
+def _best_in_band(in_band: list, target_km: float, quals: dict):
+    """밴드 내 후보 선택 — 1개면 그대로(현행), 복수면 tiebreak
+    [park_coverage desc · zigzag_score asc · 거리 근접 asc]. quals: id(route)→(park, zig)."""
+    if len(in_band) == 1:
+        return in_band[0]
+    return min(in_band, key=lambda t: (
+        -quals[id(t[1])][0], quals[id(t[1])][1], abs(t[0] - target_km)))
+
+
 def _radius_schedule(target_km: float, start_end_km: float | None = None) -> list[float]:
     """목표 거리 비례 탐색 반경 시퀀스 (최대 4시도, 상한 8km, 중복 제거).
 
@@ -585,15 +629,31 @@ async def create_running_route(
         logger.warning("T-map 429 쿼터 소진 %d/%d leg-batch — 정직 503 분기 검토",
                        snap_errs["quota"], len(to_snap))
 
-    # 5) 선택: 밴드 최근접 → 캡 내 초과 최선(missed) → [쿼터 지배면 503] → AI추정
-    #    폴백 → 502
+    # 품질 점수(E#2·#5): 시작 인근 공원 1콜(best-effort) → 후보별 park_coverage·
+    # zigzag_score 계산. 실패 시 park_coords=[] → park 0, zigzag만으로 tiebreak.
+    park_coords: list[Coordinate] = []
+    try:
+        _pp = await map_service.search_places(
+            "공원", near=req.start, sort="accuracy",
+            radius_m=max(2000, round(target_km * 500)), limit=15)
+        park_coords = [p.coordinate for p in _pp]
+    except Exception:  # noqa: BLE001 — 품질 점수는 부가, 생성 무영향
+        logger.warning("park_coverage용 공원 검색 실패 — zigzag만으로 tiebreak", exc_info=True)
+    quals = {id(r): (_park_coverage(r, park_coords), _zigzag_score(r)) for _, r in scored}
+    cand_quality = [{"km": round(k, 1), "park": quals[id(r)][0], "zig": quals[id(r)][1]}
+                    for k, r in scored]  # 전 후보분 관측(선택분과 대비)
+
+    # 5) 선택: 밴드 최근접(복수면 품질 tiebreak) → 캡 내 초과 최선(missed) →
+    #    [쿼터 지배면 503] → AI추정 폴백 → 502
     _meta = {"pool_size": len(gen_cands), "snapped_count": len(scored),
-             "tmap_legs": leg_budget, "snap_errors": snap_errs}
+             "tmap_legs": leg_budget, "snap_errors": snap_errs,
+             "cand_quality": cand_quality}
     in_band = [(k, r) for k, r in scored if _within_band(k, target_km)]
     if in_band:
-        _k, best = min(in_band, key=lambda t: abs(t[0] - target_km))
+        _k, best = _best_in_band(in_band, target_km, quals)  # E#2: park>zigzag>거리
         best_meta = {**_meta, "verdict": "hit",
-                     "ratio": round(_k / _waypoint_chain_km(best), 3)}
+                     "ratio": round(_k / _waypoint_chain_km(best), 3),
+                     "park_coverage": quals[id(best)][0], "zigzag_score": quals[id(best)][1]}
     else:
         over = [(k, r) for k, r in scored
                 if target_km < k <= target_km + _OVER_SERVE_CAP_KM + 1e-9]
@@ -601,7 +661,8 @@ async def create_running_route(
             _k, best = min(over, key=lambda t: t[0] - target_km)
             best.target_missed = True
             best_meta = {**_meta, "verdict": "missed",
-                         "ratio": round(_k / _waypoint_chain_km(best), 3)}
+                         "ratio": round(_k / _waypoint_chain_km(best), 3),
+                         "park_coverage": quals[id(best)][0], "zigzag_score": quals[id(best)][1]}
         elif _quota_dominant(snap_errs, len(scored)):
             # T-map 429가 스냅 시도의 과반 — 폴백은 폴리라인 없는 가짜 코스다.
             # nopath로 200 서빙하는 대신 정직하게 503(잠시 후 재시도). 보수적:
@@ -615,7 +676,9 @@ async def create_running_route(
         elif nopath_fallback is not None:
             best = nopath_fallback  # AI추정(polyline 없음) — 진짜 no-path(지오 장애)
             best.target_missed = not _within_band(best.total_distance_km, target_km)
-            best_meta = {**_meta, "verdict": "nopath", "ratio": 0.0}
+            best_meta = {**_meta, "verdict": "nopath", "ratio": 0.0,
+                         "park_coverage": _park_coverage(best, park_coords),
+                         "zigzag_score": _zigzag_score(best)}
         else:
             _log_perf_failed(_t0, _perf)
             await _record_gen_failure(req, target_km, _t0, snaps, _meta,

@@ -92,9 +92,16 @@ async def _capture_failure(req, target_km, t0, snaps, meta, initial_ratio, fail,
                               "initial_ratio": initial_ratio, "pitstop": pitstop}
 
 
+async def _mock_search_places(*a, **k):
+    """search_places stub — mock 테스트가 실 Kakao를 안 치게(park_coverage용 공원
+    검색·pitstop 해석 둘 다). 빈 리스트 → park_coverage 0, tiebreak는 zigzag/거리로."""
+    return []
+
+
 # 모듈 속성 패치 — route_service는 호출 시점에 모듈 속성을 조회하므로 이걸로 충분
 openai_service.generate_route = _mock_generate_route
 map_service.get_pedestrian_route = _mock_pedestrian
+map_service.search_places = _mock_search_places
 route_service._record_gen_failure = _capture_failure
 route_service._save_route = _capture_save
 
