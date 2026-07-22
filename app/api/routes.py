@@ -749,6 +749,21 @@ async def generate_route(
                 "min_target_km": exc.min_target_km,
             },
         )
+    except route_service.LoopTargetTooShort as exc:
+        # 순환 최소거리 게이트(small-ask 2026-07-22) — 물리적으로 불가한 단거리 루프,
+        # 유저 입력 문제라 422(쿼터 미소모·Gemini 0콜). one-way 게이트와 동형 계약.
+        await quota_service.release_ai_generation(reservation_id)
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "loop_target_too_short",
+                "message": (
+                    f"순환 코스는 최소 {exc.min_target_km}km부터 만들 수 있어요 — "
+                    f"목표를 {exc.min_target_km}km 이상으로 설정해 주세요."
+                ),
+                "min_target_km": exc.min_target_km,
+            },
+        )
     except route_service.RouteGenerationUnavailable:
         # T-map 쿼터 소진(429 지배) — 산포 전패(502)와 구분한 정직한 일시 실패.
         # nopath 폴백(폴리라인 없는 가짜 코스 200)을 대체(2026-07-21 오너 승격).

@@ -72,8 +72,25 @@ class OneWayEndTooFar(Exception):
         super().__init__(f"one-way end too far: d={distance_km}, min={min_target_km}")
 
 
+class LoopTargetTooShort(Exception):
+    """순환(원점 복귀) target이 물리적 최소 루프 거리 미만 — 사전 422(one-way 게이트 미러).
+
+    도보 스냅 팽창(1.3~1.9×) + 최소 도로 세그먼트상 순환 코스의 물리적 최소가 ~2.5~3km라
+    그보다 짧은 목표는 어떤 체인으로도 못 만들어 502를 낭비한다(small-ask 실측 2026-07-22:
+    t=1.5 요청의 스냅 9개 전량 ≥2.7km). 생성 진입 전 차단(Gemini 0콜·쿼터 미소모).
+    min_target_km: 순환 최소 목표 거리 힌트."""
+
+    def __init__(self, requested_km: float, min_target_km: float):
+        self.requested_km = requested_km
+        self.min_target_km = min_target_km
+        super().__init__(f"loop target too short: {requested_km} < {min_target_km}")
+
+
 # 일방 실행가능성 상한 — |start−end| ≤ target×0.8 (여유 0.2는 도로 팽창분)
 _ONE_WAY_MAX_DIST_FACTOR = 0.8
+# 순환 물리 최소 하한(small-ask 2026-07-22) — 실측 근거 2.7이나 표본 2건이라 **보수적
+# 2.0 시작**(오탐=가능한데 막음 최소화). gen_failures로 2.0~2.7 실패 관측되면 상향 여지.
+_LOOP_MIN_TARGET_KM = 2.0
 
 
 async def _course_context(user_id: str | None) -> tuple[AiCourseSettings, str]:
@@ -398,6 +415,10 @@ async def create_running_route(
 
     # end-aware(v2.3) + 실행가능성 게이트(v2.3 마감): 직선거리 > target×0.8이면 422
     start_end_km = _dist_km(req.start, req.end) if req.end else None
+    # 순환 최소거리 게이트(small-ask 2026-07-22) — 루프(end 없음) target이 물리 최소 미만이면
+    # 생성 진입 전 422(Gemini 0콜·쿼터 미소모, one-way 게이트 미러).
+    if start_end_km is None and target_km < _LOOP_MIN_TARGET_KM - 1e-9:
+        raise LoopTargetTooShort(round(target_km, 1), _LOOP_MIN_TARGET_KM)
     if (start_end_km is not None
             and start_end_km > target_km * _ONE_WAY_MAX_DIST_FACTOR + 1e-9):
         min_target = math.ceil(start_end_km / _ONE_WAY_MAX_DIST_FACTOR * 10) / 10
