@@ -101,6 +101,34 @@ def run_tests():
     assert len(excl) == 0, "전부 제외 시 빈 선별(→ 상위 폴백 신호)"
     ok(f"각도 bin 선별·polar sort·dead-end/밴드/excluded 제외 (선별 {len(picked)}개)")
 
+    print("\n[5. _is_waterfront + build_anchor_candidates 수변 spur 우선 (목적지 러닝)]")
+    assert A._is_waterfront(mk(0, 0, 473, 0)) is False, "일반 park는 수변 아님"
+    water_by_type = A.Anchor(id=9, name="이름없음", coord=Coordinate(lat=37.53, lng=126.63),
+                             type="water", dist_m=473, sector=0, rep_rank=0, in_band=True, dead_end=True)
+    assert A._is_waterfront(water_by_type), "type=water → 수변"
+    for nm in ("잠원한강공원", "탄천강변", "청라호수공원", "양재천 산책로"):
+        wa = A.Anchor(id=1, name=nm, coord=Coordinate(lat=37.53, lng=126.63), type="park",
+                      dist_m=473, sector=0, rep_rank=0, in_band=True, dead_end=False)
+        assert A._is_waterfront(wa), f"이름 {nm} → 수변"
+    assert not A._is_waterfront(mk(0, 0, 900, 0)), "a0(park·이름 aN) → 수변 아님"
+    ok("type=water · 한강/강변/호수/하천/천 이름 → 수변 · 일반 park 아님")
+
+    # 밴드 내 고대표성 수변(dead_end이어도) + 일반 park들 → 수변 후보가 wf를 꼭짓점 편입
+    WF = A.Anchor(id=100, name="잠원한강공원", coord=Coordinate(lat=37.5330, lng=126.6355),
+                  type="water", dist_m=473, sector=0, rep_rank=0, in_band=True, dead_end=True)
+    parks = [mk(1, 2, 550, 1), mk(2, 4, 520, 0), mk(3, 6, 560, 2)]  # 서로 다른 sector, 소반경
+    cands = A.build_anchor_candidates(ST, [WF] + parks, target_km=5.0, n=2)
+    assert len(cands) >= 1, f"수변 후보 생성, got {len(cands)}"
+    wf_coord = (WF.coord.lat, WF.coord.lng)
+
+    def _has_wf(rt):
+        return any((wp.coordinate.lat, wp.coordinate.lng) == wf_coord for wp in rt.waypoints[1:-1])
+    assert all(_has_wf(c) for c in cands), "모든 수변 후보가 한강 앵커를 꼭짓점으로 편입(dead_end이어도)"
+    # dead_end 수변인데도 편입됐는지 = spur 허용 확인. 일반 select_anchors는 dead_end 제외.
+    plain = A.select_anchors([WF] + parks, target_radius_m=500, k=4, excluded=set())
+    assert WF.id not in {p.id for p in plain}, "일반 선별은 dead_end 수변 제외(대조군)"
+    ok(f"수변 후보 {len(cands)}개 전부 한강 꼭짓점 편입 · 일반 선별은 dead_end 제외(spur 허용 대비)")
+
     print("\n" + "=" * 52 + "\n  ALL TESTS PASSED\n" + "=" * 52)
 
 

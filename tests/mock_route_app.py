@@ -74,9 +74,17 @@ async def _mock_pedestrian(origin, destination, waypoints=None) -> PedestrianRou
         # T-map 429 QUOTA_EXCEEDED (2026-07-21 정직화) → 쿼터 지배면 503 유도
         raise map_service.TmapQuotaExceeded()
     km = float(item["snap_km"])
+    # retrace_m 주입(품질 바닥 테스트) — 동쪽으로 나갔다 같은 점들로 복귀 = 긴 왕복
+    # 회랑(longest_retrace ~ retrace_m). 미지정이면 2점 직선(retrace 0, 기존 동작).
+    retrace_m = item.get("retrace_m")
+    if retrace_m:
+        n = max(2, int(float(retrace_m) / 88.0))  # 0.001 lng ≈ 88m
+        out_pts = [Coordinate(lat=origin.lat, lng=origin.lng + 0.001 * j) for j in range(n)]
+        path = out_pts + out_pts[::-1][1:]
+    else:
+        path = [origin, destination]
     return PedestrianRoute(
-        provider="tmap", distance_m=km * 1000.0, duration_s=km * 360.0,
-        path=[origin, destination],
+        provider="tmap", distance_m=km * 1000.0, duration_s=km * 360.0, path=path,
     )
 
 

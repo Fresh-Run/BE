@@ -163,34 +163,58 @@ _POOL_ROLLS = [(3, 0.10), (3, 0.12), (3, 0.14), (3, 0.16),
 # 혼합 풀 기여자용 앵커 롤 config(§9 부활) — Gemini 0콜 규칙 기반. K3/K4 믹스,
 # factor 재보정(slice2.5: 5km는 r≈540~610m=0.10~0.13). variant로 다양화.
 _CANDIDATE_CONFIGS = [(4, 0.11), (3, 0.13), (4, 0.12), (3, 0.11), (4, 0.13)]
+# 수변 spur 후보(01:43 부검, "목적지 러닝") — 고대표성 한강/수변 앵커를 꼭짓점 편입 +
+# 나머지 앵커 링을 작게(spur 왕복 거리를 반경 축소로 보정 → 밴드 진입). "좋은 왕복" 공식화.
+# 한강·강변·호수 + 서울 하천명(양재천·탄천·중랑천·안양천…): "…천" 뒤 경계/산책/공원.
+# "천호"처럼 천이 접두면 앞 글자 없어 미스매치(오탐 회피).
+_WATERFRONT = re.compile(r"한강|강변|수변|호수|하천|천변|[가-힣]천(?=\s|$|산책|둔치|공원|길)")
+_WATER_RING_FACTORS = [0.06, 0.10]  # 나머지 앵커 소반경(작은 링 + 수변 spur = ~target)
+
+
+def _is_waterfront(a: Anchor) -> bool:
+    return a.type == "water" or bool(_WATERFRONT.search(a.name))
+
+
+def _make_anchor_route(start, picked, target_km, needs_pitstop):
+    from app.services.openai_service import _neutral_label
+    ntot = len(picked) + 2
+    ps = len(picked) // 2 if needs_pitstop else -1
+    mids = [Waypoint(name=_neutral_label(j + 1, ntot, False, "ko"),
+                     coordinate=a.coord, is_pitstop=(j == ps)) for j, a in enumerate(picked)]
+    wps = ([Waypoint(name=_neutral_label(0, ntot, False, "ko"), coordinate=start, is_pitstop=False)]
+           + mids
+           + [Waypoint(name=_neutral_label(ntot - 1, ntot, False, "ko"), coordinate=start, is_pitstop=False)])
+    return RouteResponse(summary="x", total_distance_km=round(target_km, 1),
+                         waypoints=wps, polyline=None)
 
 
 def build_anchor_candidates(start: Coordinate, anchors: list[Anchor], target_km: float,
                             n: int, needs_pitstop: bool = False) -> list[RouteResponse]:
     """혼합 풀 기여자 — 미스냅 앵커 체인 n개(각도 정렬, 중립 라벨). route_service가
-    v87 롤과 함께 공통 스냅·선택. needs_pitstop이면 앵커 1개를 is_pitstop=True 슬롯으로
-    (기존 pitstop 해석이 대표성 place로 대체 — 동일 랭킹 재사용). 스냅은 상위가 수행."""
-    from app.services.openai_service import _neutral_label
+    v87 롤과 함께 공통 스냅·선택. **수변 spur 후보 우선**(한강 등 고대표성 수변을 꼭짓점
+    편입, 나머지 링 축소로 밴드 보정 — 01:43 한강 미접근 부검). needs_pitstop이면 앵커
+    1개를 is_pitstop 슬롯으로(기존 대표성 해석이 대체). 스냅은 상위가 수행."""
     vertex_max = target_km * 1000 * _VERTEX_MAX_FACTOR
     out: list[RouteResponse] = []
-    for i, (k, f) in enumerate(_CANDIDATE_CONFIGS[:max(0, n)]):
-        picked = select_anchors(anchors, target_km * 1000 * f, k, set(),
-                                variant=i, vertex_max_m=vertex_max)
+    # 1) 수변 spur 후보 — 밴드 내 고대표성(rep≤3) 수변 앵커 있으면 우선 생성
+    water = sorted([a for a in anchors if a.in_band and _is_waterfront(a) and a.rep_rank <= 3],
+                   key=lambda a: a.rep_rank)
+    if water:
+        wf = water[0]
+        non_water = [a for a in anchors if a.id != wf.id and not _is_waterfront(a)]
+        for i, f in enumerate(_WATER_RING_FACTORS[:min(2, n)]):
+            others = select_anchors(non_water, target_km * 1000 * f, 2, set(), i, vertex_max)
+            if not others:
+                continue
+            combined = sorted(others + [wf], key=lambda a: a.sector)  # 각도 정렬(수변 포함)
+            out.append(_make_anchor_route(start, combined, target_km, needs_pitstop))
+    # 2) 나머지는 일반 앵커 롤(다양성)
+    for i, (k, f) in enumerate(_CANDIDATE_CONFIGS[:max(0, n - len(out))]):
+        picked = select_anchors(anchors, target_km * 1000 * f, k, set(), i, vertex_max)
         if len(picked) < 3:
             continue
-        # pitstop 슬롯: 밴드 중간 대표성 좋은 앵커 1개를 is_pitstop으로(상위 해석이 대체)
-        ps_idx = len(picked) // 2 if needs_pitstop else -1
-        mids = [Waypoint(name=_neutral_label(j + 1, len(picked) + 2, False, "ko"),
-                         coordinate=a.coord, is_pitstop=(j == ps_idx))
-                for j, a in enumerate(picked)]
-        wps = ([Waypoint(name=_neutral_label(0, len(picked) + 2, False, "ko"),
-                         coordinate=start, is_pitstop=False)]
-               + mids
-               + [Waypoint(name=_neutral_label(len(picked) + 1, len(picked) + 2, False, "ko"),
-                           coordinate=start, is_pitstop=False)])
-        out.append(RouteResponse(summary="x", total_distance_km=round(target_km, 1),
-                                 waypoints=wps, polyline=None))
-    return out
+        out.append(_make_anchor_route(start, picked, target_km, needs_pitstop))
+    return out[:n]
 
 
 async def build_anchor_pool(start: Coordinate, anchors: list[Anchor], target_km: float,

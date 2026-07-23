@@ -172,6 +172,10 @@ _OVER_SERVE_CAP_KM = 1.0
 # longest_retrace_m > 이 값이면 "긴 팔 코스"라 서빙서 제외(engine 불문). 제외로 0이면
 # band_cap_zero → 재추첨/정직 502. 억지 star 서빙 근본 차단.
 _OVER_SERVE_MAX_SPUR_M = 800.0
+# 단독 후보 품질 바닥(01:43 부검) — 밴드 내 후보가 1개뿐이고 그것이 park==0 &
+# longest_retrace>이 값이면 무경쟁 서빙 금지 → 재추첨 유도. 못 살리면 원 후보 최후
+# 서빙(502 벽 금지 — 서빙률 비퇴행). 무의미 장축 왕복 star 무경쟁 서빙 차단.
+_FLOOR_SPUR_M = 1200.0
 # v2.6 §2 재추첨 학습 완화 — compliance(3롤 median/aim)를 ±10%로 clamp.
 # 무제한이면 산포 큰 지역(사용자 좌표 ratio 1.1~2.9)에서 est_ratio가 진동해
 # aim이 3.2↔2.4로 널뛰며 미달·초과 반복(E2E 실측 역효과). ±10%로 방향만 반영.
@@ -848,10 +852,35 @@ async def create_running_route(
     in_band = [(k, r) for k, r in scored if _within_band(k, target_km)]
     if in_band:
         _k, best = _best_in_band(in_band, target_km, quals)  # E#2: park>zigzag>거리
-        best_meta = {**_meta, "verdict": "hit",
-                     "ratio": round(_k / _waypoint_chain_km(best), 3),
-                     "park_coverage": quals[id(best)][0], "zigzag_score": quals[id(best)][1],
-                     "retrace": quals[id(best)][2], "max_gap_m": _polyline_max_gap_m(best.polyline)}
+        # 단독 후보 품질 바닥(01:43 부검) — 유일 밴드 내가 [park==0 & longest>1200]인
+        # 무의미 star면 무경쟁 서빙 금지 → 재추첨 유도. 재추첨도 못 살리면 원 후보 최후
+        # 서빙(502 벽 금지 — 서빙률 비퇴행). floor_triggered 기록.
+        _floor = None
+        if (len(in_band) == 1 and quals[id(best)][0] == 0 and not any(snap_errs.values())
+                and _spur_metrics(best.polyline)["longest_retrace_m"] > _FLOOR_SPUR_M):
+            _v87f = [(k, r) for k, r in scored
+                     if engine_of.get(id(r)) == "v87" and _waypoint_chain_km(r) > 0]
+            if _v87f:
+                _rr, _floor = await _adaptive_redraw(
+                    req, target_km,
+                    statistics.median([k / _waypoint_chain_km(r) for k, r in _v87f]),
+                    avoid_tags, prefs, lang, radius_center, start_end_km)
+                if _floor and _floor.get("redraw_hit"):
+                    best, _k = _rr, _rr.total_distance_km  # 재추첨 구제
+        if _floor and _floor.get("redraw_hit"):
+            _rv = _floor.get("redraw_verdict", "hit")
+            best.target_missed = (_rv == "missed")
+            best_meta = {**_meta, "verdict": "hit_redraw" if _rv == "hit" else "missed_redraw",
+                         "floor_triggered": True, "redraw": _floor,
+                         "ratio": round(best.total_distance_km / _waypoint_chain_km(best), 3),
+                         "park_coverage": _park_coverage(best, park_coords),
+                         "zigzag_score": _zigzag_score(best), "retrace": _polyline_retrace(best.polyline),
+                         "max_gap_m": _polyline_max_gap_m(best.polyline)}
+        else:
+            best_meta = {**_meta, "verdict": "hit", "floor_triggered": _floor is not None,
+                         "ratio": round(_k / _waypoint_chain_km(best), 3),
+                         "park_coverage": quals[id(best)][0], "zigzag_score": quals[id(best)][1],
+                         "retrace": quals[id(best)][2], "max_gap_m": _polyline_max_gap_m(best.polyline)}
     else:
         over = _serveable_over_cap(scored, target_km, engine_of)
         if over:

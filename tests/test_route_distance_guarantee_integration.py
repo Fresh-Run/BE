@@ -259,6 +259,28 @@ def run_tests():
         assert _gr(_C(lat=37.2, lng=127.0)) is None, "미등록은 실측 단독(블렌드 없음)"
         ok("등록 격자 median(measured,grid,grid) 블렌드 · 미등록 실측 단독")
 
+        step("11f/g. 단독 후보 품질 바닥(01:43 부검) — park0 & longest>1200 무경쟁 서빙 금지")
+        # 유일 밴드 내가 park0 장축 왕복 star(retrace 1600m). park_coverage는 mock의
+        # 빈 search_places로 0 고정. 8 언더 + 1 in-band star → len(in_band)==1.
+        # 11f: 재추첨이 clean in-band(5.0, retrace 없음) 생성 → 구제 → hit_redraw + floor_triggered
+        scenario(c, [{"snap_km": 4.0}] * 8 + [{"snap_km": 5.0, "retrace_m": 1600}]
+                 + [{"snap_km": 5.0}], pool_size=9)
+        r = gen(c, tok, target=5.0)
+        assert r.status_code == 200, f"floor 재추첨 구제 서빙 기대, got {r.status_code} {r.text[:120]}"
+        gm = stats(c)["last_gen_meta"]
+        assert gm.get("floor_triggered") is True, f"품질 바닥 발동 기록, got {gm.get('floor_triggered')}"
+        assert gm["verdict"] == "hit_redraw", f"구제는 hit_redraw, got {gm['verdict']}"
+        assert gm["retrace"] <= 2, f"구제 후보는 clean(장축 star 아님), got retrace {gm['retrace']}"
+        # 11g: 재추첨도 못 살림(전부 언더 4.0) → 원 star 최후 서빙(502 벽 금지·서빙률 비퇴행)
+        scenario(c, [{"snap_km": 4.0}] * 8 + [{"snap_km": 5.0, "retrace_m": 1600}]
+                 + [{"snap_km": 4.0}], pool_size=9)
+        r = gen(c, tok, target=5.0)
+        assert r.status_code == 200, f"floor 최후 서빙 기대(502 금지), got {r.status_code}"
+        gm = stats(c)["last_gen_meta"]
+        assert gm.get("floor_triggered") is True, "재추첨 실패에도 floor 발동 기록"
+        assert gm["verdict"] == "hit", f"최후 서빙은 원 후보(hit), got {gm['verdict']}"
+        ok("품질 바닥: 재추첨 구제→hit_redraw · 구제 실패→원 후보 최후 서빙(502 금지)")
+
         print("\n" + "=" * 50 + "\n  MOCK 케이스 PASSED — E2E는 메인 서버로(내일 T-map 리셋 후)\n" + "=" * 50)
 
         # ── E2E는 T-map 쿼터(815/1000) 제약으로 오늘 실호출 금지 ──────────────
