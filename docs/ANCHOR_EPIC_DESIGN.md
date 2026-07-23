@@ -196,3 +196,22 @@ build_running_loop(
 **남긴 실배당**: pitstop 대표성·상업 밴드·apt_signal·spur_metrics·선택 tiebreak —
 전부 v87에 이식 완료(§8.17). 에픽은 엔진 교체엔 못 갔으나 **관측·품질 레버를 다수
 프로덕션에 남김**.
+
+## 10. 혼합 풀 하방 보호 교훈 — 초과 폴백 star 회귀 (2026-07-24)
+
+**00:51 신사 star 회귀**(v94 앵커 라이브 후 첫): 앵커 6.0km star(longest_retrace 1531·
+팔 5개)가 **초과 서빙 폴백(missed)에서 채택**. 원인: 초과 폴백 `over = target<k≤target+1.0`이
+**거리-최근접만** 보고 engine·spur 무게이트 — v87 후보 전부 밴드 미달일 때 초과 캡 내
+유일 후보인 star 앵커가 서빙됨.
+
+**핵심 교훈**: **혼합 풀의 하방 보호("앵커=밴드 내 park 경쟁, v87=거리 하방")는 밴드 내
+경쟁만이 아니라 모든 서빙 경로(초과 폴백 포함)에서 성립해야 한다.** 원설계는 밴드 내
+tiebreak만 고려했고 초과 폴백을 앵커가 탈 수 있는 사각을 놓쳤다.
+
+**수정(배포 v95, `_serveable_over_cap`)**:
+- 초과 폴백에서 **engine=anchor 제외**(앵커는 밴드 내 park 경쟁만 — 원설계 복원).
+- 초과 폴백 **spur 게이트 longest_retrace_m ≤ 800**(engine 불문 긴 팔 차단 — v87 star도).
+- 빈 결과면 band_cap_zero → 재추첨/정직 502. 재추첨 all_under 판정은 **v87 후보 기준**
+  (앵커 초과 star가 v87 재추첨을 막지 않게).
+- 스모크(신사 ×3): star 0·서빙 3/3·engine=anchor·longest 282(깔끔). 앵커는 밴드 내
+  여전히 채택, star만 차단.
