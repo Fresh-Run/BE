@@ -234,13 +234,30 @@ def run_tests():
         gm = stats(c)["last_gen_meta"] if gen(c, tok, target=5.0).status_code == 200 else {}
         assert gm.get("verdict") == "missed" and "redraw" not in gm, \
             f"overshoot는 missed·재추첨 미발동, got {gm.get('verdict')}"
-        # 11c: 초기·재추첨 둘 다 언더슈트(4.0) → 502(재추첨 시도·기록됨)
+        # 11c: 재추첨 결과가 over-cap(5.7, 캡 내)만 → missed_redraw 서빙 (01:16 미노스 재현
+        # — 5.7을 버려 502하던 것 수정). 초기 9 언더슈트 + 재추첨 5.7.
+        scenario(c, [{"snap_km": 4.0}] * 9 + [{"snap_km": 5.7}], pool_size=9)
+        r = gen(c, tok, target=5.0)
+        assert r.status_code == 200, f"재추첨 over-cap missed 서빙 기대, got {r.status_code}"
+        assert r.json()["target_missed"] is True, "over-cap 재추첨은 target_missed"
+        gm = stats(c)["last_gen_meta"]
+        assert gm["verdict"] == "missed_redraw" and gm["redraw"]["redraw_verdict"] == "missed", gm
+        # 11d: 초기·재추첨 둘 다 언더슈트(4.0) → 502(재추첨 시도·기록됨)
         scenario(c, [{"snap_km": 4.0}], pool_size=9)
         r = gen(c, tok, target=5.0)
         assert r.status_code == 502, f"재추첨도 미달 → 502, got {r.status_code}"
         lf = stats(c)["last_failure"]
         assert lf["fail"] == "band_cap_zero" and (lf.get("redraw") or {}).get("redraw_hit") is False, lf
-        ok("언더슈트→재조준 재추첨 서빙(hit_redraw) · overshoot 미발동(missed) · 재추첨도 미달 502(기록)")
+        ok("재추첨: in-band→hit_redraw · over-cap→missed_redraw(01:16 수정) · 전멸→502")
+
+        step("11e. 재추첨 measured_ratio 블렌드 — 등록 격자면 grid 2:1 가중(01:16 노이즈 완화)")
+        from app.services.route_service import _grid_ratio as _gr
+        import statistics as _st
+        from app.models.schemas import Coordinate as _C
+        assert _gr(_C(lat=37.5163, lng=127.0203)) == 1.45, "신사/논현 격자 1.45"
+        assert _st.median([1.32, 1.45, 1.45]) == 1.45, "grid 2:1 가중 → 1.45(노이즈 1.32 흡수)"
+        assert _gr(_C(lat=37.2, lng=127.0)) is None, "미등록은 실측 단독(블렌드 없음)"
+        ok("등록 격자 median(measured,grid,grid) 블렌드 · 미등록 실측 단독")
 
         print("\n" + "=" * 50 + "\n  MOCK 케이스 PASSED — E2E는 메인 서버로(내일 T-map 리셋 후)\n" + "=" * 50)
 

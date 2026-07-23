@@ -506,10 +506,14 @@ def _filter_conflicting_avoid_tags(
 async def _adaptive_redraw(req, target_km, measured_ratio, avoid_tags, prefs, lang,
                            radius_center, start_end_km):
     """band_cap_zero 언더슈트 지배 시 1회 적응 재추첨 — 실측 ratio로 chain aim 상향,
-    축소 풀(5롤) 재생성·스냅. 밴드 적중분만 (route, meta) 반환, 없으면 (None, meta).
-    미등록 격자의 자가 복구(default 1.6이 저팽창 격자서 undershoot→502하던 것).
+    축소 풀(5롤) 재생성·스냅. **in-band 우선, 없으면 over-cap missed(spur 게이트)도 서빙**
+    (01:16 미노스: 재추첨 5.7이 missed로 나갔어야 할 것을 버려 502하던 것 수정).
     ⚠️ 재귀 없음(1회 한정) — 상한 5롤·leg 상한 재사용."""
-    aim = (target_km + openai_service._BAND_AIM_KM) / measured_ratio
+    # measured_ratio 블렌드(01:16 부검): 소수 불운 롤에서 나온 실측이 노이즈(1.32→aim
+    # 과대→오버슈트). 등록 격자면 grid ratio에 2:1 가중(신뢰), 미등록이면 실측 단독.
+    grid = _grid_ratio(req.start)
+    ratio = statistics.median([measured_ratio, grid, grid]) if grid is not None else measured_ratio
+    aim = (target_km + openai_service._BAND_AIM_KM) / ratio
     if start_end_km is not None:
         aim = max(aim, start_end_km * 1.05)
     aim = round(aim, 1)
@@ -555,10 +559,19 @@ async def _adaptive_redraw(req, target_km, measured_ratio, avoid_tags, prefs, la
         r.total_distance_km = round(raw, 1)
         scored.append((raw, r))
     meta["redraw_snaps"] = [round(k, 1) for k, _ in scored]
+    meta["blended_ratio"] = round(ratio, 3)
     in_band = [(k, r) for k, r in scored if _within_band(k, target_km)]
     if in_band:
         _k, best = min(in_band, key=lambda t: abs(t[0] - target_km))
-        meta["redraw_hit"] = True
+        meta.update({"redraw_hit": True, "redraw_verdict": "hit"})
+        return best, meta
+    # in-band 없으면 over-cap missed(v87·spur 게이트 ≤800) — 메인 흐름과 동일 서빙.
+    # 재추첨은 전부 v87(generate_route)이라 engine 마킹 v87.
+    over = _serveable_over_cap(scored, target_km, {id(r): "v87" for _, r in scored})
+    if over:
+        _k, best = min(over, key=lambda t: t[0] - target_km)
+        best.target_missed = True
+        meta.update({"redraw_hit": True, "redraw_verdict": "missed"})
         return best, meta
     meta["redraw_hit"] = False
     return None, meta
@@ -882,16 +895,19 @@ async def create_running_route(
                         req, target_km, statistics.median(chains), avoid_tags, prefs,
                         lang, radius_center, start_end_km)
             if rd_meta and rd_meta.get("redraw_hit"):
-                best_meta = {**_meta, "verdict": "hit_redraw",
+                # 재추첨 서빙 — in-band면 hit_redraw, over-cap이면 missed_redraw(target_missed).
+                _rv = rd_meta.get("redraw_verdict", "hit")
+                best_meta = {**_meta,
+                             "verdict": "hit_redraw" if _rv == "hit" else "missed_redraw",
                              "ratio": round(best.total_distance_km / _waypoint_chain_km(best), 3),
                              "park_coverage": _park_coverage(best, park_coords),
                              "zigzag_score": _zigzag_score(best),
                              "retrace": _polyline_retrace(best.polyline),
                              "max_gap_m": _polyline_max_gap_m(best.polyline),
                              "redraw": rd_meta}
-                logger.info("적응 재추첨 성공 — measured_ratio=%.3f aim=%.1f km=%.1f",
-                            rd_meta["measured_ratio"], rd_meta["redraw_aim"],
-                            best.total_distance_km)
+                logger.info("적응 재추첨 %s — measured=%.3f blended=%.3f aim=%.1f km=%.1f",
+                            _rv, rd_meta["measured_ratio"], rd_meta.get("blended_ratio", 0),
+                            rd_meta["redraw_aim"], best.total_distance_km)
             else:
                 _log_perf_failed(_t0, _perf)
                 await _record_gen_failure(req, target_km, _t0, snaps,
