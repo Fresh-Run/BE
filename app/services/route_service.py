@@ -357,13 +357,47 @@ def _park_coverage(route: RouteResponse, park_coords: list[Coordinate],
     return round(near / len(mids), 2)
 
 
+# ── 폴리라인 수준 품질 (오너 Phase 1 C, 2026-07-23) — 스냅 기하의 되돌기·갭 검출 ──
+# zigzag_score는 waypoint 6점만 봐 스냅 폴리라인의 되돌기를 못 잡는다(실사례 de78d97c:
+# zigzag 0인데 스냅 경로가 idx27-28↔46-47 되밟기). 스냅 폴리라인(~200점)에서 직접 측정.
+_RETRACE_NEAR_M = 20.0
+
+def _polyline_max_gap_m(polyline: list) -> float:
+    """인접 폴리라인 점 간 최대 갭(m) — T-map 성긴 정점/직선 점프 관측."""
+    if not polyline or len(polyline) < 2:
+        return 0.0
+    return round(max(_dist_km(polyline[i - 1], polyline[i])
+                     for i in range(1, len(polyline))) * 1000, 1)
+
+
+def _polyline_retrace(polyline: list, near_m: float = _RETRACE_NEAR_M) -> int:
+    """되돌기 수 — 나중 세그먼트가 앞 세그먼트를 (근사) 역방향으로 되밟는 구간 수.
+    seg i(p[i]→p[i+1])와 seg j(j>i)에서 p[j]≈p[i+1] & p[j+1]≈p[i]이면 되돌기 1.
+    O(n²)이나 n~200·후보 9라 무해. 낮을수록 깔끔한 루프."""
+    n = len(polyline) if polyline else 0
+    if n < 4:
+        return 0
+    near_km = near_m / 1000.0
+    cnt = 0
+    for i in range(n - 1):
+        ai, bi = polyline[i], polyline[i + 1]
+        for j in range(i + 2, n - 1):
+            if (_dist_km(polyline[j], bi) <= near_km
+                    and _dist_km(polyline[j + 1], ai) <= near_km):
+                cnt += 1
+                break  # 세그먼트당 1회만(중복 카운트 방지)
+    return cnt
+
+
 def _best_in_band(in_band: list, target_km: float, quals: dict):
     """밴드 내 후보 선택 — 1개면 그대로(현행), 복수면 tiebreak
-    [park_coverage desc · zigzag_score asc · 거리 근접 asc]. quals: id(route)→(park, zig)."""
+    [park_coverage desc · zigzag_score asc · retrace asc · 거리 근접 asc].
+    quals: id(route)→(park, zig, retrace). retrace는 스냅 폴리라인 되돌기(Phase 1 C)."""
     if len(in_band) == 1:
         return in_band[0]
     return min(in_band, key=lambda t: (
-        -quals[id(t[1])][0], quals[id(t[1])][1], abs(t[0] - target_km)))
+        -quals[id(t[1])][0], quals[id(t[1])][1], quals[id(t[1])][2],
+        abs(t[0] - target_km)))
 
 
 def _radius_schedule(target_km: float, start_end_km: float | None = None) -> list[float]:
@@ -639,9 +673,16 @@ async def create_running_route(
         park_coords = [p.coordinate for p in _pp]
     except Exception:  # noqa: BLE001 — 품질 점수는 부가, 생성 무영향
         logger.warning("park_coverage용 공원 검색 실패 — zigzag만으로 tiebreak", exc_info=True)
-    quals = {id(r): (_park_coverage(r, park_coords), _zigzag_score(r)) for _, r in scored}
-    cand_quality = [{"km": round(k, 1), "park": quals[id(r)][0], "zig": quals[id(r)][1]}
-                    for k, r in scored]  # 전 후보분 관측(선택분과 대비)
+    # 품질: waypoint 레벨(park·zigzag) + 스냅 폴리라인 레벨(retrace·max_gap, Phase 1 C).
+    # quals에는 tiebreak용 (park, zig, retrace)만; max_gap은 관측 전용(cand_quality).
+    quals: dict = {}
+    cand_quality = []
+    for k, r in scored:
+        park, zig = _park_coverage(r, park_coords), _zigzag_score(r)
+        retrace, max_gap = _polyline_retrace(r.polyline), _polyline_max_gap_m(r.polyline)
+        quals[id(r)] = (park, zig, retrace)
+        cand_quality.append({"km": round(k, 1), "park": park, "zig": zig,
+                             "retrace": retrace, "max_gap_m": max_gap})  # 전 후보분 관측
 
     # 5) 선택: 밴드 최근접(복수면 품질 tiebreak) → 캡 내 초과 최선(missed) →
     #    [쿼터 지배면 503] → AI추정 폴백 → 502
@@ -653,7 +694,8 @@ async def create_running_route(
         _k, best = _best_in_band(in_band, target_km, quals)  # E#2: park>zigzag>거리
         best_meta = {**_meta, "verdict": "hit",
                      "ratio": round(_k / _waypoint_chain_km(best), 3),
-                     "park_coverage": quals[id(best)][0], "zigzag_score": quals[id(best)][1]}
+                     "park_coverage": quals[id(best)][0], "zigzag_score": quals[id(best)][1],
+                     "retrace": quals[id(best)][2], "max_gap_m": _polyline_max_gap_m(best.polyline)}
     else:
         over = [(k, r) for k, r in scored
                 if target_km < k <= target_km + _OVER_SERVE_CAP_KM + 1e-9]
@@ -662,7 +704,8 @@ async def create_running_route(
             best.target_missed = True
             best_meta = {**_meta, "verdict": "missed",
                          "ratio": round(_k / _waypoint_chain_km(best), 3),
-                         "park_coverage": quals[id(best)][0], "zigzag_score": quals[id(best)][1]}
+                         "park_coverage": quals[id(best)][0], "zigzag_score": quals[id(best)][1],
+                         "retrace": quals[id(best)][2], "max_gap_m": _polyline_max_gap_m(best.polyline)}
         elif _quota_dominant(snap_errs, len(scored)):
             # T-map 429가 스냅 시도의 과반 — 폴백은 폴리라인 없는 가짜 코스다.
             # nopath로 200 서빙하는 대신 정직하게 503(잠시 후 재시도). 보수적:
@@ -678,7 +721,9 @@ async def create_running_route(
             best.target_missed = not _within_band(best.total_distance_km, target_km)
             best_meta = {**_meta, "verdict": "nopath", "ratio": 0.0,
                          "park_coverage": _park_coverage(best, park_coords),
-                         "zigzag_score": _zigzag_score(best)}
+                         "zigzag_score": _zigzag_score(best),
+                         "retrace": _polyline_retrace(best.polyline),
+                         "max_gap_m": _polyline_max_gap_m(best.polyline)}
         else:
             _log_perf_failed(_t0, _perf)
             await _record_gen_failure(req, target_km, _t0, snaps, _meta,
