@@ -168,6 +168,10 @@ _MAX_RADIUS_KM = 8.0
 #    "6.3km는 5km 요청의 답이 아니다"(오너). 캡 값 1.0은 판단 플래그.
 _RATIO_CLAMP = (1.1, 2.2)
 _OVER_SERVE_CAP_KM = 1.0
+# 초과 서빙 spur 상한(00:51 신사 star 회귀, 2026-07-24) — over-cap(missed) 후보가
+# longest_retrace_m > 이 값이면 "긴 팔 코스"라 서빙서 제외(engine 불문). 제외로 0이면
+# band_cap_zero → 재추첨/정직 502. 억지 star 서빙 근본 차단.
+_OVER_SERVE_MAX_SPUR_M = 800.0
 # v2.6 §2 재추첨 학습 완화 — compliance(3롤 median/aim)를 ±10%로 clamp.
 # 무제한이면 산포 큰 지역(사용자 좌표 ratio 1.1~2.9)에서 est_ratio가 진동해
 # aim이 3.2↔2.4로 널뛰며 미달·초과 반복(E2E 실측 역효과). ±10%로 방향만 반영.
@@ -430,6 +434,17 @@ def _spur_metrics(polyline: list, near_m: float = _RETRACE_NEAR_M,
     return {"longest_retrace_m": round(max(runs, default=0.0)),
             "long_spur_count": sum(1 for L in runs if L > long_m),
             "micro_reversals": sum(1 for L in runs if L < micro_m)}
+
+
+def _serveable_over_cap(scored: list, target_km: float, engine_of: dict) -> list:
+    """초과(missed) 서빙 자격 후보 (00:51 신사 star 회귀 수정, 2026-07-24):
+    target < km ≤ target+cap AND (1) engine≠anchor(앵커는 밴드 내 park 경쟁만 — 원설계
+    복원) AND (2) longest_retrace_m ≤ 800(engine 불문 긴 팔 차단). 하방 거리 보장은 v87
+    롤 몫이라 앵커·star를 초과 서빙서 빼도 안전(빈 결과면 상위가 재추첨/502)."""
+    return [(k, r) for k, r in scored
+            if target_km < k <= target_km + _OVER_SERVE_CAP_KM + 1e-9
+            and engine_of.get(id(r)) != "anchor"
+            and _spur_metrics(r.polyline)["longest_retrace_m"] <= _OVER_SERVE_MAX_SPUR_M]
 
 
 def _best_in_band(in_band: list, target_km: float, quals: dict):
@@ -823,8 +838,7 @@ async def create_running_route(
                      "park_coverage": quals[id(best)][0], "zigzag_score": quals[id(best)][1],
                      "retrace": quals[id(best)][2], "max_gap_m": _polyline_max_gap_m(best.polyline)}
     else:
-        over = [(k, r) for k, r in scored
-                if target_km < k <= target_km + _OVER_SERVE_CAP_KM + 1e-9]
+        over = _serveable_over_cap(scored, target_km, engine_of)
         if over:
             _k, best = min(over, key=lambda t: t[0] - target_km)
             best.target_missed = True
@@ -855,10 +869,13 @@ async def create_running_route(
             # 지배 + snap_errors 0**이면 미등록 저팽창 격자의 조준 미스일 확률 높음.
             # 실측 ratio(snap/chain 중앙값)로 aim 상향해 1회 재추첨. 발동 좁게(초과
             # 후보 있으면 이미 missed 서빙, 쿼터/장애면 딴 분기). +~5-8s(어차피 502였음).
+            # 재추첨 판정은 **v87 후보 기준**(앵커는 aim 무관·초과 star가 재추첨을 막지
+            # 않게 — 00:51 회귀 교훈). v87이 전부 언더슈트면 aim 상향 재추첨 정당.
             rd_meta = None
-            all_under = bool(scored) and all(k < target_km for k, _ in scored)
+            _v87 = [(k, r) for k, r in scored if engine_of.get(id(r)) == "v87"]
+            all_under = bool(_v87) and all(k < target_km for k, _ in _v87)
             if all_under and not any(snap_errs.values()):
-                chains = [k / _waypoint_chain_km(r) for k, r in scored
+                chains = [k / _waypoint_chain_km(r) for k, r in _v87
                           if _waypoint_chain_km(r) > 0]
                 if chains:
                     best, rd_meta = await _adaptive_redraw(

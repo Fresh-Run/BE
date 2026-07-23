@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from app.models.schemas import RouteResponse, Waypoint, Coordinate
 from app.services.route_service import (
     _park_coverage, _zigzag_score, _best_in_band,
-    _polyline_retrace, _polyline_max_gap_m, _spur_metrics,
+    _polyline_retrace, _polyline_max_gap_m, _spur_metrics, _serveable_over_cap,
 )
 
 
@@ -118,6 +118,30 @@ def run_tests():
     assert sl["longest_retrace_m"] == 0, f"깨끗한 루프 회랑 0, got {sl}"
     ok(f"왕복 회랑 {sm['longest_retrace_m']}m 포착 · 깨끗한 루프 0 · 빈/단일 안전")
     assert _spur_metrics([]) == {"longest_retrace_m": 0, "long_spur_count": 0, "micro_reversals": 0}
+
+    print("\n[9. _serveable_over_cap: 앵커 제외 + spur 게이트 (00:51 신사 star 회귀)]")
+    def C3(la, lo): return Coordinate(lat=la, lng=lo)
+    def rt_pl(pl): return RouteResponse(summary="x", total_distance_km=6.0, polyline=pl,
+                                        waypoints=[_wp(37.5, 127.0), _wp(37.5, 127.0)])
+    clean = [C3(37.50, 127.00 + i * 0.001) for i in range(10)]  # 직선 → longest 0
+    star = [C3(37.50, 127.00 + i * 0.0012) for i in range(8)]   # 나가서
+    star = star + star[::-1][1:]                                 # 같은 길로 복귀 = 긴 팔(>800m)
+    v87_clean = rt_pl(clean)   # v87 초과·spur 양호
+    v87_star = rt_pl(star)     # v87 초과·긴 팔
+    anc_clean = rt_pl(clean)   # 앵커 초과·spur 양호(그래도 제외돼야)
+    eng = {id(v87_clean): "v87", id(v87_star): "v87", id(anc_clean): "anchor"}
+    assert _spur_metrics(star)["longest_retrace_m"] > 800, _spur_metrics(star)
+    # km 6.0 = target 5.0 초과 캡 내(≤6.0)
+    over = _serveable_over_cap([(6.0, v87_clean), (6.0, v87_star), (6.0, anc_clean)], 5.0, eng)
+    ids = {id(t[1]) for t in over}
+    assert id(v87_clean) in ids, "v87 정상 초과는 서빙 자격"
+    assert id(v87_star) not in ids, "v87이라도 긴 팔(>800)은 제외"
+    assert id(anc_clean) not in ids, "앵커는 spur 양호해도 초과 서빙 제외(밴드 내만)"
+    ok(f"v87 정상 초과만 자격 · v87 star 제외 · 앵커 제외 (자격 {len(over)}/3)")
+    # 전멸 시(앵커 star만) → 빈 결과 → 상위가 재추첨/502
+    only_bad = _serveable_over_cap([(6.0, v87_star), (6.0, anc_clean)], 5.0, eng)
+    assert only_bad == [], "긴팔 v87+앵커만 → 초과 서빙 0(→band_cap_zero 재추첨/502)"
+    ok("긴팔·앵커만 존재 → 초과 서빙 후보 0")
 
     print("\n" + "=" * 50 + "\n  ALL TESTS PASSED\n" + "=" * 50)
 
