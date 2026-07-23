@@ -50,6 +50,10 @@ class Settings(BaseSettings):
     # so it must stay server-side only. Never expose to clients.
     supabase_service_role_key: str = ""
 
+    # 앵커 혼합 풀 기여자 (ANCHOR_EPIC §9 부활, 2026-07-24) — 9-풀 중 앵커 롤 수.
+    # 0=off(순수 v87, 즉시 롤백) / 스테이징 2~3. Gemini 0콜(규칙 기반 앵커 체인).
+    anchor_pool_n: int = 0
+
     # OpenWeather (current weather + air pollution proxy)
     openweather_api_key: str = ""
     # Overridable so tests can point the proxy at a local mock server.

@@ -28,7 +28,11 @@ from app.models.schemas import (
     RouteResponse,
     StoredRoute,
 )
-from app.services import feedback_service, map_service, notification_service, openai_service, profile_service
+from app.core.config import settings
+from app.services import (
+    anchor_service, feedback_service, map_service, notification_service,
+    openai_service, profile_service,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -618,7 +622,11 @@ async def create_running_route(
 
     # 1) N개 병렬 생성 — 반경 스케줄 순환 분산(좁은~넓은 다양성). 롤 간 스태거로
     #    Gemini 순간 RPM 피크를 평탄화(429 스로틀 완화, 2026-07-22). 재시도는 SDK 층.
-    radii = _pool_radii(target_km, start_end_km, _POOL_SIZE)
+    # 혼합 풀(§9 부활): ANCHOR_POOL_N만큼 v87 롤을 앵커 롤로 대체(Gemini 0콜). v87 롤이
+    # 거리 보장 하방, 앵커 롤이 park·spur로 tiebreak 경쟁. v87 최소 3 보장(하방 안전).
+    anchor_n = max(0, min(settings.anchor_pool_n, _POOL_SIZE - 3))
+    v87_n = _POOL_SIZE - anchor_n
+    radii = _pool_radii(target_km, start_end_km, v87_n)
 
     async def _staggered_roll(j: int) -> RouteResponse:
         if j:
@@ -630,7 +638,7 @@ async def create_running_route(
             chain_target_km=chain_aim_km, radius_center=radius_center,
         )
 
-    rolls = [_staggered_roll(j) for j in range(_POOL_SIZE)]
+    rolls = [_staggered_roll(j) for j in range(v87_n)]
     _g = time.perf_counter()
     results = await asyncio.gather(*rolls, return_exceptions=True)
     _perf["gemini_s"] += time.perf_counter() - _g  # 병렬 → wall-clock
@@ -638,6 +646,19 @@ async def create_running_route(
 
     gen_cands = [(r, _waypoint_chain_km(r), radii[j])
                  for j, r in enumerate(results) if isinstance(r, RouteResponse)]
+    engine_of: dict = {id(r): "v87" for r, _, _ in gen_cands}
+    # 앵커 롤(규칙 기반, Gemini 0콜) — best-effort. 실패·앵커 부족 시 v87 단독(하방 보호).
+    if anchor_n > 0:
+        try:
+            _anchors = await anchor_service.collect_anchors(
+                req.start, target_km, probe_dead_end=False)
+            for _ar in anchor_service.build_anchor_candidates(
+                    req.start, _anchors, target_km, anchor_n,
+                    needs_pitstop=bool(req.pitstop_keyword)):
+                gen_cands.append((_ar, _waypoint_chain_km(_ar), 0.0))
+                engine_of[id(_ar)] = "anchor"
+        except Exception:  # noqa: BLE001 — 앵커 실패가 생성을 막지 않는다(v87로 서빙)
+            logger.warning("앵커 롤 생성 실패 — v87 단독 진행", exc_info=True)
     if not gen_cands:
         excs = [r for r in results if isinstance(r, BaseException)]
         _log_perf_failed(_t0, _perf)
@@ -736,23 +757,24 @@ async def create_running_route(
     # 스냅 실패 분류(오늘 진단을 막았던 무기록 삼킴 수정) — 지배 원인 판정·계측용.
     snap_errs = {"quota": 0, "legnotroutable": 0, "other": 0}
     for (r, ck, rad), out in zip(to_snap, snap_out):
-        r.search_radius_km = rad
-        r.radius_expanded = (rad != radii[0])
-        if isinstance(out, map_service.TmapQuotaExceeded):
-            snaps.append(None)  # 쿼터 소진 — nopath 폴백 후보로 삼지 않음(정직 503 유도)
-            snap_errs["quota"] += 1
-            continue
-        if isinstance(out, map_service.LegNotRoutable):
-            snaps.append(None)  # 물 위 등 보행 불가 — 폐기
-            snap_errs["legnotroutable"] += 1
-            continue
+        _is_anchor = engine_of.get(id(r)) == "anchor"
+        r.search_radius_km = 0.0 if _is_anchor else rad
+        r.radius_expanded = False if _is_anchor else (rad != radii[0])
         if isinstance(out, BaseException):
-            snaps.append(None)  # T-map 장애(네트워크·5xx 등) — AI추정 폴백 후보로 보관
-            snap_errs["other"] += 1
-            logger.warning("스냅 실패(nopath 폴백 후보): %s: %s",
-                           type(out).__name__, out)
-            if nopath_fallback is None:
-                nopath_fallback = r
+            snaps.append(None)
+            # ⚠️ 앵커 롤 스냅 실패는 snap_errs 불오염 — v87 적응 재추첨·503 지배 판정을
+            # 보호(앵커는 보조 기여자, 실패 시 그냥 드롭. 하방 거리 보장은 v87 롤 몫).
+            if not _is_anchor:
+                if isinstance(out, map_service.TmapQuotaExceeded):
+                    snap_errs["quota"] += 1
+                elif isinstance(out, map_service.LegNotRoutable):
+                    snap_errs["legnotroutable"] += 1
+                else:
+                    snap_errs["other"] += 1
+                    logger.warning("스냅 실패(nopath 폴백 후보): %s: %s",
+                                   type(out).__name__, out)
+                    if nopath_fallback is None:
+                        nopath_fallback = r
             continue
         raw_km = out.distance_m / 1000.0
         r.polyline = out.path
@@ -782,13 +804,17 @@ async def create_running_route(
         retrace, max_gap = _polyline_retrace(r.polyline), _polyline_max_gap_m(r.polyline)
         quals[id(r)] = (park, zig, retrace)
         cand_quality.append({"km": round(k, 1), "park": park, "zig": zig,
-                             "retrace": retrace, "max_gap_m": max_gap})  # 전 후보분 관측
+                             "retrace": retrace, "max_gap_m": max_gap,
+                             "engine": engine_of.get(id(r), "v87")})  # 롤아웃 A/B 관측
 
     # 5) 선택: 밴드 최근접(복수면 품질 tiebreak) → 캡 내 초과 최선(missed) →
     #    [쿼터 지배면 503] → AI추정 폴백 → 502
     _meta = {"pool_size": len(gen_cands), "snapped_count": len(scored),
              "tmap_legs": leg_budget, "snap_errors": snap_errs,
-             "cand_quality": cand_quality}
+             "anchor_n": anchor_n, "cand_quality": cand_quality}
+
+    def _eng(route):  # 채택 engine (없으면 v87 — nopath 폴백 등)
+        return engine_of.get(id(route), "v87")
     in_band = [(k, r) for k, r in scored if _within_band(k, target_km)]
     if in_band:
         _k, best = _best_in_band(in_band, target_km, quals)  # E#2: park>zigzag>거리
@@ -870,6 +896,7 @@ async def create_running_route(
 
     # 체감 왕복 스퍼 지표(§8.16, 앵커 에픽 롤아웃 A/B의 자) — v87·앵커 공통 기록.
     best_meta.update(_spur_metrics(best.polyline))
+    best_meta["engine"] = _eng(best)  # 채택 engine(v87/anchor) — 혼합 풀 A/B 관측
 
     logger.info(
         "route_gen POOL n=%d snapped=%d tmap_legs=%d aim=%.1f target=%.1f verdict=%s",

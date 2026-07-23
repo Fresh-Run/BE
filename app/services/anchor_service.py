@@ -1,11 +1,12 @@
-"""앵커 검색 층 (ANCHOR_EPIC 슬라이스 1, 2026-07-23).
+"""앵커 검색 층 + 기하 (ANCHOR_EPIC).
 
-⚠️ **오프라인 전용 — 아직 route_service에 배선되지 않음(Phase 0 설계 후 슬라이스).**
-시작점 반경에서 실재 runnable 앵커(공원·수변·트레일)를 수집·랭킹해 Anchor 목록 반환.
-좌표는 지도 제공자 것만(발명 0). 기존 자산 재사용: rank_places_for_keyword(대표성),
-_in_position_band(위치 밴드), _GRID_RATIOS(거리 조준은 슬라이스 2에서).
+시작점 반경에서 실재 runnable 앵커(공원·수변·트레일)를 수집·랭킹(collect_anchors) +
+각도 정렬 루프 기하(build_anchor_loop/build_anchor_candidates). 좌표는 지도 제공자
+것만(발명 0). 기존 자산 재사용: rank_places_for_keyword(대표성)·_in_position_band.
 
-설계: docs/ANCHOR_EPIC_DESIGN.md §1.
+⚠️ collect_anchors·build_anchor_loop·build_anchor_pool은 **오프라인 검증 전용**(§8.17
+동결). **build_anchor_candidates만 route_service의 혼합 풀 기여자로 배선**(§9 부활,
+플래그 ANCHOR_POOL_N). 설계: docs/ANCHOR_EPIC_DESIGN.md §1·§9.
 """
 from __future__ import annotations
 
@@ -157,6 +158,39 @@ def select_anchors(anchors: list[Anchor], target_radius_m: float, k: int,
 # 반경 factor로 거리 다양화. 선택은 밴드 게이트 + tiebreak(park > longest_retrace > 거리).
 _POOL_ROLLS = [(3, 0.10), (3, 0.12), (3, 0.14), (3, 0.16),
                (4, 0.09), (4, 0.11), (4, 0.13), (4, 0.15), (4, 0.17)]
+
+
+# 혼합 풀 기여자용 앵커 롤 config(§9 부활) — Gemini 0콜 규칙 기반. K3/K4 믹스,
+# factor 재보정(slice2.5: 5km는 r≈540~610m=0.10~0.13). variant로 다양화.
+_CANDIDATE_CONFIGS = [(4, 0.11), (3, 0.13), (4, 0.12), (3, 0.11), (4, 0.13)]
+
+
+def build_anchor_candidates(start: Coordinate, anchors: list[Anchor], target_km: float,
+                            n: int, needs_pitstop: bool = False) -> list[RouteResponse]:
+    """혼합 풀 기여자 — 미스냅 앵커 체인 n개(각도 정렬, 중립 라벨). route_service가
+    v87 롤과 함께 공통 스냅·선택. needs_pitstop이면 앵커 1개를 is_pitstop=True 슬롯으로
+    (기존 pitstop 해석이 대표성 place로 대체 — 동일 랭킹 재사용). 스냅은 상위가 수행."""
+    from app.services.openai_service import _neutral_label
+    vertex_max = target_km * 1000 * _VERTEX_MAX_FACTOR
+    out: list[RouteResponse] = []
+    for i, (k, f) in enumerate(_CANDIDATE_CONFIGS[:max(0, n)]):
+        picked = select_anchors(anchors, target_km * 1000 * f, k, set(),
+                                variant=i, vertex_max_m=vertex_max)
+        if len(picked) < 3:
+            continue
+        # pitstop 슬롯: 밴드 중간 대표성 좋은 앵커 1개를 is_pitstop으로(상위 해석이 대체)
+        ps_idx = len(picked) // 2 if needs_pitstop else -1
+        mids = [Waypoint(name=_neutral_label(j + 1, len(picked) + 2, False, "ko"),
+                         coordinate=a.coord, is_pitstop=(j == ps_idx))
+                for j, a in enumerate(picked)]
+        wps = ([Waypoint(name=_neutral_label(0, len(picked) + 2, False, "ko"),
+                         coordinate=start, is_pitstop=False)]
+               + mids
+               + [Waypoint(name=_neutral_label(len(picked) + 1, len(picked) + 2, False, "ko"),
+                           coordinate=start, is_pitstop=False)])
+        out.append(RouteResponse(summary="x", total_distance_km=round(target_km, 1),
+                                 waypoints=wps, polyline=None))
+    return out
 
 
 async def build_anchor_pool(start: Coordinate, anchors: list[Anchor], target_km: float,
