@@ -174,6 +174,7 @@ def run_tests():
         assert _initial_est_ratio(Coordinate(lat=37.5265, lng=126.8620), None) == 1.41, "목동권 1.41"
         assert _initial_est_ratio(Coordinate(lat=37.5242, lng=126.6303), None) == 1.85, "청라권 1.85(STEP3 상향)"
         assert _initial_est_ratio(Coordinate(lat=37.4995, lng=127.0360), None) == 1.38, "강남권 1.38(STEP3 등록)"
+        assert _initial_est_ratio(Coordinate(lat=37.5200, lng=127.0200), None) == 1.45, "신사/논현권 1.45(미노스 부검 등록)"
         assert _initial_est_ratio(Coordinate(lat=37.2000, lng=127.0000), None) == 1.6, "미등록 far 격자 default 1.6"
         assert _initial_est_ratio(Coordinate(lat=37.5219, lng=127.0561), 3.5) == 1.25, "일방 우선"
         ok("격자 est_ratio: 뚝섬1.84/목동1.41/청라1.85/강남1.38/미등록1.6/일방1.25")
@@ -219,6 +220,27 @@ def run_tests():
         scenario(c, [{"snap_km": 5.0}], pool_size=3)
         assert gen(c, tok, target=5.0).json()["is_one_way"] is False
         ok("일방 3.5km 서빙·is_one_way true · 초과 422 · 루프 false")
+
+        step("11. 적응 재추첨(미노스 부검) — 언더슈트 지배→재조준 서빙 / overshoot 미발동 / 재추첨도 미달 502")
+        # 11a: 초기 9 언더슈트(4.0<밴드하한 4.7) + 재추첨 인밴드(5.0) → hit_redraw 서빙
+        scenario(c, [{"snap_km": 4.0}] * 9 + [{"snap_km": 5.0}], pool_size=9)
+        r = gen(c, tok, target=5.0)
+        assert r.status_code == 200, f"재추첨 서빙 기대, got {r.status_code} {r.text[:120]}"
+        gm = stats(c)["last_gen_meta"]
+        assert gm["verdict"] == "hit_redraw" and gm.get("redraw", {}).get("redraw_hit") is True, gm
+        assert gm["redraw"]["measured_ratio"] < 1.6, "실측 ratio < default 1.6(undershoot 근거)"
+        # 11b: overshoot(5.8, 캡 내) 존재 → missed 서빙, 재추첨 미발동
+        scenario(c, [{"snap_km": 5.8}], pool_size=9)
+        gm = stats(c)["last_gen_meta"] if gen(c, tok, target=5.0).status_code == 200 else {}
+        assert gm.get("verdict") == "missed" and "redraw" not in gm, \
+            f"overshoot는 missed·재추첨 미발동, got {gm.get('verdict')}"
+        # 11c: 초기·재추첨 둘 다 언더슈트(4.0) → 502(재추첨 시도·기록됨)
+        scenario(c, [{"snap_km": 4.0}], pool_size=9)
+        r = gen(c, tok, target=5.0)
+        assert r.status_code == 502, f"재추첨도 미달 → 502, got {r.status_code}"
+        lf = stats(c)["last_failure"]
+        assert lf["fail"] == "band_cap_zero" and (lf.get("redraw") or {}).get("redraw_hit") is False, lf
+        ok("언더슈트→재조준 재추첨 서빙(hit_redraw) · overshoot 미발동(missed) · 재추첨도 미달 502(기록)")
 
         print("\n" + "=" * 50 + "\n  MOCK 케이스 PASSED — E2E는 메인 서버로(내일 T-map 리셋 후)\n" + "=" * 50)
 

@@ -181,6 +181,8 @@ _PRE_GATE_REROLLS = 2  # (v2.7 배치 풀에서 미사용 — attempt 재추첨 
 # 4→다수로 늘려 Gemini 산포를 흡수(현행은 12콜 생성에 스냅 4개뿐이던 낭비 제거).
 # 적응형 폐기(1패스라 attempt 간 피드백 없음 — est_ratio는 초기 조준에만).
 _POOL_SIZE = 9              # 병렬 생성 후보 수(Gemini 9콜 고정)
+_REDRAW_POOL_SIZE = 5       # 적응 재추첨 축소 풀(미노스 부검 2026-07-24) — band_cap_zero
+                           # 언더슈트 지배 시 실측 ratio로 aim 상향해 1회만 재시도(+~5-8s)
 # 롤 간 스태거(2026-07-22): 9콜 동시 발사가 Gemini relay 순간 RPM을 튀겨 429
 # 스로틀→일부 롤 실패→후보 부족→502를 유발(E2E 성수 실측: /chat/completions 재시도
 # 3회). roll j를 j×이 값만큼 늦게 발사해 피크를 평탄화(~9RPS→~4RPS). 총 추가 지연
@@ -216,6 +218,8 @@ _GRID_RATIOS = [
     (37.5242, 126.6303, 2.0, 1.85),  # 청라권 (STEP3 실패분포로 overshoot 확인 → 상향)
     (37.5265, 126.8620, 2.0, 1.41),  # 목동권 (내륙 격자 저팽창 — undershoot 교정 확증)
     (37.4995, 127.0360, 2.0, 1.38),  # 강남권 (STEP3 502 가시화로 극심 undershoot 발견)
+    (37.5200, 127.0200, 2.0, 1.45),  # 신사/논현권 (미노스 502 부검 — 성공 route 3건 실측
+                                     # median 1.445, 강남역 격자서 >2km라 default 1.6 undershoot)
 ]
 
 
@@ -478,6 +482,67 @@ def _filter_conflicting_avoid_tags(
     if prefs.surface == "trail":
         dropped.add("노면나쁨")
     return [t for t in avoid_tags if t not in dropped]
+
+
+async def _adaptive_redraw(req, target_km, measured_ratio, avoid_tags, prefs, lang,
+                           radius_center, start_end_km):
+    """band_cap_zero 언더슈트 지배 시 1회 적응 재추첨 — 실측 ratio로 chain aim 상향,
+    축소 풀(5롤) 재생성·스냅. 밴드 적중분만 (route, meta) 반환, 없으면 (None, meta).
+    미등록 격자의 자가 복구(default 1.6이 저팽창 격자서 undershoot→502하던 것).
+    ⚠️ 재귀 없음(1회 한정) — 상한 5롤·leg 상한 재사용."""
+    aim = (target_km + openai_service._BAND_AIM_KM) / measured_ratio
+    if start_end_km is not None:
+        aim = max(aim, start_end_km * 1.05)
+    aim = round(aim, 1)
+    radii = _pool_radii(target_km, start_end_km, _REDRAW_POOL_SIZE)
+
+    async def _roll(j):
+        if j:
+            await asyncio.sleep(j * _POOL_STAGGER_S)
+        return await openai_service.generate_route(
+            target_distance_km=target_km, start=req.start, end=req.end,
+            pitstop_keyword=req.pitstop_keyword, notes=req.notes,
+            avoid_tags=avoid_tags, prefs=prefs, radius_km=radii[j], lang=lang,
+            chain_target_km=aim, radius_center=radius_center)
+
+    results = await asyncio.gather(*[_roll(j) for j in range(_REDRAW_POOL_SIZE)],
+                                   return_exceptions=True)
+    cands = [r for r in results if isinstance(r, RouteResponse)]
+    meta = {"measured_ratio": round(measured_ratio, 3), "redraw_aim": aim,
+            "redraw_gen": len(cands)}
+    if not cands:
+        return None, meta
+    to_snap, leg = [], 0
+    for r in sorted(cands, key=lambda r: abs(_waypoint_chain_km(r) - aim)):
+        legs = len(r.waypoints) - 1
+        if legs < 1 or leg + legs > _TMAP_LEG_CAP:
+            continue
+        to_snap.append(r)
+        leg += legs
+
+    async def _snap(r):
+        via = [wp.coordinate for wp in r.waypoints[1:-1]] or None
+        return await map_service.get_pedestrian_route(
+            origin=r.waypoints[0].coordinate, destination=r.waypoints[-1].coordinate,
+            waypoints=via)
+
+    scored = []
+    for r, out in zip(to_snap, await asyncio.gather(*[_snap(r) for r in to_snap],
+                                                    return_exceptions=True)):
+        if isinstance(out, BaseException):
+            continue
+        raw = out.distance_m / 1000.0
+        r.polyline = out.path
+        r.total_distance_km = round(raw, 1)
+        scored.append((raw, r))
+    meta["redraw_snaps"] = [round(k, 1) for k, _ in scored]
+    in_band = [(k, r) for k, r in scored if _within_band(k, target_km)]
+    if in_band:
+        _k, best = min(in_band, key=lambda t: abs(t[0] - target_km))
+        meta["redraw_hit"] = True
+        return best, meta
+    meta["redraw_hit"] = False
+    return None, meta
 
 
 async def create_running_route(
@@ -760,10 +825,36 @@ async def create_running_route(
                          "retrace": _polyline_retrace(best.polyline),
                          "max_gap_m": _polyline_max_gap_m(best.polyline)}
         else:
-            _log_perf_failed(_t0, _perf)
-            await _record_gen_failure(req, target_km, _t0, snaps, _meta,
-                                      initial_ratio, "band_cap_zero", pitstop=pitstop_obs)
-            raise RouteGenerationFailed()  # 밴드·캡 서빙 후보 0 — 정직한 502
+            # 적응 재추첨(미노스 부검 2026-07-24) — band_cap_zero가 **전 후보 언더슈트
+            # 지배 + snap_errors 0**이면 미등록 저팽창 격자의 조준 미스일 확률 높음.
+            # 실측 ratio(snap/chain 중앙값)로 aim 상향해 1회 재추첨. 발동 좁게(초과
+            # 후보 있으면 이미 missed 서빙, 쿼터/장애면 딴 분기). +~5-8s(어차피 502였음).
+            rd_meta = None
+            all_under = bool(scored) and all(k < target_km for k, _ in scored)
+            if all_under and not any(snap_errs.values()):
+                chains = [k / _waypoint_chain_km(r) for k, r in scored
+                          if _waypoint_chain_km(r) > 0]
+                if chains:
+                    best, rd_meta = await _adaptive_redraw(
+                        req, target_km, statistics.median(chains), avoid_tags, prefs,
+                        lang, radius_center, start_end_km)
+            if rd_meta and rd_meta.get("redraw_hit"):
+                best_meta = {**_meta, "verdict": "hit_redraw",
+                             "ratio": round(best.total_distance_km / _waypoint_chain_km(best), 3),
+                             "park_coverage": _park_coverage(best, park_coords),
+                             "zigzag_score": _zigzag_score(best),
+                             "retrace": _polyline_retrace(best.polyline),
+                             "max_gap_m": _polyline_max_gap_m(best.polyline),
+                             "redraw": rd_meta}
+                logger.info("적응 재추첨 성공 — measured_ratio=%.3f aim=%.1f km=%.1f",
+                            rd_meta["measured_ratio"], rd_meta["redraw_aim"],
+                            best.total_distance_km)
+            else:
+                _log_perf_failed(_t0, _perf)
+                await _record_gen_failure(req, target_km, _t0, snaps,
+                                          {**_meta, "redraw": rd_meta}, initial_ratio,
+                                          "band_cap_zero", pitstop=pitstop_obs)
+                raise RouteGenerationFailed()  # 재추첨도 실패 — 정직한 502
 
     # 아파트 관통 관측(백로그 #6, 2026-07-23) — 선택 route의 중간 waypoint 역지오코딩해
     # 아파트 신호 카운트. **관측 전용(필터 아님)**, best-effort. 실발생률 축적으로
