@@ -227,15 +227,22 @@ def phase2(c, uids, toks, crew_id):
     assert d["verification"] == "verified" and d["has_track"] is True
     assert d["distance_km_reported"] is None and d["is_flagged"] is False
     assert d["splits"] and len([s for s in d["splits"] if not s.get("partial")]) >= 4
+    # moving_sec (Ivan ①②): 연속 주행이라 moving≈elapsed, 각 랩·run레벨·track 모두 노출
+    assert d["moving_sec"] is not None and d["moving_sec"] > 1000, f"run moving_sec, got {d.get('moving_sec')}"
+    assert d["moving_sec"] <= d["duration_sec"] + 30, "moving ≤ elapsed(신고) 근사"
+    assert all(s.get("moving_sec") is not None and s["moving_sec"] <= s["sec"]
+               for s in d["splits"]), "각 랩 moving_sec ≤ sec"
+    assert d["moving_sec"] == sum(s["moving_sec"] for s in d["splits"]), "run moving == Σsplit.moving"
     r = api(c, "GET", f"/runs/{run1}/track", tok1)
     assert r.status_code == 200, r.text[:300]
     t = r.json()
     assert len(t["polyline"]) >= 20 and t["server_distance_km"] > 4.5
     assert t["point_count_raw"] > t["point_count_kept"] - 1 >= 0
+    assert t["moving_sec"] == d["moving_sec"], "track moving_sec == run moving_sec(둘 다 Σsplit)"
     # track은 visibility 게이트(집계 정합 설계) — 이 run은 기본 public이라 타인도 200.
     # 매트릭스 전수는 test_run_track_and_stats_integration.
     assert api(c, "GET", f"/runs/{run1}/track", tok2).status_code == 200, "남의 public track 200"
-    ok("verified + splits ✓ /track polyline·공개범위 게이트 ✓")
+    ok("verified + splits ✓ moving_sec(run·split·track 정합) ✓ /track 공개범위 게이트 ✓")
 
     step("2-2. 거리 괴리 신고 → verified+is_flagged (조정) + 서버 값이 정본")
     track = make_track(5.0, 330, seed=23)

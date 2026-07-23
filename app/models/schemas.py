@@ -1012,9 +1012,13 @@ class RunSplit(BaseModel):
     """km별 랩 — 시안 '페이스 & 고도 분석' 차트용."""
 
     km: float = Field(..., description="정수 랩(1,2,…) / 마지막 partial은 총거리.")
-    sec: int = Field(..., description="랩 소요 시간 (elapsed).")
+    sec: int = Field(..., description="랩 소요 시간 (elapsed — 일시정지 포함).")
     elev_gain_m: Optional[int] = Field(None, description="랩 내 고도 상승 (alt 없으면 null).")
     partial: bool = False
+    moving_sec: Optional[int] = Field(
+        None, description="랩 이동 시간 (정지 제외 — 순간속도 <0.5m/s 구간 뺌, Strava식). "
+        "과거 저장 run은 null(재계산 안 함). 랩 페이스는 moving_sec/km가 더 정확."
+    )
 
 
 class RunRequest(BaseModel):
@@ -1135,6 +1139,10 @@ class RunResponse(BaseModel):
     ran_at: str = Field(..., description="When the run actually happened.")
     distance_km: float
     duration_sec: int
+    moving_sec: Optional[int] = Field(
+        None, description="총 이동 시간 (정지 제외 — Σ splits.moving_sec). GPS 트랙 있는 "
+        "run만 채워짐, 없으면 null. duration_sec(경과, 정지 포함)과 짝. 과거 run은 null."
+    )
     avg_pace_sec_per_km: Optional[int] = None
     notes: Optional[str] = None
     title: Optional[str] = None
@@ -1214,6 +1222,9 @@ class RunTrackResponse(BaseModel):
     polyline: list[Coordinate] = Field(..., description="간축된 경로 (≤1000pt).")
     server_distance_km: float
     elev_gain_m: Optional[int] = None
+    moving_sec: Optional[int] = Field(
+        None, description="총 이동 시간 (정지 제외 — Σ splits.moving_sec). 과거 트랙은 null."
+    )
     point_count_raw: int
     point_count_kept: int
 

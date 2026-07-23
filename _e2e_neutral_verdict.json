@@ -1,0 +1,115 @@
+{
+  "probe": "200 172.0m",
+  "rows": [
+    {
+      "name": "강남",
+      "status": 200,
+      "elapsed": 5.0,
+      "summary": "5.5km 순환 코스",
+      "dist": 5.5,
+      "labels": [
+        [
+          "출발",
+          false
+        ],
+        [
+          "지점 1",
+          false
+        ],
+        [
+          "지점 2",
+          false
+        ],
+        [
+          "지점 3",
+          false
+        ],
+        [
+          "지점 4",
+          false
+        ],
+        [
+          "지점 5",
+          false
+        ],
+        [
+          "복귀",
+          false
+        ]
+      ],
+      "bad_label": [],
+      "hallu": [],
+      "summ_ok": true
+    },
+    {
+      "name": "목동",
+      "status": 200,
+      "elapsed": 4.4,
+      "summary": "5.2km 순환 코스",
+      "dist": 5.2,
+      "labels": [
+        [
+          "출발",
+          false
+        ],
+        [
+          "지점 1",
+          false
+        ],
+        [
+          "지점 2",
+          false
+        ],
+        [
+          "지점 3",
+          false
+        ],
+        [
+          "복귀",
+          false
+        ]
+      ],
+      "bad_label": [],
+      "hallu": [],
+      "summ_ok": true
+    },
+    {
+      "name": "청라",
+      "status": 200,
+      "elapsed": 4.6,
+      "summary": "4.7km 순환 코스",
+      "dist": 4.7,
+      "labels": [
+        [
+          "출발",
+          false
+        ],
+        [
+          "지점 1",
+          false
+        ],
+        [
+          "모래성공원",
+          true
+        ],
+        [
+          "지점 3",
+          false
+        ],
+        [
+          "복귀",
+          false
+        ]
+      ],
+      "bad_label": [],
+      "hallu": [],
+      "summ_ok": true
+    }
+  ],
+  "gates": {
+    "내륙_서빙무회귀": true,
+    "라벨중립_창작지명0": true,
+    "서빙건_존재": true
+  },
+  "verdict": "PASS"
+}

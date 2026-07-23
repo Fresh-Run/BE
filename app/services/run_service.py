@@ -206,7 +206,7 @@ async def create_run(req: RunRequest, user_id: str | None = None) -> RunResponse
         try:
             splits_out = [
                 RunSplit(km=s.km, sec=s.sec, elev_gain_m=s.elev_gain_m,
-                         partial=s.partial)
+                         partial=s.partial, moving_sec=s.moving_sec)
                 for s in processed.splits
             ]
             await asyncio.to_thread(
@@ -229,6 +229,7 @@ async def create_run(req: RunRequest, user_id: str | None = None) -> RunResponse
 
     run = RunResponse(**saved, new_records=new_records,
                       has_track=has_track, splits=splits_out,
+                      moving_sec=_moving_total(splits_out),
                       recent_avg_pace_sec_per_km=recent_avg_pace,
                       pace_delta_sec=pace_delta)
 
@@ -501,6 +502,17 @@ async def _track_summaries(run_ids: list[str]) -> dict[str, list[RunSplit]]:
         return {}
 
 
+def _moving_total(splits: list[RunSplit] | None) -> int | None:
+    """run-level 총 이동시간 = Σ split.moving_sec (Ivan ②). splits 없음(트랙 없음) 또는
+    구 run(moving_sec 미기록=None 혼재)이면 None — 부분합으로 오도하지 않는다."""
+    if not splits:
+        return None
+    vals = [s.moving_sec for s in splits]
+    if any(v is None for v in vals):
+        return None
+    return sum(vals)
+
+
 # ── 러닝 사진 (run-photos private 버킷 — 읽기는 서명 URL로만) ─────────────────
 
 _PHOTO_BUCKET = "run-photos"
@@ -705,6 +717,7 @@ async def get_run(run_id: str, user_id: str) -> RunResponse | None:
     owner_flags = flags.get(owner_id, {})
     common = dict(
         has_track=row["id"] in tracks, splits=tracks.get(row["id"]),
+        moving_sec=_moving_total(tracks.get(row["id"])),
         kudos_count=kudos.get(row["id"], 0),
         # 피드 my_kudos와 동일 계산 (본인 run은 kudos 불가 → 자연히 False)
         my_kudos=row["id"] in mine,
@@ -773,10 +786,14 @@ async def get_run_track(run_id: str, user_id: str) -> RunTrackResponse | None:
     else:
         dist = float(len(splits))
     gains = [s["elev_gain_m"] for s in splits if s.get("elev_gain_m") is not None]
+    # 총 이동시간 = Σ split.moving_sec (Ivan ②). 구 트랙(moving_sec 미기록)은 None.
+    movings = [s.get("moving_sec") for s in splits]
+    moving_sec = sum(movings) if splits and all(v is not None for v in movings) else None
     return RunTrackResponse(
         polyline=row["points"],
         server_distance_km=dist,
         elev_gain_m=sum(gains) if gains else None,
+        moving_sec=moving_sec,
         point_count_raw=row["raw_point_count"],
         point_count_kept=row["kept_point_count"],
     )
@@ -1720,6 +1737,7 @@ async def list_runs(
         RunResponse(**{k: v for k, v in row.items() if k != "photos"},
                     has_track=row["id"] in tracks,
                     splits=tracks.get(row["id"]), kudos_count=kudos.get(row["id"], 0),
+                    moving_sec=_moving_total(tracks.get(row["id"])),
                     comment_count=comments.get(row["id"], 0),
                     photo_thumb=signed.get(first) if first else None,
                     polyline_thumb=thumbs.get(row["id"]))

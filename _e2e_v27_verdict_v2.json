@@ -1,0 +1,105 @@
+{
+  "probe": "200 dist=532.0m",
+  "rows": [
+    {
+      "name": "강남-역삼",
+      "status": 200,
+      "dist": 4.8,
+      "elapsed": 8.9,
+      "detail": "",
+      "ref": false,
+      "verdict": "hit",
+      "served": true
+    },
+    {
+      "name": "목동",
+      "status": 200,
+      "dist": 4.7,
+      "elapsed": 5.6,
+      "detail": "",
+      "ref": false,
+      "verdict": "hit",
+      "served": true
+    },
+    {
+      "name": "뚝섬-ref",
+      "status": 200,
+      "dist": 5.4,
+      "elapsed": 6.6,
+      "detail": "",
+      "ref": true,
+      "verdict": "hit",
+      "served": true
+    }
+  ],
+  "gates": {
+    "G1'_일반서빙+nopath0": true,
+    "G2'_20s": true,
+    "G3'_gen_meta": true
+  },
+  "ttuk_served": 1,
+  "gen_meta": [
+    {
+      "ratio": 1.543,
+      "snaps": [
+        4.8,
+        4.2,
+        7.7
+      ],
+      "one_way": false,
+      "verdict": "hit",
+      "elapsed_s": 7.2,
+      "pool_size": 9,
+      "tmap_legs": 17,
+      "snap_errors": {
+        "other": 0,
+        "quota": 0,
+        "legnotroutable": 0
+      },
+      "initial_ratio": 1.6,
+      "snapped_count": 3
+    },
+    {
+      "ratio": 1.283,
+      "snaps": [
+        4.2,
+        4.7,
+        4.1
+      ],
+      "one_way": false,
+      "verdict": "hit",
+      "elapsed_s": 5.2,
+      "pool_size": 9,
+      "tmap_legs": 13,
+      "snap_errors": {
+        "other": 0,
+        "quota": 0,
+        "legnotroutable": 0
+      },
+      "initial_ratio": 1.6,
+      "snapped_count": 3
+    },
+    {
+      "ratio": 1.738,
+      "snaps": [
+        5.4,
+        4.2,
+        8.6
+      ],
+      "one_way": false,
+      "verdict": "hit",
+      "elapsed_s": 6.1,
+      "pool_size": 9,
+      "tmap_legs": 13,
+      "snap_errors": {
+        "other": 0,
+        "quota": 0,
+        "legnotroutable": 0
+      },
+      "initial_ratio": 1.8,
+      "snapped_count": 3
+    }
+  ],
+  "e2e_tmap_legs": 43,
+  "verdict": "PASS"
+}

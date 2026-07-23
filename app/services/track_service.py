@@ -25,6 +25,11 @@ MIN_TRACK_POINTS = 10
 MAX_ACCURACY_M = 30.0
 MAX_SPEED_MS = 8.3
 PAUSE_GAP_S = 60.0
+# 이동시간(moving) 판정 속도 하한 (Ivan 배치 ①, 2026-07-23): 구간 순간속도가
+# 이 값 미만이면 정지로 보고 moving_sec서 제외(Strava식). 0.5m/s≈1.8km/h(느린 걷기
+# 이하) — 신호등·휴식은 elapsed엔 남고 moving엔 빠진다. PAUSE_GAP_S(거리 미산입)와
+# 별개 축: 60s gap은 seg=0으로 자연히 speed<0.5라 moving서도 제외(정합).
+MOVING_SPEED_MS = 0.5
 ELEV_HYSTERESIS_M = 3.0
 LOW_CONFIDENCE_DROP_RATIO = 0.20  # 필터 제거율이 이걸 넘으면 검증 보류
 MIN_PARTIAL_KM = 0.2              # 마지막 부분 킬로 스플릿 포함 최소 거리
@@ -53,9 +58,10 @@ class TrackPoint:
 @dataclass
 class Split:
     km: float                 # 1, 2, … 정수 랩 / 마지막 partial은 총거리 (예: 5.18)
-    sec: int                  # 랩 소요 시간 (elapsed)
+    sec: int                  # 랩 소요 시간 (elapsed — 일시정지 포함)
     elev_gain_m: int | None   # alt 없으면 None
     partial: bool = False
+    moving_sec: int = 0       # 랩 이동 시간 (정지 제외, speed≥MOVING_SPEED_MS) — Ivan ①
 
 
 @dataclass
@@ -65,6 +71,7 @@ class ProcessedTrack:
     server_distance_km: float
     elev_gain_m: int | None
     elapsed_s: float          # 트랙 자체의 경과 시간 (검증 페이스 계산용)
+    moving_s: float           # 트랙 총 이동 시간 (정지 제외) — Ivan ②(run·track moving_sec 총합)
     point_count_raw: int
     point_count_kept: int
     low_confidence: bool = False
@@ -224,7 +231,9 @@ def process_track(raw: list[TrackPoint]) -> ProcessedTrack | None:
     splits: list[Split] = []
     lap_start_t = sm[0].t_ms
     lap_gain = 0.0
+    lap_moving = 0.0          # 현재 랩 이동시간 누적 (정지 제외)
     total_gain = 0.0
+    total_moving = 0.0        # 트랙 전체 이동시간 (= Σ split.moving_sec)
     elev_ref = sm[0].alt if has_alt else None
     next_km = 1
 
@@ -235,6 +244,12 @@ def process_track(raw: list[TrackPoint]) -> ProcessedTrack | None:
         if dt > PAUSE_GAP_S:
             seg = 0.0  # 일시정지 중 이동 — 거리 미산입 (시간은 elapsed 유지)
 
+        # 이동시간(moving): 구간 순간속도 ≥ MOVING_SPEED_MS면 그 dt를 이동으로 산입.
+        # seg가 0(60s gap)이면 speed 0 → 자연 제외. elapsed(sec)와 달리 정지 시간 뺌.
+        speed = seg / dt if dt > 0 else 0.0
+        seg_moving = dt if speed >= MOVING_SPEED_MS else 0.0
+        total_moving += seg_moving
+
         # 고도 hysteresis (상승만, 3m 문턱)
         if has_alt and b.alt is not None and elev_ref is not None:
             if b.alt >= elev_ref + ELEV_HYSTERESIS_M:
@@ -244,18 +259,25 @@ def process_track(raw: list[TrackPoint]) -> ProcessedTrack | None:
             elif b.alt < elev_ref:
                 elev_ref = b.alt
 
-        # km 경계 통과 (한 세그먼트에서 여러 경계 가능)
+        # km 경계 통과 (한 세그먼트에서 여러 경계 가능). moving은 elapsed와 동일한
+        # frac로 랩에 안분(구간 내 등속 가정 — 경계 앞뒤 랩에 비례 배분).
+        seg_frac_prev = 0.0
         while seg > 0 and total_m + seg >= next_km * 1000.0:
             frac = (next_km * 1000.0 - total_m) / seg
             cross_t = a.t_ms + (b.t_ms - a.t_ms) * frac
+            lap_moving += seg_moving * (frac - seg_frac_prev)
             splits.append(Split(
                 km=float(next_km),
                 sec=round((cross_t - lap_start_t) / 1000.0),
                 elev_gain_m=round(lap_gain) if has_alt else None,
+                moving_sec=round(lap_moving),
             ))
             lap_start_t = cross_t
             lap_gain = 0.0
+            lap_moving = 0.0
+            seg_frac_prev = frac
             next_km += 1
+        lap_moving += seg_moving * (1.0 - seg_frac_prev)  # 경계 뒤 잔여(또는 전량)
         total_m += seg
 
     total_km = total_m / 1000.0
@@ -266,6 +288,7 @@ def process_track(raw: list[TrackPoint]) -> ProcessedTrack | None:
             sec=round((sm[-1].t_ms - lap_start_t) / 1000.0),
             elev_gain_m=round(lap_gain) if has_alt else None,
             partial=True,
+            moving_sec=round(lap_moving),
         ))
 
     full_laps = [s for s in splits if not s.partial and s.sec > 0]
@@ -278,6 +301,7 @@ def process_track(raw: list[TrackPoint]) -> ProcessedTrack | None:
         server_distance_km=round(total_km, 2),
         elev_gain_m=round(total_gain) if has_alt else None,
         elapsed_s=(sm[-1].t_ms - sm[0].t_ms) / 1000.0,
+        moving_s=total_moving,
         point_count_raw=raw_n,
         point_count_kept=len(kept),
         low_confidence=low_confidence,
