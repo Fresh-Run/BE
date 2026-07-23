@@ -106,6 +106,7 @@ async def create_run(req: RunRequest, user_id: str | None = None) -> RunResponse
     processed: track_service.ProcessedTrack | None = None
     verification = "unverified"
     final_distance = req.distance_km
+    final_avg_pace = req.avg_pace_sec_per_km   # 거리 대체(adjusted) 시 서버거리로 재계산
     reported: float | None = None
     is_flagged = False
     if req.gps_track:
@@ -122,6 +123,11 @@ async def create_run(req: RunRequest, user_id: str | None = None) -> RunResponse
             if verification == "adjusted":
                 reported = req.distance_km          # 앱 신고값 보존
                 final_distance = processed.server_distance_km  # 서버 계산이 정본
+                # 거리 대체 시 파생 필드(avg_pace) 재계산 — 신고거리 기준 페이스가
+                # 서버거리와 불일치하던 버그 수정(2026-07-23, Ivan 리포트 2cada94c 계기).
+                # runs의 유일한 거리파생 컬럼은 avg_pace_sec_per_km(칼로리 등 없음).
+                final_avg_pace = (round(req.duration_sec / final_distance)
+                                  if final_distance > 0 else req.avg_pace_sec_per_km)
                 verification = "verified"
                 is_flagged = True
             elif verification == "suspect":
@@ -151,7 +157,7 @@ async def create_run(req: RunRequest, user_id: str | None = None) -> RunResponse
     if user_id:
         try:
             recent_avg_pace, pace_delta = await _pace_vs_recent(
-                user_id, final_distance, req.duration_sec, req.avg_pace_sec_per_km
+                user_id, final_distance, req.duration_sec, final_avg_pace
             )
         except Exception:  # noqa: BLE001
             logger.warning("페이스 비교 계산 실패", exc_info=True)
@@ -173,7 +179,7 @@ async def create_run(req: RunRequest, user_id: str | None = None) -> RunResponse
         "route_id": req.route_id,
         "distance_km": final_distance,
         "duration_sec": req.duration_sec,
-        "avg_pace_sec_per_km": req.avg_pace_sec_per_km,
+        "avg_pace_sec_per_km": final_avg_pace,
         "notes": req.notes,
         "title": req.title,
         "area": req.area,

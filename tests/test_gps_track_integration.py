@@ -220,12 +220,16 @@ def phase2(c, uids, toks, crew_id):
 
     step("2-1. GPS 있는 POST → verified + 스플릿 + /track 왕복")
     track = make_track(5.0, 330, seed=21)
-    r = post_run(tok1, {"distance_km": 5.0, "duration_sec": 1650, "gps_track": track})
+    r = post_run(tok1, {"distance_km": 5.0, "duration_sec": 1650,
+                        "avg_pace_sec_per_km": 330, "gps_track": track})
     assert r.status_code == 200, r.text[:300]
     d = r.json()
     run1 = d["id"]
     assert d["verification"] == "verified" and d["has_track"] is True
     assert d["distance_km_reported"] is None and d["is_flagged"] is False
+    # 비대체(adjusted 아님): 클라 avg_pace 보존(재계산 안 함 — 회귀)
+    assert d["avg_pace_sec_per_km"] == 330, \
+        f"비대체 run은 클라 avg_pace 불변, got {d['avg_pace_sec_per_km']}"
     assert d["splits"] and len([s for s in d["splits"] if not s.get("partial")]) >= 4
     # moving_sec (Ivan ①②): 연속 주행이라 moving≈elapsed, 각 랩·run레벨·track 모두 노출
     assert d["moving_sec"] is not None and d["moving_sec"] > 1000, f"run moving_sec, got {d.get('moving_sec')}"
@@ -246,19 +250,27 @@ def phase2(c, uids, toks, crew_id):
 
     step("2-2. 거리 괴리 신고 → verified+is_flagged (조정) + 서버 값이 정본")
     track = make_track(5.0, 330, seed=23)
-    r = post_run(tok1, {"distance_km": 9.0, "duration_sec": 1650, "gps_track": track})
+    # 클라가 신고거리(9.0) 기준 페이스(1650/9.0=183)를 함께 보냄 — adjusted 시
+    # 서버거리 기준으로 재계산돼야(2cada94c 버그: 신고 페이스 그대로 저장하던 것).
+    r = post_run(tok1, {"distance_km": 9.0, "duration_sec": 1650,
+                        "avg_pace_sec_per_km": 183, "gps_track": track})
     d = r.json()
     run2 = d["id"]
     # DB 3종 체계: 거리 조정은 verified + is_flagged=true + 원본 보존으로 표현
     assert d["verification"] == "verified" and d["is_flagged"] is True
     assert d["distance_km_reported"] == 9.0
     assert abs(d["distance_km"] - 5.0) <= 0.3, f"distance_km는 서버 값: {d['distance_km']}"
+    # ★ avg_pace 재계산(2026-07-23 수정): 신고거리(183) 아닌 서버거리 기준
+    exp_pace = round(1650 / d["distance_km"])
+    assert d["avg_pace_sec_per_km"] == exp_pace, \
+        f"avg_pace는 서버거리 기준 재계산({exp_pace})이어야, got {d['avg_pace_sec_per_km']}"
+    assert d["avg_pace_sec_per_km"] != 183, "신고거리 기준 페이스(183)를 그대로 저장하면 안 됨"
     # 연쇄: 통계·PB가 서버 값 사용
     s = api(c, "GET", "/me/stats", tok1).json()
     assert s["all_time"]["total_distance_km"] < 12.0, \
         "통계가 신고 9km가 아닌 서버 ~5km를 써야 함"
     assert s["records"]["longest_distance"]["value"] < 6.0, "PB도 서버 값 기준"
-    ok(f"adjusted (9.0 신고→{d['distance_km']}km 정본) ✓ 통계·PB 연쇄 ✓")
+    ok(f"adjusted (9.0 신고→{d['distance_km']}km 정본) ✓ avg_pace 재계산 {exp_pace} ✓ 통계·PB 연쇄 ✓")
 
     step("2-3. 자전거 → suspect + PB·크루 랭킹·챌린지 제외")
     bike = make_track(6.0, 120, seed=25)
