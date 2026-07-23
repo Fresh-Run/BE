@@ -118,10 +118,12 @@ async def collect_anchors(start: Coordinate, target_km: float,
 # ── 슬라이스 2: 앵커 → 기하 (각도 정렬 루프 + 스냅 + 거리 수선 + dead-end 우회) ──────
 # 설계 docs/ANCHOR_EPIC_DESIGN.md §3. 원형성은 sector 각도 정렬로 구조적 보장 —
 # 각 leg이 각도를 전진하므로 되돌기(out-and-back)가 불가.
-_R0_FACTOR = 0.22          # 초기 루프 반경 = target_km × 1000 × 이 값(수선으로 조정)
-_R_MAX_FACTOR = 0.50       # 반경 상한(위치 밴드 상한과 동일)
-_DIST_REPAIR_CAP = 4       # 거리 수선 재시도 상한
-_DEAD_END_SWAP_CAP = 3     # dead-end 우회 스왑 상한
+# 거리 수선(슬라이스 2.5): 반복 스케일링(수렴 불안정, hit 61%) → 반경 그리드 서치.
+# 각 그리드 반경에서 루프 생성 → 밴드 브래킷 후 target 최근접 선택.
+# ⚠️ factor 재보정(기하): K-gon 루프 perimeter ≈ 8~9r·snap → 5km면 r≈540~610m
+# = factor 0.10~0.13. 초기 0.16~0.34는 7km+ 오버슈트(hit 17%) 유발 → 0.08~0.22로 하향.
+_R_GRID_FACTORS = [0.08, 0.10, 0.12, 0.15, 0.18, 0.22]
+_DEAD_END_SWAP_CAP = 3     # dead-end 우회 스왑 상한(그리드 전역 공유)
 
 
 def select_anchors(anchors: list[Anchor], target_radius_m: float, k: int,
@@ -152,20 +154,20 @@ def _anchor_near_gap(polyline: list, picked: list[Anchor]):
 
 async def build_anchor_loop(start: Coordinate, anchors: list[Anchor],
                             target_km: float, k: int = 4):
-    """앵커 각도 루프 생성 → T-map 스냅 → 거리 수선(반경 스케일) + dead-end leg 우회.
-    반환 (RouteResponse|None, meta). 앵커 부족 시 (None, reason) → 상위가 v87 폴백."""
+    """앵커 각도 루프 생성 → T-map 스냅 → **반경 그리드 서치 거리 수선** + dead-end 우회.
+    각 그리드 반경에서 루프 생성(dead-end 앵커는 전역 제외), 밴드 내 우선 target 최근접
+    선택. 반환 (RouteResponse|None, meta). 앵커 부족 시 (None, reason) → 상위 v87 폴백."""
     from app.services.route_service import _polyline_max_gap_m, _within_band, _dist_km
 
     excluded: set[int] = set()
-    r0 = target_km * 1000 * _R0_FACTOR
-    r_max = target_km * 1000 * _R_MAX_FACTOR
-    meta = {"repair_iters": 0, "dead_end_swaps": 0}
-    best = None
+    meta = {"grid_tried": 0, "dead_end_swaps": 0}
+    candidates: list[tuple[float, list, object]] = []  # (km, picked, pr)
 
-    for _ in range(_DIST_REPAIR_CAP):
+    for f in _R_GRID_FACTORS:
+        r = target_km * 1000 * f
         picked = pr = None
         for _ in range(_DEAD_END_SWAP_CAP):
-            picked = select_anchors(anchors, r0, k, excluded)
+            picked = select_anchors(anchors, r, k, excluded)
             if len(picked) < 3:
                 break
             via = [a.coord for a in picked]
@@ -173,22 +175,21 @@ async def build_anchor_loop(start: Coordinate, anchors: list[Anchor],
             if _polyline_max_gap_m(pr.path) > _DEAD_END_GAP_M:
                 bad = _anchor_near_gap(pr.path, picked)
                 if bad is not None:
-                    excluded.add(bad.id)
+                    excluded.add(bad.id)  # 그리드 전역 제외(재발 방지)
                     meta["dead_end_swaps"] += 1
                     pr = None
-                    continue  # 유발 앵커 제외 후 재선별
-            break  # dead-end 없음(또는 특정 실패)
-        if not picked or len(picked) < 3 or pr is None:
-            return None, {**meta, "reason": "insufficient_anchors"}
-        km = pr.distance_m / 1000.0
-        if best is None or abs(km - target_km) < abs(best[2] - target_km):
-            best = (pr, picked, km)
-        if _within_band(km, target_km):
+                    continue
             break
-        r0 = min(r0 * (target_km / max(km, 0.5)), r_max)  # 반경 스케일 수선
-        meta["repair_iters"] += 1
+        meta["grid_tried"] += 1
+        if picked and len(picked) >= 3 and pr is not None:
+            candidates.append((pr.distance_m / 1000.0, picked, pr))
 
-    pr, picked, km = best
+    if not candidates:
+        return None, {**meta, "reason": "insufficient_anchors"}
+    # 밴드 내 우선(있으면 그중 target 최근접), 없으면 전체 target 최근접
+    in_band = [c for c in candidates if _within_band(c[0], target_km)]
+    km, picked, pr = min(in_band or candidates, key=lambda c: abs(c[0] - target_km))
+
     wps = ([Waypoint(name="출발", coordinate=start, is_pitstop=False)]
            + [Waypoint(name=a.name, coordinate=a.coord, is_pitstop=False) for a in picked]
            + [Waypoint(name="복귀", coordinate=start, is_pitstop=False)])

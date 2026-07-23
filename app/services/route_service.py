@@ -389,6 +389,41 @@ def _polyline_retrace(polyline: list, near_m: float = _RETRACE_NEAR_M) -> int:
     return cnt
 
 
+def _spur_metrics(polyline: list, near_m: float = _RETRACE_NEAR_M,
+                  micro_m: float = 50.0, long_m: float = 100.0) -> dict:
+    """체감 왕복 스퍼 지표(§8.16 교정, 앵커 에픽) — retrace 카운트가 마이크로 반전까지
+    세 러너 체감과 어긋난 것을 교정. 이중주행 회랑(seg가 역방향으로 다시 밟힘)을 연속
+    구간으로 묶어 길이 측정:
+    - longest_retrace_m: 최장 이중주행 회랑 길이(러너가 가장 빡치는 "N km 왕복")
+    - long_spur_count: 100m 초과 회랑 수 · micro_reversals: 50m 미만 잔반전 수
+    앵커·v87 공통 기록 → 롤아웃 A/B의 자."""
+    n = (len(polyline) - 1) if polyline else 0
+    if n < 2:
+        return {"longest_retrace_m": 0, "long_spur_count": 0, "micro_reversals": 0}
+    near_km = near_m / 1000.0
+    seg = [_dist_km(polyline[i], polyline[i + 1]) * 1000 for i in range(n)]
+    marked = [False] * n
+    for i in range(n):
+        for j in range(n):
+            if (j != i and _dist_km(polyline[j], polyline[i + 1]) <= near_km
+                    and _dist_km(polyline[j + 1], polyline[i]) <= near_km):
+                marked[i] = True
+                break
+    runs, k = [], 0
+    while k < n:
+        if marked[k]:
+            length = 0.0
+            while k < n and marked[k]:
+                length += seg[k]
+                k += 1
+            runs.append(length)
+        else:
+            k += 1
+    return {"longest_retrace_m": round(max(runs, default=0.0)),
+            "long_spur_count": sum(1 for L in runs if L > long_m),
+            "micro_reversals": sum(1 for L in runs if L < micro_m)}
+
+
 def _best_in_band(in_band: list, target_km: float, quals: dict):
     """밴드 내 후보 선택 — 1개면 그대로(현행), 복수면 tiebreak
     [park_coverage desc · zigzag_score asc · retrace asc · 거리 근접 asc].
@@ -741,6 +776,9 @@ async def create_running_route(
         best_meta["apt_checked"] = _apt_checked
     except Exception:  # noqa: BLE001 — 관측이라 실패해도 생성 무영향
         logger.warning("apt_signal 관측 실패 — 스킵", exc_info=True)
+
+    # 체감 왕복 스퍼 지표(§8.16, 앵커 에픽 롤아웃 A/B의 자) — v87·앵커 공통 기록.
+    best_meta.update(_spur_metrics(best.polyline))
 
     logger.info(
         "route_gen POOL n=%d snapped=%d tmap_legs=%d aim=%.1f target=%.1f verdict=%s",

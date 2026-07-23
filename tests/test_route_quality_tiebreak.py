@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from app.models.schemas import RouteResponse, Waypoint, Coordinate
 from app.services.route_service import (
     _park_coverage, _zigzag_score, _best_in_band,
-    _polyline_retrace, _polyline_max_gap_m,
+    _polyline_retrace, _polyline_max_gap_m, _spur_metrics,
 )
 
 
@@ -102,6 +102,22 @@ def run_tests():
     print("\n[7. 밴드 내 1개 → 현행대로(tiebreak 미적용)]")
     assert _best_in_band([(5.2, A)], 5.0, quals)[1] is A
     ok("단일 후보는 그대로 반환")
+
+    print("\n[8. _spur_metrics: 이중주행 회랑 길이(체감, §8.16)]")
+    def C2(la, lo): return Coordinate(lat=la, lng=lo)
+    # 동쪽 ~440m 나갔다 같은 점들로 복귀 = 왕복 회랑 ~440m
+    out = [C2(37.50, 126.60 + i * 0.001) for i in range(5)]  # 각 ~88m, 4구간 ~350m
+    spur = out + out[::-1][1:]
+    sm = _spur_metrics(spur)
+    assert sm["longest_retrace_m"] >= 250, f"왕복 회랑 길이 포착, got {sm}"
+    assert sm["long_spur_count"] >= 1, sm
+    # 깨끗한 사각 루프(되밟기 없음) → longest ~0
+    loop = [C2(37.50, 126.60), C2(37.505, 126.60), C2(37.505, 126.605),
+            C2(37.50, 126.605), C2(37.50, 126.60)]
+    sl = _spur_metrics(loop)
+    assert sl["longest_retrace_m"] == 0, f"깨끗한 루프 회랑 0, got {sl}"
+    ok(f"왕복 회랑 {sm['longest_retrace_m']}m 포착 · 깨끗한 루프 0 · 빈/단일 안전")
+    assert _spur_metrics([]) == {"longest_retrace_m": 0, "long_spur_count": 0, "micro_reversals": 0}
 
     print("\n" + "=" * 50 + "\n  ALL TESTS PASSED\n" + "=" * 50)
 
