@@ -139,6 +139,30 @@ def run_tests():
     assert r[0].name == "코앞공원", f"밴드 밖은 거리 tiebreak(최근접), got {r[0].name}"
     ok("밴드 밖(둘 다 핀치)은 accuracy 무시·최근접 유지(오너 C — 대표성은 밴드 내에서만)")
 
+    # ── 상업 키워드 위치 밴드 (2026-07-23 오너 승격) — 편의점 실사례(de78d97c 부검) ──
+    def cs2(name, dlat):  # CS2(편의점) Place, dlat 북쪽 이동으로 거리 지정
+        return Place(name=name, coordinate=Coordinate(lat=37.5242 + dlat, lng=126.6303),
+                     category=None, category_code="CS2", address="인천")
+
+    print("\n[13. 상업 밴드: 코앞 CU(111m, 밴드밖) < 밴드 내 GS25(240m) — 중간 보급 우선]")
+    CU111 = cs2("CU 청라파크자이2단지점", 0.00100)   # ~110m, 밴드 밖(<200m 하한)
+    GS240 = cs2("GS25 청라핑크점", 0.00217)         # ~240m, 밴드 내
+    # 리스트 순서=거리순(카카오 distance sort 모사): CU 먼저지만 밴드가 GS25를 올림
+    r = rank_places_for_keyword("편의점", [CU111, GS240], start=ST, target_km=5.0)
+    assert r[0].name == "GS25 청라핑크점", f"밴드 내(240m)가 코앞(110m) 이김, got {r[0].name}"
+    ok("코앞 111m CU보다 밴드 내 240m GS25 채택(중간 보급 목적 정합)")
+
+    print("\n[14. 상업 밴드 내 후보 0 → 현행 최근접 폴백(둘 다 <200m 핀치)]")
+    r = rank_places_for_keyword("편의점", [CU111, cs2("GS25 더코앞점", 0.00050)],
+                                start=ST, target_km=5.0)  # 둘 다 밴드 밖
+    assert r[0].name == "GS25 더코앞점", f"밴드 0이면 최근접(55m), got {r[0].name}"
+    ok("밴드 내 0이면 최근접 폴백(in_band=false로 신호) — 가용성 유지")
+
+    print("\n[15. 상업 밴드: start/target 없으면 미적용(현행 거리순 — 하위호환)]")
+    r = rank_places_for_keyword("편의점", [CU111, GS240])  # start·target 생략
+    assert [p.name for p in r] == ["CU 청라파크자이2단지점", "GS25 청라핑크점"], "원본 순서 보존"
+    ok("start/target 없으면 상업 밴드 비활성(하위호환)")
+
     print("\n" + "=" * 50 + "\n  ALL TESTS PASSED\n" + "=" * 50)
 
 

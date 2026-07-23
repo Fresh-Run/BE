@@ -198,7 +198,16 @@ def rank_places_for_keyword(
     if intent == "unknown":
         return places
     if intent == "commercial":
-        return [p for p in places if p.category_code == param]
+        # 그 카테고리 코드만 남김. 위치 밴드 우대(2026-07-23 오너 승격) — 편의점 등도
+        # pitstop 목적이 "중간 보급"이라 시작 코앞(밴드 밖)보다 밴드 내(루프 중간) 우선.
+        # 밴드 내 후보 0이면 자연히 최근접 폴백(전부 out-band → 거리순 → 최근접).
+        # 채택이 밴드 밖이면 pitstop_obs.in_band=false가 그 폴백을 신호한다.
+        cat = [p for p in places if p.category_code == param]
+        if start is None or target_km is None:
+            return cat  # 밴드 정보 없으면 현행(거리순 원본 — 하위호환)
+        return sorted(cat, key=lambda p: (
+            -int(_in_position_band(start, p, target_km)),
+            _haversine_m(start.lat, start.lng, p.coordinate.lat, p.coordinate.lng)))
     kept = [p for p in places if p.category_code not in _COMMERCIAL_CODES]
     if not kept:
         return []
