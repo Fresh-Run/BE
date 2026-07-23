@@ -730,6 +730,18 @@ async def create_running_route(
                                       initial_ratio, "band_cap_zero", pitstop=pitstop_obs)
             raise RouteGenerationFailed()  # 밴드·캡 서빙 후보 0 — 정직한 502
 
+    # 아파트 관통 관측(백로그 #6, 2026-07-23) — 선택 route의 중간 waypoint 역지오코딩해
+    # 아파트 신호 카운트. **관측 전용(필터 아님)**, best-effort. 실발생률 축적으로
+    # 접근성 필터 착수 여부 재판정(트리거: apt_signal 비율·테스터 리포트).
+    try:
+        _apt_coords = [wp.coordinate for wp in best.waypoints[1:-1]] or \
+            [wp.coordinate for wp in best.waypoints]
+        _apt_hits, _apt_checked = await map_service.count_apartment_signal(_apt_coords)
+        best_meta["apt_signal"] = _apt_hits
+        best_meta["apt_checked"] = _apt_checked
+    except Exception:  # noqa: BLE001 — 관측이라 실패해도 생성 무영향
+        logger.warning("apt_signal 관측 실패 — 스킵", exc_info=True)
+
     logger.info(
         "route_gen POOL n=%d snapped=%d tmap_legs=%d aim=%.1f target=%.1f verdict=%s",
         _POOL_SIZE, len(scored), leg_budget, chain_aim_km, target_km,

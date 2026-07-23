@@ -98,10 +98,16 @@ async def _mock_search_places(*a, **k):
     return []
 
 
+async def _mock_apt_signal(*a, **k):
+    """count_apartment_signal stub — mock 테스트가 실 Kakao 역지오코딩 안 치게."""
+    return 0, 0
+
+
 # 모듈 속성 패치 — route_service는 호출 시점에 모듈 속성을 조회하므로 이걸로 충분
 openai_service.generate_route = _mock_generate_route
 map_service.get_pedestrian_route = _mock_pedestrian
 map_service.search_places = _mock_search_places
+map_service.count_apartment_signal = _mock_apt_signal
 route_service._record_gen_failure = _capture_failure
 route_service._save_route = _capture_save
 

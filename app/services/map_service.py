@@ -22,8 +22,10 @@ API references:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
+import re
 
 import httpx
 from pydantic import ValidationError
@@ -35,6 +37,44 @@ from app.models.schemas import Coordinate, PedestrianRoute, Place
 # --- Endpoints ---------------------------------------------------------------
 
 KAKAO_KEYWORD_SEARCH_URL = "https://dapi.kakao.com/v2/local/search/keyword.json"
+KAKAO_COORD2ADDRESS_URL = "https://dapi.kakao.com/v2/local/geo/coord2address.json"
+# 아파트/사유지 단지 building_name 신호(백로그 #6 관측) — 브랜드 아파트·단지 어휘.
+_APT_SIGNAL = re.compile(
+    r"아파트|단지|자이|e편한|편한세상|푸르지오|롯데캐슬|힐스테이트|래미안|더샵|"
+    r"아이파크|주공|캐슬|위브|SK뷰|sk뷰|해모로|스위첸|리슈빌|데시앙|우방|한신")
+
+
+def _is_apartment_name(building_name: str | None) -> bool:
+    """건물명이 아파트/단지 신호면 True — 관측 분류(필터 아님)."""
+    return bool(building_name and _APT_SIGNAL.search(building_name))
+
+
+async def count_apartment_signal(coords: list[Coordinate]) -> tuple[int, int]:
+    """좌표들을 역지오코딩해 아파트 단지 building_name 신호 수 반환 (hits, checked).
+
+    관측 전용(백로그 #6, 2026-07-23) — 선택 route의 waypoint 실발생률 축적으로 접근성
+    필터 착수 여부를 데이터로 재판정. best-effort: 개별 실패는 checked에 미포함, 키
+    없거나 좌표 없으면 (0,0). 병렬 발사로 latency ~1콜.
+    ⚠️ building_name은 인접 도로점에도 근접 단지명을 반환(edge-adjacency) — 절대
+    관통 판정 아니고 근접 신호. 비율 추세용."""
+    if not settings.kakao_rest_api_key or not coords:
+        return 0, 0
+    headers = {"Authorization": f"KakaoAK {settings.kakao_rest_api_key}"}
+
+    async def _one(co: Coordinate) -> tuple[int, int]:
+        try:
+            async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+                resp = await client.get(KAKAO_COORD2ADDRESS_URL, headers=headers,
+                                        params={"x": co.lng, "y": co.lat})
+                resp.raise_for_status()
+                docs = loads_lenient(resp.text, context="kakao coord2address").get("documents", [])
+            bn = (docs[0].get("road_address") or {}).get("building_name") if docs else None
+            return (1 if _is_apartment_name(bn) else 0, 1)
+        except Exception:  # noqa: BLE001 — 관측이라 개별 실패 무시
+            return (0, 0)
+
+    results = await asyncio.gather(*[_one(c) for c in coords])
+    return sum(r[0] for r in results), sum(r[1] for r in results)
 KAKAO_DIRECTIONS_URL = "https://apis-navi.kakaomobility.com/v1/directions"
 
 NAVER_GEOCODE_URL = "https://maps.apigw.ntruss.com/map-geocode/v2/geocode"
