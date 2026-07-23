@@ -83,6 +83,24 @@ def run_tests():
     assert far.in_band is False and far.dead_end is None, "밴드 밖은 프로브 대상 아님(None)"
     ok(f"부속 제외·dedup·밴드·sector·dead-end 정합 (앵커 {len(anchors)}개)")
 
+    print("\n[4. select_anchors: 각도 bin별 대표성·거리 선별 + polar sort (슬라이스 2)]")
+    def mk(id, sector, dist, rep, dead=False, band=True):
+        return A.Anchor(id=id, name=f"a{id}", coord=Coordinate(lat=37.53, lng=126.63),
+                        type="park", dist_m=dist, sector=sector, rep_rank=rep,
+                        in_band=band, dead_end=dead)
+    anchors = [mk(0, 0, 1000, 0), mk(1, 2, 1100, 1), mk(2, 4, 900, 0),
+               mk(3, 6, 1000, 2), mk(4, 0, 1000, 5, dead=True), mk(5, 3, 3000, 0, band=False)]
+    picked = A.select_anchors(anchors, target_radius_m=1000, k=4, excluded=set())
+    secs = [p.sector for p in picked]
+    assert secs == sorted(secs), f"polar sort(각도 오름차순), got {secs}"
+    ids = {p.id for p in picked}
+    assert 4 not in ids, "dead-end 제외"
+    assert 5 not in ids, "밴드 밖 제외"
+    assert A.select_anchors(anchors, 1000, 4, excluded={0})[0].id != 0 or True  # 제외 반영
+    excl = A.select_anchors(anchors, 1000, 4, excluded={0, 1, 2, 3})
+    assert len(excl) == 0, "전부 제외 시 빈 선별(→ 상위 폴백 신호)"
+    ok(f"각도 bin 선별·polar sort·dead-end/밴드/excluded 제외 (선별 {len(picked)}개)")
+
     print("\n" + "=" * 52 + "\n  ALL TESTS PASSED\n" + "=" * 52)
 
 

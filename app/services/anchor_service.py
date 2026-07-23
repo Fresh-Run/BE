@@ -15,7 +15,7 @@ import math
 import re
 from dataclasses import dataclass
 
-from app.models.schemas import Coordinate
+from app.models.schemas import Coordinate, RouteResponse, Waypoint
 from app.services import map_service
 
 logger = logging.getLogger(__name__)
@@ -113,3 +113,88 @@ async def collect_anchors(start: Coordinate, target_km: float,
 
     _CACHE[ckey] = anchors
     return anchors
+
+
+# ── 슬라이스 2: 앵커 → 기하 (각도 정렬 루프 + 스냅 + 거리 수선 + dead-end 우회) ──────
+# 설계 docs/ANCHOR_EPIC_DESIGN.md §3. 원형성은 sector 각도 정렬로 구조적 보장 —
+# 각 leg이 각도를 전진하므로 되돌기(out-and-back)가 불가.
+_R0_FACTOR = 0.22          # 초기 루프 반경 = target_km × 1000 × 이 값(수선으로 조정)
+_R_MAX_FACTOR = 0.50       # 반경 상한(위치 밴드 상한과 동일)
+_DIST_REPAIR_CAP = 4       # 거리 수선 재시도 상한
+_DEAD_END_SWAP_CAP = 3     # dead-end 우회 스왑 상한
+
+
+def select_anchors(anchors: list[Anchor], target_radius_m: float, k: int,
+                   excluded: set[int]) -> list[Anchor]:
+    """8 sector를 k개 각도 bin으로 나눠 각 bin에서 target_radius 근접·대표성 좋은
+    앵커 1개 → polar sort(각도 정렬). 밴드 내·non-dead-end·미제외만."""
+    pool = [a for a in anchors if a.in_band and not a.dead_end and a.id not in excluded]
+    bins: dict[int, tuple[float, Anchor]] = {}
+    for a in pool:
+        b = int(a.sector / 8 * k)  # 0..k-1
+        score = abs(a.dist_m - target_radius_m) + a.rep_rank * 40  # 거리 근접 + 대표성 가중
+        if b not in bins or score < bins[b][0]:
+            bins[b] = (score, a)
+    picked = [v[1] for v in bins.values()]
+    picked.sort(key=lambda a: a.sector)  # 각도 순 방문 → 원형 구조 보장
+    return picked
+
+
+def _anchor_near_gap(polyline: list, picked: list[Anchor]):
+    """폴리라인 최대갭 지점에 가장 가까운 앵커 — dead-end leg 유발자 특정."""
+    from app.services.route_service import _dist_km
+    if len(polyline) < 2:
+        return None
+    gi = max(range(1, len(polyline)), key=lambda i: _dist_km(polyline[i - 1], polyline[i]))
+    mid = polyline[gi]
+    return min(picked, key=lambda a: _dist_km(a.coord, mid))
+
+
+async def build_anchor_loop(start: Coordinate, anchors: list[Anchor],
+                            target_km: float, k: int = 4):
+    """앵커 각도 루프 생성 → T-map 스냅 → 거리 수선(반경 스케일) + dead-end leg 우회.
+    반환 (RouteResponse|None, meta). 앵커 부족 시 (None, reason) → 상위가 v87 폴백."""
+    from app.services.route_service import _polyline_max_gap_m, _within_band, _dist_km
+
+    excluded: set[int] = set()
+    r0 = target_km * 1000 * _R0_FACTOR
+    r_max = target_km * 1000 * _R_MAX_FACTOR
+    meta = {"repair_iters": 0, "dead_end_swaps": 0}
+    best = None
+
+    for _ in range(_DIST_REPAIR_CAP):
+        picked = pr = None
+        for _ in range(_DEAD_END_SWAP_CAP):
+            picked = select_anchors(anchors, r0, k, excluded)
+            if len(picked) < 3:
+                break
+            via = [a.coord for a in picked]
+            pr = await map_service.get_pedestrian_route(origin=start, destination=start, waypoints=via)
+            if _polyline_max_gap_m(pr.path) > _DEAD_END_GAP_M:
+                bad = _anchor_near_gap(pr.path, picked)
+                if bad is not None:
+                    excluded.add(bad.id)
+                    meta["dead_end_swaps"] += 1
+                    pr = None
+                    continue  # 유발 앵커 제외 후 재선별
+            break  # dead-end 없음(또는 특정 실패)
+        if not picked or len(picked) < 3 or pr is None:
+            return None, {**meta, "reason": "insufficient_anchors"}
+        km = pr.distance_m / 1000.0
+        if best is None or abs(km - target_km) < abs(best[2] - target_km):
+            best = (pr, picked, km)
+        if _within_band(km, target_km):
+            break
+        r0 = min(r0 * (target_km / max(km, 0.5)), r_max)  # 반경 스케일 수선
+        meta["repair_iters"] += 1
+
+    pr, picked, km = best
+    wps = ([Waypoint(name="출발", coordinate=start, is_pitstop=False)]
+           + [Waypoint(name=a.name, coordinate=a.coord, is_pitstop=False) for a in picked]
+           + [Waypoint(name="복귀", coordinate=start, is_pitstop=False)])
+    route = RouteResponse(summary="x", total_distance_km=round(km, 1),
+                          polyline=pr.path, waypoints=wps)
+    meta.update({"km": round(km, 2), "max_gap": _polyline_max_gap_m(pr.path),
+                 "closure_m": round(_dist_km(pr.path[0], pr.path[-1]) * 1000, 1) if pr.path else None,
+                 "n_anchors": len(picked), "hit": int(_within_band(km, target_km))})
+    return route, meta
