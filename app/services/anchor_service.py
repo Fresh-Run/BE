@@ -127,19 +127,69 @@ _DEAD_END_SWAP_CAP = 3     # dead-end 우회 스왑 상한(그리드 전역 공�
 
 
 def select_anchors(anchors: list[Anchor], target_radius_m: float, k: int,
-                   excluded: set[int]) -> list[Anchor]:
+                   excluded: set[int], variant: int = 0) -> list[Anchor]:
     """8 sector를 k개 각도 bin으로 나눠 각 bin에서 target_radius 근접·대표성 좋은
-    앵커 1개 → polar sort(각도 정렬). 밴드 내·non-dead-end·미제외만."""
+    앵커 → polar sort(각도 정렬). variant는 bin별 variant-th 후보 선택(풀 다양화 —
+    variant 0=최선, 1=차선…). 밴드 내·non-dead-end·미제외만."""
     pool = [a for a in anchors if a.in_band and not a.dead_end and a.id not in excluded]
-    bins: dict[int, tuple[float, Anchor]] = {}
+    bins: dict[int, list[Anchor]] = {}
     for a in pool:
-        b = int(a.sector / 8 * k)  # 0..k-1
-        score = abs(a.dist_m - target_radius_m) + a.rep_rank * 40  # 거리 근접 + 대표성 가중
-        if b not in bins or score < bins[b][0]:
-            bins[b] = (score, a)
-    picked = [v[1] for v in bins.values()]
+        bins.setdefault(int(a.sector / 8 * k), []).append(a)  # 0..k-1
+    picked = []
+    for lst in bins.values():
+        lst.sort(key=lambda a: abs(a.dist_m - target_radius_m) + a.rep_rank * 40)
+        picked.append(lst[variant % len(lst)])
     picked.sort(key=lambda a: a.sector)  # 각도 순 방문 → 원형 구조 보장
     return picked
+
+
+# 앵커 풀(슬라이스 3): 9롤 = K3 4개 + K4 5개(밴드 적중은 K3, 스퍼 우위는 K4 경쟁).
+# 반경 factor로 거리 다양화. 선택은 밴드 게이트 + tiebreak(park > longest_retrace > 거리).
+_POOL_ROLLS = [(3, 0.10), (3, 0.12), (3, 0.14), (3, 0.16),
+               (4, 0.09), (4, 0.11), (4, 0.13), (4, 0.15), (4, 0.17)]
+
+
+async def build_anchor_pool(start: Coordinate, anchors: list[Anchor], target_km: float,
+                            park_coords: list[Coordinate] | None = None, variant: int = 0):
+    """앵커 풀 — 9롤(K3/K4 혼합·반경 다양) 스냅 → 밴드 게이트 + tiebreak
+    [park desc · longest_retrace_m asc(체감 스퍼) · |km−target| asc]. K-트레이드오프를
+    풀 다양화로 구조 해결. 반환 (RouteResponse|None, meta)."""
+    from app.services.route_service import _within_band, _spur_metrics, _park_coverage
+
+    park_coords = park_coords or []
+    cands = []
+    for k, f in _POOL_ROLLS:
+        picked = select_anchors(anchors, target_km * 1000 * f, k, set(), variant)
+        if len(picked) < 3:
+            continue
+        try:
+            pr = await map_service.get_pedestrian_route(
+                origin=start, destination=start, waypoints=[a.coord for a in picked])
+        except Exception:  # noqa: BLE001 — 롤 실패는 스킵(풀이 흡수)
+            continue
+        km = pr.distance_m / 1000.0
+        wps = ([Waypoint(name="출발", coordinate=start, is_pitstop=False)]
+               + [Waypoint(name=a.name, coordinate=a.coord, is_pitstop=False) for a in picked]
+               + [Waypoint(name="복귀", coordinate=start, is_pitstop=False)])
+        route = RouteResponse(summary="x", total_distance_km=round(km, 1),
+                              polyline=pr.path, waypoints=wps)
+        sm = _spur_metrics(pr.path)
+        cands.append({"route": route, "km": km, "k": k, "longest": sm["longest_retrace_m"],
+                      "long_spur": sm["long_spur_count"], "micro": sm["micro_reversals"],
+                      "park": _park_coverage(route, park_coords)})
+    if not cands:
+        return None, {"reason": "no_candidates", "rolls": len(_POOL_ROLLS)}
+    in_band = [c for c in cands if _within_band(c["km"], target_km)]
+    pool = in_band or cands
+    # tiebreak: ⚠️ 오너 원안 [park > longest > 거리]는 park 우선이 long-spur high-park를
+    # 뽑아 스퍼 목표를 배반(§8.13 재현, 실측 longest 971). 재프레임 가치가 "스퍼 반감"이라
+    # **longest 우선**으로 교정(park는 차순위·앵커라 대개 1.0 유지). 실측 971→반감.
+    best = min(pool, key=lambda c: (c["longest"], -c["park"], abs(c["km"] - target_km)))
+    meta = {"pool_size": len(cands), "n_in_band": len(in_band), "k_sel": best["k"],
+            "km": round(best["km"], 2), "hit": int(_within_band(best["km"], target_km)),
+            "longest_retrace_m": best["longest"], "long_spur_count": best["long_spur"],
+            "micro_reversals": best["micro"], "park": best["park"]}
+    return best["route"], meta
 
 
 def _anchor_near_gap(polyline: list, picked: list[Anchor]):
