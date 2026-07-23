@@ -189,8 +189,10 @@ _PRE_GATE_REROLLS = 2  # (v2.7 배치 풀에서 미사용 — attempt 재추첨 
 # 4→다수로 늘려 Gemini 산포를 흡수(현행은 12콜 생성에 스냅 4개뿐이던 낭비 제거).
 # 적응형 폐기(1패스라 attempt 간 피드백 없음 — est_ratio는 초기 조준에만).
 _POOL_SIZE = 9              # 병렬 생성 후보 수(Gemini 9콜 고정)
-_REDRAW_POOL_SIZE = 5       # 적응 재추첨 축소 풀(미노스 부검 2026-07-24) — band_cap_zero
-                           # 언더슈트 지배 시 실측 ratio로 aim 상향해 1회만 재시도(+~5-8s)
+# 적응 재추첨 풀(미노스 부검) — band_cap_zero 언더슈트 지배 시 실측 ratio로 aim 상향해
+# 1회만 재시도. 5→8 증량(2026-07-24): variance 꼬리 축소, 실패 경로만이라 happy path
+# 무영향(스태거 1.75s+병렬~6-8s, 메인 풀과 합쳐 ~14s < 20s 예산 내).
+_REDRAW_POOL_SIZE = 8
 # 롤 간 스태거(2026-07-22): 9콜 동시 발사가 Gemini relay 순간 RPM을 튀겨 429
 # 스로틀→일부 롤 실패→후보 부족→502를 유발(E2E 성수 실측: /chat/completions 재시도
 # 3회). roll j를 j×이 값만큼 늦게 발사해 피크를 평탄화(~9RPS→~4RPS). 총 추가 지연
