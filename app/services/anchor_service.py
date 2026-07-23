@@ -126,12 +126,22 @@ _R_GRID_FACTORS = [0.08, 0.10, 0.12, 0.15, 0.18, 0.22]
 _DEAD_END_SWAP_CAP = 3     # dead-end 우회 스왑 상한(그리드 전역 공유)
 
 
+# vertex 반경 상단(슬라이스 3 최종): 루프 꼭짓점은 0.35×target 내만 — far anchor
+# (예: 목동 실개천 1565m=0.31)를 꼭짓점서 배제해 거리-강제 왕복 스퍼 제거(목동 2268m
+# 부검). far anchor는 pitstop 용도로만(spur 명시, §8.14 through-path 정합). 위치 밴드
+# 상단(0.5, pitstop용)과 별개 축.
+_VERTEX_MAX_FACTOR = 0.35
+
+
 def select_anchors(anchors: list[Anchor], target_radius_m: float, k: int,
-                   excluded: set[int], variant: int = 0) -> list[Anchor]:
+                   excluded: set[int], variant: int = 0,
+                   vertex_max_m: float | None = None) -> list[Anchor]:
     """8 sector를 k개 각도 bin으로 나눠 각 bin에서 target_radius 근접·대표성 좋은
     앵커 → polar sort(각도 정렬). variant는 bin별 variant-th 후보 선택(풀 다양화 —
-    variant 0=최선, 1=차선…). 밴드 내·non-dead-end·미제외만."""
-    pool = [a for a in anchors if a.in_band and not a.dead_end and a.id not in excluded]
+    variant 0=최선, 1=차선…). vertex_max_m 있으면 far anchor 꼭짓점 배제(거리-강제 스퍼
+    방지). 밴드 내·non-dead-end·미제외만."""
+    pool = [a for a in anchors if a.in_band and not a.dead_end and a.id not in excluded
+            and (vertex_max_m is None or a.dist_m <= vertex_max_m)]
     bins: dict[int, list[Anchor]] = {}
     for a in pool:
         bins.setdefault(int(a.sector / 8 * k), []).append(a)  # 0..k-1
@@ -157,9 +167,10 @@ async def build_anchor_pool(start: Coordinate, anchors: list[Anchor], target_km:
     from app.services.route_service import _within_band, _spur_metrics, _park_coverage
 
     park_coords = park_coords or []
+    vertex_max_m = target_km * 1000 * _VERTEX_MAX_FACTOR  # far anchor 꼭짓점 배제
     cands = []
     for k, f in _POOL_ROLLS:
-        picked = select_anchors(anchors, target_km * 1000 * f, k, set(), variant)
+        picked = select_anchors(anchors, target_km * 1000 * f, k, set(), variant, vertex_max_m)
         if len(picked) < 3:
             continue
         try:
