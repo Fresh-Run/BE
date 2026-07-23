@@ -38,10 +38,12 @@ from app.models.schemas import Coordinate, PedestrianRoute, Place
 
 KAKAO_KEYWORD_SEARCH_URL = "https://dapi.kakao.com/v2/local/search/keyword.json"
 KAKAO_COORD2ADDRESS_URL = "https://dapi.kakao.com/v2/local/geo/coord2address.json"
-# 아파트/사유지 단지 building_name 신호(백로그 #6 관측) — 브랜드 아파트·단지 어휘.
+# 아파트/사유지 단지 + 접근 제한 구역 building_name/주소 신호(백로그 #6 관측).
+# 브랜드 아파트·단지 + 군사·반환부지·예약제 구역(용산 부검 §8.14) — 관측 전용(필터 아님).
 _APT_SIGNAL = re.compile(
     r"아파트|단지|자이|e편한|편한세상|푸르지오|롯데캐슬|힐스테이트|래미안|더샵|"
-    r"아이파크|주공|캐슬|위브|SK뷰|sk뷰|해모로|스위첸|리슈빌|데시앙|우방|한신")
+    r"아이파크|주공|캐슬|위브|SK뷰|sk뷰|해모로|스위첸|리슈빌|데시앙|우방|한신|"
+    r"반환부지|기지|군부대|부대|military|훈련장|주둔지|위수지역")
 
 
 def _is_apartment_name(building_name: str | None) -> bool:
@@ -68,8 +70,13 @@ async def count_apartment_signal(coords: list[Coordinate]) -> tuple[int, int]:
                                         params={"x": co.lng, "y": co.lat})
                 resp.raise_for_status()
                 docs = loads_lenient(resp.text, context="kakao coord2address").get("documents", [])
-            bn = (docs[0].get("road_address") or {}).get("building_name") if docs else None
-            return (1 if _is_apartment_name(bn) else 0, 1)
+            # building_name(도로명 건물) + address_name(지번/도로명) 둘 다 검사 —
+            # 반환부지·기지 신호는 건물명 없이 주소에만 있을 수 있음(같은 응답, 추가 콜 0).
+            d0 = docs[0] if docs else {}
+            bn = (d0.get("road_address") or {}).get("building_name") or ""
+            addr = ((d0.get("road_address") or {}).get("address_name")
+                    or (d0.get("address") or {}).get("address_name") or "")
+            return (1 if _is_apartment_name(bn + " " + addr) else 0, 1)
         except Exception:  # noqa: BLE001 — 관측이라 개별 실패 무시
             return (0, 0)
 

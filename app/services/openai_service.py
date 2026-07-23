@@ -295,6 +295,8 @@ def _build_prompt(
         "better than a padded one that hits the number exactly.\n"
         "- Do NOT invent obscure or unnamed spots, and do NOT route through the "
         "inside of apartment complexes, parking lots, or private/enclosed areas.\n"
+        "- Do NOT place waypoints in military bases, restricted or reservation-only "
+        "zones (기지·반환부지·예약제 구역) — prefer public, freely-runnable parks and paths.\n"
         "- Do NOT invent place names, descriptions, or a title — return ordered "
         "waypoints as realistic WGS84 coordinates only."
     )
