@@ -27,13 +27,26 @@ _ANCHOR_KEYWORDS: list[tuple[str, str]] = [
     ("water", "한강공원"), ("water", "하천"), ("water", "강변"),
     ("trail", "산책로"), ("trail", "둘레길"),
 ]
-# non-runnable 부속시설 제외(슬라이스 1 실측: "공원" 키워드가 주차장·지하차도·아파트·
-# 몰을 반환). 실명 공원은 유지, 부속·상업 파생만 제거(pitstop 대표성 필터와 동형).
-_NON_RUNNABLE = re.compile(
+# non-runnable 제외(슬라이스 1 실측: "공원" 키워드가 주차장·지하차도·아파트·몰을 반환).
+# 실명 공원은 유지, 부속·상업 파생만 제거(pitstop 대표성 필터와 동형).
+# 2분류 — 시설(항상 제외) vs 업소(공원류 이름이면 무효). 후자는 한국어 동음이의 오탐
+# 방지(은행↔은행나무공원·학원↔학원사거리공원 전례, 2026-07-24 자책 회귀 부검):
+# 업소텀은 이름에 공원류 토큰이 없을 때만 제외한다.
+_FACILITY = re.compile(
     r"주차장|주차|지하차도|아파트|상가|프라자|플라자|몰|마트|주민센터|화장실|음수대|"
-    r"관리사무소|매점|편의점|정류장|출입구|버스|지하철|"
-    # 업소(부동산·중개사·사무소 등) — 이름에 강변/한강이 들어가 수변 오탐하던 것 차단
-    r"공인중개사|중개사|부동산|사무소|공인중개|병원|약국|학원|은행")
+    r"관리사무소|매점|편의점|정류장|출입구|버스|지하철")
+_BUSINESS = re.compile(r"공인중개사|중개사|부동산|사무소|병원|약국|학원|은행")
+# 공원류 토큰 — 있으면 업소텀 무효(은행나무공원은 공원이지 은행이 아니다).
+_GREENSPACE = re.compile(r"공원|산책로|둘레길|천|숲")
+
+
+def _is_non_runnable(name: str) -> bool:
+    """부속시설·업소 제외 판정. 시설텀은 무조건 제외, 업소텀은 공원류 토큰이 없을 때만."""
+    if _FACILITY.search(name):
+        return True
+    if _BUSINESS.search(name) and not _GREENSPACE.search(name):
+        return True
+    return False
 _DEDUP_M = 120.0          # 같은 앵커 중복 제거 반경(여러 키워드가 같은 공원 반환)
 _DEAD_END_GAP_M = 250.0   # start→anchor 프로브 leg 최대갭 > 이 값이면 dead-end(교량/수변 신호)
 _PROBE_TOP_N = 8          # dead-end 프로브 대상(in-band 상위 N — 비용 상한)
@@ -87,7 +100,7 @@ async def collect_anchors(start: Coordinate, target_km: float,
     for (typ, kw), places in zip(_ANCHOR_KEYWORDS, results):
         ranked = map_service.rank_places_for_keyword(kw, places, start=start, target_km=target_km)
         for rank, p in enumerate(ranked):
-            if _NON_RUNNABLE.search(p.name):
+            if _is_non_runnable(p.name):
                 continue  # 부속시설·상업 파생(주차장·아파트·몰 등) — runnable 앵커 아님
             if any(map_service._haversine_m(a.coord.lat, a.coord.lng,
                                             p.coordinate.lat, p.coordinate.lng) <= _DEDUP_M
@@ -170,11 +183,35 @@ _CANDIDATE_CONFIGS = [(4, 0.11), (3, 0.13), (4, 0.12), (3, 0.11), (4, 0.13)]
 # 한강·강변·호수 + 서울 하천명(양재천·탄천·중랑천·안양천…): "…천" 뒤 경계/산책/공원.
 # "천호"처럼 천이 접두면 앞 글자 없어 미스매치(오탐 회피).
 _WATERFRONT = re.compile(r"한강|강변|수변|호수|하천|천변|[가-힣]천(?=\s|$|산책|둔치|공원|길)")
-_WATER_RING_FACTORS = [0.06, 0.10]  # 나머지 앵커 소반경(작은 링 + 수변 spur = ~target)
+# 수변 후보 내부 변형(others 수 × 소반경 factor) — 이 중 chain_target 최근접을 채택
+# (밴드 적응 캘리브레이션, 2026-07-24: 청라 초과·미노스 미달 동시 교정. 고정 factor는
+# 지역별 도로 팽창차로 밴드를 못 맞춤 — 청라 1.69 vs 미노스 1.35. chain_target은 격자
+# 팽창을 역산하므로 chain≈chain_target 후보가 스냅 시 ≈target으로 착지).
+# 수변 후보 내부 변형 — others=2 고정(others=1은 체인 과단→pre-gate 드롭), factor 스프레드.
+_WATER_VARIANTS = [(2, f) for f in (0.06, 0.08, 0.10, 0.12)]
+# 수변 후보 chain 조준 = chain_aim × 이 비율(수변 spur 도로 팽창이 격자보다 커 짧게 조준).
+# 0.80: 미노스·목동 in-band 무회귀 실측(2026-07-24). 청라류 고팽창·희소앵커 지역은
+# 팩터 무관 초과라 in-band 불가 — v87이 서빙(범위 밖, 앵커는 밴드 내만 기여).
+_WATER_CHAIN_FRAC = 0.80
 
 
 def _is_waterfront(a: Anchor) -> bool:
     return a.type == "water" or bool(_WATERFRONT.search(a.name))
+
+
+def _hav_m(a: Coordinate, b: Coordinate) -> float:
+    R = 6371000.0
+    p1, p2 = math.radians(a.lat), math.radians(b.lat)
+    dphi = math.radians(b.lat - a.lat)
+    dl = math.radians(b.lng - a.lng)
+    x = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * R * math.asin(math.sqrt(x))
+
+
+def _chain_km(start: Coordinate, picked: list[Anchor]) -> float:
+    """앵커 체인의 직선 길이(start→picked→start, km) — 사전게이트·밴드 조준용."""
+    pts = [start] + [a.coord for a in picked] + [start]
+    return sum(_hav_m(pts[i], pts[i + 1]) for i in range(len(pts) - 1)) / 1000.0
 
 
 def _make_anchor_route(start, picked, target_km, needs_pitstop):
@@ -191,24 +228,43 @@ def _make_anchor_route(start, picked, target_km, needs_pitstop):
 
 
 def build_anchor_candidates(start: Coordinate, anchors: list[Anchor], target_km: float,
-                            n: int, needs_pitstop: bool = False) -> list[RouteResponse]:
+                            n: int, needs_pitstop: bool = False,
+                            chain_target_km: float | None = None) -> list[RouteResponse]:
     """혼합 풀 기여자 — 미스냅 앵커 체인 n개(각도 정렬, 중립 라벨). route_service가
     v87 롤과 함께 공통 스냅·선택. **수변 spur 후보 우선**(한강 등 고대표성 수변을 꼭짓점
-    편입, 나머지 링 축소로 밴드 보정 — 01:43 한강 미접근 부검). needs_pitstop이면 앵커
-    1개를 is_pitstop 슬롯으로(기존 대표성 해석이 대체). 스냅은 상위가 수행."""
+    편입 — 01:43 한강 미접근 부검). needs_pitstop이면 앵커 1개를 is_pitstop 슬롯으로.
+
+    chain_target_km(격자적응)이 오면 수변 내부 변형(others 수 × factor) 중 **chain이
+    chain_target에 가장 가까운 것**을 채택 — 지역별 도로 팽창차를 흡수해 밴드 중앙 조준
+    (2026-07-24 캘리브레이션: 청라 초과·미노스 미달 동시 교정). None이면 레거시(짧은 순)."""
     vertex_max = target_km * 1000 * _VERTEX_MAX_FACTOR
     out: list[RouteResponse] = []
     # 1) 수변 spur 후보 — 밴드 내 고대표성(rep≤3) 수변 앵커 있으면 우선 생성
     water = sorted([a for a in anchors if a.in_band and _is_waterfront(a) and a.rep_rank <= 3],
                    key=lambda a: a.rep_rank)
-    if water:
+    if water and n > 0:
         wf = water[0]
         non_water = [a for a in anchors if a.id != wf.id and not _is_waterfront(a)]
-        for i, f in enumerate(_WATER_RING_FACTORS[:min(2, n)]):
-            others = select_anchors(non_water, target_km * 1000 * f, 2, set(), i, vertex_max)
-            if not others:
+        # 변형(others 수 × factor) 생성 후 chain 기준 선택. 수변 spur 팽창이 격자보다
+        # 크므로 조준점은 chain_aim이 아니라 그보다 짧은 _WATER_CHAIN_FRAC×chain_aim
+        # (2026-07-24 실측: chain_aim 직접 조준 시 미노스 5.6 초과 회귀). chain_target
+        # 없으면 레거시(짧은 순).
+        variants: list[tuple[float, list[Anchor]]] = []
+        seen: set[float] = set()
+        for vi, (ok, f) in enumerate(_WATER_VARIANTS):
+            others = select_anchors(non_water, target_km * 1000 * f, ok, set(), vi, vertex_max)
+            if len(others) < ok:
                 continue
             combined = sorted(others + [wf], key=lambda a: a.sector)  # 각도 정렬(수변 포함)
+            chain = _chain_km(start, combined)
+            key = round(chain, 1)
+            if key in seen:  # 동일 chain 변형 중복 제거
+                continue
+            seen.add(key)
+            variants.append((chain, combined))
+        aim = chain_target_km * _WATER_CHAIN_FRAC if chain_target_km else None
+        variants.sort(key=lambda c: (abs(c[0] - aim) if aim else c[0]))
+        for _chain, combined in variants[:min(2, n)]:
             out.append(_make_anchor_route(start, combined, target_km, needs_pitstop))
     # 2) 나머지는 일반 앵커 롤(다양성)
     for i, (k, f) in enumerate(_CANDIDATE_CONFIGS[:max(0, n - len(out))]):

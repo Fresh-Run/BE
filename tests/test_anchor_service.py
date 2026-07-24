@@ -38,14 +38,21 @@ def run_tests():
     assert A._sector(ST, S) == 6, A._sector(ST, S)
     ok("E→0 · N→2 · W→4 · S→6 (각도 분산 입력)")
 
-    print("\n[2. _NON_RUNNABLE: 부속시설·상업 제외, 실명 공원 유지]")
+    print("\n[2. _is_non_runnable: 시설 항상 제외 · 업소는 공원류 없을 때만(동음이의 가드)]")
+    # (a) 시설텀 — 무조건 제외(공원 포함이어도)
     for n in ("청라호수공원 대형주차장", "호수공원1지하차도", "청라호수공원한신더휴아파트",
-              "호수공원프라자", "용산아이파크몰 더 가든",
-              "강변공인중개사사무소", "한강부동산", "한강병원", "호수공원약국"):  # 업소(수변 오탐 차단)
-        assert A._NON_RUNNABLE.search(n), n
+              "호수공원프라자", "용산아이파크몰 더 가든"):
+        assert A._is_non_runnable(n), n
+    # (b) 업소텀 + 공원류 토큰 없음 → 제외
+    for n in ("강변공인중개사사무소", "한강부동산", "한강병원", "강남약국", "역삼은행", "대치학원"):
+        assert A._is_non_runnable(n), n
+    # (c) 오탐 가드 — 업소텀이 있으나 공원류 토큰 → 유지(은행나무공원·학원사거리공원 전례)
+    for n in ("논현은행나무공원", "신사은행나무공원", "학원사거리공원", "은행나무산책로"):
+        assert not A._is_non_runnable(n), f"동음이의 오탐 가드 실패: {n}"
+    # (d) 실명 공원 — 유지
     for n in ("청라호수공원", "역삼문화공원", "이촌한강공원", "성수동구두테마공원"):
-        assert not A._NON_RUNNABLE.search(n), n
-    ok("주차장·지하차도·아파트·프라자·몰 제외 · 실명 공원 유지")
+        assert not A._is_non_runnable(n), n
+    ok("시설 항상 제외 · 업소는 공원류 없을 때만(은행↔은행나무공원 오탐 근절) · 실명 공원 유지")
 
     print("\n[3. collect_anchors: 필터+dedup+밴드+sector+dead-end (mock)]")
     P = lambda name, la, lo: Place(name=name, coordinate=Coordinate(lat=la, lng=lo),
@@ -124,11 +131,17 @@ def run_tests():
 
     def _has_wf(rt):
         return any((wp.coordinate.lat, wp.coordinate.lng) == wf_coord for wp in rt.waypoints[1:-1])
-    assert all(_has_wf(c) for c in cands), "모든 수변 후보가 한강 앵커를 꼭짓점으로 편입(dead_end이어도)"
+    # 수변 후보가 생성되고 wf(dead_end이어도)를 편입 · 최우선(첫 후보)에 배치.
+    # (희소 앵커면 변형 dedup으로 수변 1개+일반 채움 가능 — 실프로덕션은 앵커 다수라 수변만.)
+    assert _has_wf(cands[0]), "수변 후보가 최우선(첫 후보) — wf 꼭짓점 편입(dead_end 허용)"
+    assert any(_has_wf(c) for c in cands), "수변 후보 존재"
+    # chain_target_km 조준: 격자적응(수변 spur 팽창 보정) — aim에 가까운 변형 채택
+    cands2 = A.build_anchor_candidates(ST, [WF] + parks, 5.0, n=2, chain_target_km=3.6)
+    assert _has_wf(cands2[0]), "chain_target 조준 경로에서도 수변 최우선"
     # dead_end 수변인데도 편입됐는지 = spur 허용 확인. 일반 select_anchors는 dead_end 제외.
     plain = A.select_anchors([WF] + parks, target_radius_m=500, k=4, excluded=set())
     assert WF.id not in {p.id for p in plain}, "일반 선별은 dead_end 수변 제외(대조군)"
-    ok(f"수변 후보 {len(cands)}개 전부 한강 꼭짓점 편입 · 일반 선별은 dead_end 제외(spur 허용 대비)")
+    ok(f"수변 후보 최우선·wf 편입(chain_target 유무 공통) · 일반 선별은 dead_end 제외")
 
     print("\n" + "=" * 52 + "\n  ALL TESTS PASSED\n" + "=" * 52)
 

@@ -688,7 +688,8 @@ async def create_running_route(
                 req.start, target_km, probe_dead_end=False)
             for _ar in anchor_service.build_anchor_candidates(
                     req.start, _anchors, target_km, anchor_n,
-                    needs_pitstop=bool(req.pitstop_keyword)):
+                    needs_pitstop=bool(req.pitstop_keyword),
+                    chain_target_km=chain_aim_km):  # 밴드적응 캘리브레이션(격자 팽창 역산)
                 gen_cands.append((_ar, _waypoint_chain_km(_ar), 0.0))
                 engine_of[id(_ar)] = "anchor"
         except Exception:  # noqa: BLE001 — 앵커 실패가 생성을 막지 않는다(v87로 서빙)
