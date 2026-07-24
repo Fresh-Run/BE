@@ -30,8 +30,8 @@ from app.models.schemas import (
 )
 from app.core.config import settings
 from app.services import (
-    anchor_service, feedback_service, map_service, notification_service,
-    openai_service, profile_service,
+    anchor_service, canonical_service, feedback_service, map_service,
+    notification_service, openai_service, profile_service,
 )
 
 logger = logging.getLogger(__name__)
@@ -645,6 +645,19 @@ async def create_running_route(
             lat=(req.start.lat + req.end.lat) / 2,
             lng=(req.start.lng + req.end.lng) / 2,
         )
+
+    # 캐노니컬 코스 레이어(오너 통찰) — loop 요청서 아는 실코스가 진입권·거리 밴드 내면
+    # 생성보다 우선 서빙(Gemini 0콜). 미스/장애면 None → 현행 생성 폴백(무변경).
+    if req.end is None:
+        _canon = await canonical_service.match_and_build(req.start, target_km, lang=lang)
+        if _canon is not None:
+            _croute, _cmeta = _canon
+            _celapsed = round(time.perf_counter() - _t0, 1)
+            logger.info("[PERF] route canonical: total=%.1fs | course=%s km=%.1f",
+                        _celapsed, _cmeta.get("course_name"), _croute.total_distance_km)
+            await _save_route(req, _croute, user_id, target_distance_km=target_km,
+                              gen_meta={**_cmeta, "one_way": False, "elapsed_s": _celapsed})
+            return _croute
 
     # 초기 조준(적응형 폐기 — 1패스 풀이라 attempt 간 피드백 없음)
     est_ratio = _initial_est_ratio(req.start, start_end_km)
