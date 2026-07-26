@@ -60,8 +60,8 @@ def run():
     assert meta["engine"] == "canonical" and meta["course_id"] == "c1", meta
     # 총거리 = 진입 왕복(0.2+0.2) + 코스 4.71 ≈ 5.1
     assert 4.9 <= route.total_distance_km <= 5.3, f"총거리 ~5.1, got {route.total_distance_km}"
-    # 폴리라인 스티치: 진입 leg(2) + 코스(4) + 진입 leg(2) = 8점
-    assert len(route.polyline) == 8, f"스티치 폴리라인, got {len(route.polyline)}"
+    # 폴리라인 스티치: 진입 leg(2) + 회전 코스(4+접점복귀 1=5) + 진입 leg(2) = 9점
+    assert len(route.polyline) == 9, f"스티치 폴리라인, got {len(route.polyline)}"
     # waypoint 라벨은 중립(실명은 summary만)
     assert [w.name for w in route.waypoints] == ["출발", "지점 1", "복귀"], [w.name for w in route.waypoints]
     assert route.target_missed is False, "5.1 vs 5.0 → 밴드 내(0.5 미만)"
@@ -127,6 +127,44 @@ def run():
     r8 = asyncio.run(_t8())
     assert r8 is not None, "우선진입점 단독도 관대밴드로 서빙"
     ok("우선진입점 단독 서빙(관대 밴드 1.0)")
+
+    print("\n[9. 루프 회전 — 진입 접점 기준 회전으로 호수 관통 현 제거]")
+    import math as _m
+    def _gap(a, b):
+        R=6371000.0;p1,p2=_m.radians(a.lat),_m.radians(b.lat)
+        dp=_m.radians(b.lat-a.lat);dl=_m.radians(b.lng-a.lng)
+        return 2*R*_m.asin(_m.sqrt(_m.sin(dp/2)**2+_m.cos(p1)*_m.cos(p2)*_m.sin(dl/2)**2))
+    # 사각 루프(각 변 ~1km), idx0=북서. 진입점은 남동(idx2 인근) — idx0서 멀다.
+    LOOP = [Coordinate(lat=37.540, lng=126.630), Coordinate(lat=37.540, lng=126.640),
+            Coordinate(lat=37.531, lng=126.640), Coordinate(lat=37.531, lng=126.630),
+            Coordinate(lat=37.540, lng=126.630)]  # 닫힘
+    acc = Coordinate(lat=37.531, lng=126.640)  # 남동 꼭짓점(idx2)
+    rot = C._rotate_loop(LOOP, acc)
+    assert _gap(rot[0], acc) < 5.0, f"회전 시작이 진입 접점, got {_gap(rot[0],acc):.0f}m"
+    assert _gap(rot[0], rot[-1]) < 5.0, "회전 후에도 닫힌 루프"
+    # 회전 전: 스티칭하면 access→idx0 현(진입점 남동 → idx0 북서 = ~1.3km 갭) 발생
+    chord = _gap(acc, LOOP[0])
+    assert chord > 1000, f"미회전 시 현 {chord:.0f}m(호수 관통)"
+    # 회전 후 인접 최대 갭은 변 길이(~1km)뿐, 새 현 없음 — 회전본 인접 갭 검사
+    maxgap_rot = max(_gap(rot[i], rot[i+1]) for i in range(len(rot)-1))
+    assert maxgap_rot <= chord + 1, "회전본 인접 갭이 원 변 길이 내(새 현 없음)"
+    ok(f"회전 시작=진입점(0m) · 닫힘 유지 · 미회전 현 {chord:.0f}m 제거")
+
+    # match_and_build 경유 스티치 — 회전으로 접점 이음(mock 진입 leg는 access서 끝)
+    async def _t9():
+        seed9 = {**SEED, "polyline": [[c.lat, c.lng] for c in LOOP],
+                 "access_points": [[acc.lat, acc.lng]]}
+        with patch.object(C, "_fetch_active", return_value=[seed9]), \
+                patch.object(map_service, "get_pedestrian_route", _mock_ped):
+            return await C.match_and_build(acc, 4.0)
+    res9 = asyncio.run(_t9())
+    if res9:  # 밴드 맞으면 스티치 검사
+        r9, _ = res9
+        # 코스 구간(진입 leg 2점 제외)의 시작이 access와 이어짐 — 큰 새 현 없음
+        course_seg = r9.polyline[1:-1]
+        big = [i for i in range(len(course_seg)-1) if _gap(course_seg[i], course_seg[i+1]) > chord+1]
+        assert not big, f"스티치에 호수 관통 현(큰 갭) {len(big)}건 — 회전 실패"
+        ok("match_and_build 스티치 — 호수 관통 현 0(회전 적용)")
 
     print("\n" + "=" * 50 + "\n  ALL TESTS PASSED\n" + "=" * 50)
 

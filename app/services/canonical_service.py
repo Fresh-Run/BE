@@ -104,10 +104,24 @@ async def match_and_build(start: Coordinate, target_km: float,
     return route, meta
 
 
+def _rotate_loop(poly: list[Coordinate], access: Coordinate) -> list[Coordinate]:
+    """폴리라인 루프를 진입 접점(access 최근접 인덱스) 기준으로 회전 — 스티칭 시 진입
+    leg 끝(access)과 루프 시작이 이어지게. 회전 없으면 access→idx0 현(호수 관통 직선)
+    이 생김(2026-07-26 오너 실기기 부검). 닫힌 루프면 끝 중복 제거 후 접점 복귀로 재닫기."""
+    if len(poly) < 3:
+        return list(poly)
+    core = poly[:-1] if _hav_m(poly[0], poly[-1]) < 5.0 else list(poly)
+    idx = min(range(len(core)), key=lambda i: _hav_m(access, core[i]))
+    rotated = core[idx:] + core[:idx]
+    rotated.append(rotated[0])  # 접점 복귀(닫기)
+    return rotated
+
+
 async def _build_served(start: Coordinate, access: Coordinate, course: dict,
                         target_km: float, lang: str) -> RouteResponse:
-    """진입 leg(home↔access) T-map 스냅 + 코스 polyline 스티치. 카드 제목=실명."""
-    poly = _coords(course["polyline"])
+    """진입 leg(home↔access) T-map 스냅 + 코스 polyline 스티치. 카드 제목=실명.
+    루프는 진입 접점 기준 회전 후 스티치(access→idx0 현 방지)."""
+    poly = _rotate_loop(_coords(course["polyline"]), access)
     leg_in = await map_service.get_pedestrian_route(origin=start, destination=access)
     leg_out = await map_service.get_pedestrian_route(origin=access, destination=start)
     stitched = leg_in.path + poly + leg_out.path
