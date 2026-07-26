@@ -98,6 +98,36 @@ def run():
     assert asyncio.run(_t6()) is None
     ok("코스 0건 → None")
 
+    print("\n[7. 큐레이션 우선진입점 — access_points[0]이 최근접보다 우선 채택]")
+    # 우선진입점(디지털아트프라자 입구, 홈서 멂)이 access_points[0]. 최근접(홈 코앞)은 [3].
+    HOME2 = Coordinate(lat=37.53094, lng=126.63851)   # 청라더샵레이크파크(오너 홈)
+    ENTRANCE = [37.528678, 126.635812]                 # 디지털아트프라자 입구(우선)
+    NEAR = [37.531000, 126.638000]                     # 홈 코앞(더 가까움, 비우선)
+    SEED2 = {**SEED, "access_points": [ENTRANCE, NEAR]}  # [0]=우선진입점
+
+    async def _t7():
+        with patch.object(C, "_fetch_active", return_value=[SEED2]), \
+                patch.object(map_service, "get_pedestrian_route", _mock_ped):
+            return await C.match_and_build(HOME2, 5.0)
+    res7 = asyncio.run(_t7())
+    assert res7 is not None, "우선진입점이 반경·관대밴드 내면 서빙"
+    _r7, meta7 = res7
+    assert meta7["access_rank"] == 0, f"큐레이션 우선진입점(rank0) 채택, got rank {meta7['access_rank']}"
+    d_entrance = C._hav_m(HOME2, Coordinate(lat=ENTRANCE[0], lng=ENTRANCE[1]))
+    d_near = C._hav_m(HOME2, Coordinate(lat=NEAR[0], lng=NEAR[1]))
+    assert d_near < d_entrance, "대조: NEAR가 물리적으로 더 가까움(그런데도 우선진입점 채택)"
+    ok(f"우선진입점(rank0, {round(d_entrance)}m) 채택 · 최근접(NEAR {round(d_near)}m) 아님 — 큐레이션 존중")
+
+    print("\n[8. 우선진입점 관대 밴드 — 자동 밴드(0.6) 초과라도 우선 밴드(1.0) 내면 서빙]")
+    # 진입 왕복이 커 diff~0.7(자동밴드 밖)이나 우선진입점이라 서빙
+    async def _t8():
+        with patch.object(C, "_fetch_active", return_value=[{**SEED, "access_points": [ENTRANCE]}]), \
+                patch.object(map_service, "get_pedestrian_route", _mock_ped):
+            return await C.match_and_build(HOME2, 5.0)
+    r8 = asyncio.run(_t8())
+    assert r8 is not None, "우선진입점 단독도 관대밴드로 서빙"
+    ok("우선진입점 단독 서빙(관대 밴드 1.0)")
+
     print("\n" + "=" * 50 + "\n  ALL TESTS PASSED\n" + "=" * 50)
 
 

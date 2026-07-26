@@ -17,9 +17,13 @@ from app.services import map_service, openai_service
 
 logger = logging.getLogger(__name__)
 
-_ACCESS_RADIUS_M = 800.0     # 시작점이 진입점서 이 반경 내면 매칭 후보
-_CANONICAL_BAND_KM = 0.6     # |코스km + 진입왕복 − target| ≤ 이 값
-_ACCESS_INFLATION = 1.3      # 진입 직선 → 도보 팽창 추정(밴드 사전판정용)
+_ACCESS_RADIUS_M = 800.0          # 시작점이 진입점서 이 반경 내면 매칭 후보
+_CANONICAL_BAND_KM = 0.6          # 자동(비우선) 진입점 — |코스km + 진입왕복 − target| ≤
+# 큐레이션 우선진입점(access_points[0]) 밴드 — 오너가 "이 코스를 이 입구로" 지정한 것이라
+# 관대(진입 왕복이 길어도 아는 코스 서빙 우선, 2026-07-26 오너 큐레이션). 우선진입점이
+# 반경·이 밴드 내면 최근접보다 우선 채택.
+_CANONICAL_PRIMARY_BAND_KM = 1.0
+_ACCESS_INFLATION = 1.3           # 진입 직선 → 도보 팽창 추정(밴드 사전판정용)
 _RUN_PACE_MIN_PER_KM = 6.0
 
 
@@ -61,29 +65,32 @@ async def match_and_build(start: Coordinate, target_km: float,
         logger.warning("canonical_courses 조회 실패(%s) — 생성 폴백", type(exc).__name__)
         return None
 
-    best: tuple[float, dict, Coordinate, float] | None = None  # (diff, course, access, d_m)
+    # 진입점 우선순위: access_points[0]=큐레이션 우선진입점(관대 밴드·최우선). 나머지는
+    # 자동(표준 밴드). 후보 key=(우선순위 0/1, diff) 최소 채택 — 우선진입점이 조건 만족 시
+    # 최근접보다 이김. 반경·밴드 밖이면 다음 진입점으로.
+    best: tuple[tuple[int, float], dict, Coordinate, float, int] | None = None
     for c in courses:
         try:
             aps = _coords(c["access_points"])
             dist_km = float(c["distance_km"])
         except (KeyError, TypeError, ValueError, IndexError):
             continue
-        if not aps:
-            continue
-        near = min(aps, key=lambda ap: _hav_m(start, ap))
-        d = _hav_m(start, near)
-        if d > _ACCESS_RADIUS_M:
-            continue
-        access_rt = 2 * d / 1000.0 * _ACCESS_INFLATION      # 진입 왕복 추정(직선×스냅팽창)
-        diff = abs(dist_km + access_rt - target_km)
-        if diff > _CANONICAL_BAND_KM:
-            continue
-        if best is None or diff < best[0]:
-            best = (diff, c, near, d)
+        for rank, ap in enumerate(aps):
+            d = _hav_m(start, ap)
+            if d > _ACCESS_RADIUS_M:
+                continue
+            access_rt = 2 * d / 1000.0 * _ACCESS_INFLATION   # 진입 왕복 추정(직선×스냅팽창)
+            diff = abs(dist_km + access_rt - target_km)
+            band = _CANONICAL_PRIMARY_BAND_KM if rank == 0 else _CANONICAL_BAND_KM
+            if diff > band:
+                continue
+            key = (0 if rank == 0 else 1, diff)              # 우선진입점 최우선, 그다음 diff
+            if best is None or key < best[0]:
+                best = (key, c, ap, d, rank)
 
     if best is None:
         return None
-    _diff, course, access, access_d = best
+    _key, course, access, access_d, access_rank = best
     try:
         route = await _build_served(start, access, course, target_km, lang)
     except Exception:  # noqa: BLE001 — 스티치/스냅 실패는 생성 폴백
@@ -92,6 +99,7 @@ async def match_and_build(start: Coordinate, target_km: float,
     meta = {"engine": "canonical", "verdict": "canonical",
             "course_id": course.get("id"), "course_name": course.get("name"),
             "region": course.get("region"), "access_dist_m": round(access_d),
+            "access_rank": access_rank,  # 0=큐레이션 우선진입점 채택
             "course_km": round(float(course["distance_km"]), 2)}
     return route, meta
 
