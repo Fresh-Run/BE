@@ -35,7 +35,9 @@ _ANCHOR_KEYWORDS: list[tuple[str, str]] = [
 _FACILITY = re.compile(
     r"주차장|주차|지하차도|아파트|상가|프라자|플라자|몰|마트|주민센터|화장실|음수대|"
     r"관리사무소|매점|편의점|정류장|출입구|버스|지하철")
-_BUSINESS = re.compile(r"공인중개사|중개사|부동산|사무소|병원|약국|학원|은행")
+_BUSINESS = re.compile(r"공인중개사|중개사|부동산|사무소|병원|약국|학원|은행|"
+                       # 건물(수변 오탐 — 강변교회·강변빌라트·강변연립 등, 공원류 가드로 실공원은 유지)
+                       r"교회|성당|빌라|빌라트|연립|빌딩|오피스텔|사옥|통제소")
 # 공원류 토큰 — 있으면 업소텀 무효(은행나무공원은 공원이지 은행이 아니다).
 _GREENSPACE = re.compile(r"공원|산책로|둘레길|천|숲")
 
@@ -193,6 +195,42 @@ _WATER_VARIANTS = [(2, f) for f in (0.06, 0.08, 0.10, 0.12)]
 # 0.80: 미노스·목동 in-band 무회귀 실측(2026-07-24). 청라류 고팽창·희소앵커 지역은
 # 팩터 무관 초과라 in-band 불가 — v87이 서빙(범위 밖, 앵커는 밴드 내만 기여).
 _WATER_CHAIN_FRAC = 0.80
+# 수변 주파(2026-07-26) — 쌍 인접 배치 변형(others 수 × factor). 쌍이 2꼭짓점을 쓰므로
+# 링은 1~2개. 쌍 간격(400~900m)이 체인에 들어가 링 반경 보정(chain_target 최근접 선택이 흡수).
+_WATER_PAIR_VARIANTS = [(1, 0.12), (2, 0.10), (1, 0.16), (2, 0.14), (1, 0.20)]
+# 쌍 주파 chain 조준 = chain_aim × 이 비율. 단일 spur(0.80)보다 김 — 주파는 왕복 spur가
+# 없어 도로 팽창이 작으므로(실측 ~1.46 vs spur ~1.55) 더 긴 chain을 조준해야 밴드 진입.
+_WATER_PAIR_CHAIN_FRAC = 0.98
+_WATER_PAIR_MIN_M = 400.0     # 쌍 간격 하한(둘이 너무 붙으면 주파 짧음)
+_WATER_PAIR_MAX_M = 900.0     # 상한(너무 멀면 왕복 과대·거리 붕괴)
+
+
+def _azim(start: Coordinate, a: Anchor) -> float:
+    return math.atan2(a.coord.lat - start.lat, a.coord.lng - start.lng)
+
+
+def _best_water_pair(water: list[Anchor]) -> tuple[Anchor, Anchor] | None:
+    """근접 수변 앵커 쌍(400~900m) 중 대표성 최상(rep_rank 합 최소). 없으면 None(→ 단일 pin)."""
+    best: tuple[int, Anchor, Anchor] | None = None
+    for i, x in enumerate(water):
+        for y in water[i + 1:]:
+            d = _hav_m(x.coord, y.coord)
+            if _WATER_PAIR_MIN_M <= d <= _WATER_PAIR_MAX_M:
+                score = x.rep_rank + y.rep_rank
+                if best is None or score < best[0]:
+                    best = (score, x, y)
+    return (best[1], best[2]) if best else None
+
+
+def _order_with_pair(start: Coordinate, others: list[Anchor],
+                     wf1: Anchor, wf2: Anchor) -> list[Anchor]:
+    """쌍을 주파 순서(방위각)로 **인접** 배치 + 나머지를 방위각 정렬해 앞뒤 분산
+    (쌍 사이에 다른 앵커가 끼면 주파 구간이 끊김 — 인접 보장)."""
+    pair = sorted([wf1, wf2], key=lambda a: _azim(start, a))
+    pmid = (_azim(start, pair[0]) + _azim(start, pair[1])) / 2
+    bef = sorted([o for o in others if _azim(start, o) < pmid], key=lambda a: _azim(start, a))
+    aft = sorted([o for o in others if _azim(start, o) >= pmid], key=lambda a: _azim(start, a))
+    return bef + pair + aft
 
 
 def _is_waterfront(a: Anchor) -> bool:
@@ -241,30 +279,48 @@ def build_anchor_candidates(start: Coordinate, anchors: list[Anchor], target_km:
     (2026-07-24 캘리브레이션: 청라 초과·미노스 미달 동시 교정). None이면 레거시(짧은 순)."""
     vertex_max = target_km * 1000 * _VERTEX_MAX_FACTOR
     out: list[RouteResponse] = []
-    # 1) 수변 spur 후보 — 밴드 내 고대표성(rep≤3) 수변 앵커 있으면 우선 생성
-    water = sorted([a for a in anchors if a.in_band and _is_waterfront(a) and a.rep_rank <= 3],
+    # 1) 수변 후보 — 밴드 내 수변 앵커. **주파 모델**(2026-07-26 오너 "공원 돌아야지"):
+    #    근접 수변 앵커 쌍(400~900m)을 체인에 인접 배치 → T-map이 둘 사이를 수변 보행로로
+    #    이어 "수변 주파 구간" 생성(점 접촉 spur 대체). 쌍 없으면 단일 pin 폴백.
+    water = sorted([a for a in anchors if a.in_band and _is_waterfront(a) and a.rep_rank <= 6],
                    key=lambda a: a.rep_rank)
-    if water and n > 0:
-        wf = water[0]
-        non_water = [a for a in anchors if a.id != wf.id and not _is_waterfront(a)]
-        # 변형(others 수 × factor) 생성 후 chain 기준 선택. 수변 spur 팽창이 격자보다
-        # 크므로 조준점은 chain_aim이 아니라 그보다 짧은 _WATER_CHAIN_FRAC×chain_aim
-        # (2026-07-24 실측: chain_aim 직접 조준 시 미노스 5.6 초과 회귀). chain_target
-        # 없으면 레거시(짧은 순).
+    pair = _best_water_pair(water) if n > 0 else None
+    if pair:
+        aim = chain_target_km * _WATER_PAIR_CHAIN_FRAC if chain_target_km else None  # 주파 전용(더 김)
+        wf1, wf2 = pair
+        pool = {wf1.id, wf2.id}
+        non_water = [a for a in anchors if a.id not in pool and not _is_waterfront(a)]
         variants: list[tuple[float, list[Anchor]]] = []
         seen: set[float] = set()
+        for vi, (ok, f) in enumerate(_WATER_PAIR_VARIANTS):
+            others = select_anchors(non_water, target_km * 1000 * f, ok, set(), vi, vertex_max)
+            if len(others) < ok:
+                continue
+            combined = _order_with_pair(start, others, wf1, wf2)  # 쌍 인접(주파) + 나머지 각도정렬
+            k = round(_chain_km(start, combined), 1)
+            if k in seen:
+                continue
+            seen.add(k)
+            variants.append((_chain_km(start, combined), combined))
+        variants.sort(key=lambda c: (abs(c[0] - aim) if aim else c[0]))
+        for _chain, combined in variants[:min(2, n)]:
+            out.append(_make_anchor_route(start, combined, target_km, needs_pitstop))
+    elif water and n > 0:                          # 쌍 없음 → 단일 pin 폴백(기존)
+        aim = chain_target_km * _WATER_CHAIN_FRAC if chain_target_km else None
+        wf = water[0]
+        non_water = [a for a in anchors if a.id != wf.id and not _is_waterfront(a)]
+        variants = []
+        seen = set()
         for vi, (ok, f) in enumerate(_WATER_VARIANTS):
             others = select_anchors(non_water, target_km * 1000 * f, ok, set(), vi, vertex_max)
             if len(others) < ok:
                 continue
-            combined = sorted(others + [wf], key=lambda a: a.sector)  # 각도 정렬(수변 포함)
-            chain = _chain_km(start, combined)
-            key = round(chain, 1)
-            if key in seen:  # 동일 chain 변형 중복 제거
+            combined = sorted(others + [wf], key=lambda a: a.sector)
+            k = round(_chain_km(start, combined), 1)
+            if k in seen:
                 continue
-            seen.add(key)
-            variants.append((chain, combined))
-        aim = chain_target_km * _WATER_CHAIN_FRAC if chain_target_km else None
+            seen.add(k)
+            variants.append((_chain_km(start, combined), combined))
         variants.sort(key=lambda c: (abs(c[0] - aim) if aim else c[0]))
         for _chain, combined in variants[:min(2, n)]:
             out.append(_make_anchor_route(start, combined, target_km, needs_pitstop))

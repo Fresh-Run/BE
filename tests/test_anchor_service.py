@@ -150,6 +150,24 @@ def run_tests():
     assert c0.waypoints[0].name == "출발" and c0.waypoints[-1].name == "복귀", "출발/복귀는 중립 유지"
     ok(f"수변 후보 최우선·wf 편입 · 앵커 mid 실명({sorted(mid_names)}) · 출발/복귀 중립")
 
+    print("\n[6. 수변 주파 — 근접 수변 앵커 쌍이 체인에 인접 배치(주파 구간)]")
+    # 400~900m 떨어진 수변 앵커 2개 + 일반 park들 → 쌍이 후보에 인접
+    W1 = A.Anchor(id=200, name="이촌한강공원", coord=Coordinate(lat=37.5172, lng=126.9705),
+                  type="water", dist_m=500, sector=0, rep_rank=0, in_band=True, dead_end=False)
+    W2 = A.Anchor(id=201, name="강변어린이공원", coord=Coordinate(lat=37.5172, lng=126.9760),  # ~485m 동
+                  type="water", dist_m=520, sector=0, rep_rank=1, in_band=True, dead_end=False)
+    parks2 = [mk(10, 4, 520, 1), mk(11, 6, 540, 0)]
+    p = A._best_water_pair(sorted([W1, W2] + [a for a in parks2 if A._is_waterfront(a)], key=lambda a: a.rep_rank))
+    assert p is not None and {p[0].id, p[1].id} == {200, 201}, f"근접 수변 쌍 선택, got {p}"
+    cands6 = A.build_anchor_candidates(ST, [W1, W2] + parks2, 5.0, n=2, chain_target_km=3.6)
+    assert cands6, "쌍 주파 후보 생성"
+    c6 = cands6[0]
+    names6 = [wp.name for wp in c6.waypoints[1:-1]]
+    # 쌍(이촌한강공원·강변어린이공원)이 리스트에서 인접(사이에 다른 앵커 없음)
+    i1, i2 = names6.index("이촌한강공원"), names6.index("강변어린이공원")
+    assert abs(i1 - i2) == 1, f"쌍이 인접(주파) 배치, got {names6}"
+    ok(f"근접 수변 쌍 선택 · 후보에 인접 배치(주파): {names6}")
+
     print("\n" + "=" * 52 + "\n  ALL TESTS PASSED\n" + "=" * 52)
 
 

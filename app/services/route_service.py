@@ -176,6 +176,9 @@ _OVER_SERVE_MAX_SPUR_M = 800.0
 # longest_retrace>이 값이면 무경쟁 서빙 금지 → 재추첨 유도. 못 살리면 원 후보 최후
 # 서빙(502 벽 금지 — 서빙률 비퇴행). 무의미 장축 왕복 star 무경쟁 서빙 차단.
 _FLOOR_SPUR_M = 1200.0
+# 앵커 park 하한 — 앵커 mid는 실 앵커(공원·수변·트레일)라 _park_coverage 저평가 보정.
+# 0.85: 앵커가 밴드 내 park 경쟁서 v87(중앙 0.67~0.8)을 이기되 과지배 아님(retrace tiebreak 유지).
+_ANCHOR_PARK_FLOOR = 0.85
 # v2.6 §2 재추첨 학습 완화 — compliance(3롤 median/aim)를 ±10%로 clamp.
 # 무제한이면 산포 큰 지역(사용자 좌표 ratio 1.1~2.9)에서 est_ratio가 진동해
 # aim이 3.2↔2.4로 널뛰며 미달·초과 반복(E2E 실측 역효과). ±10%로 방향만 반영.
@@ -849,6 +852,12 @@ async def create_running_route(
     cand_quality = []
     for k, r in scored:
         park, zig = _park_coverage(r, park_coords), _zigzag_score(r)
+        # 앵커 park 하한(AUDIT_BACKLOG [M] — 2026-07-26 수변 주파에서 실현): 앵커 후보의
+        # mid는 정의상 실 앵커(공원·수변·트레일)라 _park_coverage(route_service 15-park셋)가
+        # 한강·수영장 등을 미카운트해 저평가 → 수변 주파 후보가 tiebreak 패배. 앵커 engine엔
+        # 하한 부여(혼합 풀 설계 "앵커=밴드 내 park 경쟁" 복원). v87은 하한 없음.
+        if engine_of.get(id(r)) == "anchor":
+            park = max(park, _ANCHOR_PARK_FLOOR)
         retrace, max_gap = _polyline_retrace(r.polyline), _polyline_max_gap_m(r.polyline)
         quals[id(r)] = (park, zig, retrace)
         cand_quality.append({"km": round(k, 1), "park": park, "zig": zig,
