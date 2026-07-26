@@ -218,7 +218,9 @@ def _make_anchor_route(start, picked, target_km, needs_pitstop):
     from app.services.openai_service import _neutral_label
     ntot = len(picked) + 2
     ps = len(picked) // 2 if needs_pitstop else -1
-    mids = [Waypoint(name=_neutral_label(j + 1, ntot, False, "ko"),
+    # 앵커 실명 노출(2026-07-26 오너) — mid는 대응 앵커의 Kakao 실명(발명 아님, 이미 보유).
+    # 이름 없으면 중립 폴백. pitstop 슬롯은 상위(route_service)가 실 pitstop명으로 덮음.
+    mids = [Waypoint(name=(a.name or _neutral_label(j + 1, ntot, False, "ko")),
                      coordinate=a.coord, is_pitstop=(j == ps)) for j, a in enumerate(picked)]
     wps = ([Waypoint(name=_neutral_label(0, ntot, False, "ko"), coordinate=start, is_pitstop=False)]
            + mids

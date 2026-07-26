@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import re
 
 from app.core.supabase_client import get_supabase_admin
 from app.models.schemas import Coordinate, RouteResponse, Waypoint
@@ -39,6 +40,23 @@ def _hav_m(a: Coordinate, b: Coordinate) -> float:
 
 def _coords(pairs: list) -> list[Coordinate]:
     return [Coordinate(lat=float(p[0]), lng=float(p[1])) for p in pairs]
+
+
+# 진입점 실명용 랜드마크 패턴(실재 장소만 채택 — 발명 금지)
+_ACCESS_LANDMARK = re.compile(r"공원|광장|프라자|다리|둘레길|호수|한강|하천|산책|데크|마당|무대|나루")
+
+
+async def _access_name(coord: Coordinate) -> str | None:
+    """진입점 인근 실 POI명(발명 금지 — 실재 랜드마크만). best-effort → 없으면 None(중립)."""
+    try:
+        ps = await map_service.search_places("공원", near=coord, sort="distance",
+                                             radius_m=120, limit=4)
+    except Exception:  # noqa: BLE001 — 실명은 부가, 실패 시 중립
+        return None
+    for p in ps:
+        if _hav_m(coord, p.coordinate) <= 90 and _ACCESS_LANDMARK.search(p.name):
+            return p.name
+    return None
 
 
 async def _fetch_active() -> list[dict]:
@@ -133,8 +151,9 @@ async def _build_served(start: Coordinate, access: Coordinate, course: dict,
     total_km = round((leg_in.distance_m + leg_out.distance_m) / 1000.0
                      + float(course["distance_km"]) * laps, 1)
     _nl = openai_service._neutral_label
+    aname = await _access_name(access)             # 진입점 실명(실재 POI만, best-effort)
     wps = [Waypoint(name=_nl(0, 3, False, lang), coordinate=start, is_pitstop=False),
-           Waypoint(name=_nl(1, 3, False, lang), coordinate=access, is_pitstop=False),
+           Waypoint(name=(aname or _nl(1, 3, False, lang)), coordinate=access, is_pitstop=False),
            Waypoint(name=_nl(2, 3, False, lang), coordinate=start, is_pitstop=False)]
     name = str(course["name"])
     if laps > 1:                                    # 바퀴수 표기(실명 + N바퀴/N laps)

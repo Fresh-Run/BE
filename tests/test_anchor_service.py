@@ -141,7 +141,14 @@ def run_tests():
     # dead_end 수변인데도 편입됐는지 = spur 허용 확인. 일반 select_anchors는 dead_end 제외.
     plain = A.select_anchors([WF] + parks, target_radius_m=500, k=4, excluded=set())
     assert WF.id not in {p.id for p in plain}, "일반 선별은 dead_end 수변 제외(대조군)"
-    ok(f"수변 후보 최우선·wf 편입(chain_target 유무 공통) · 일반 선별은 dead_end 제외")
+    # 앵커 실명 노출(2026-07-26) — mid waypoint name = 대응 앵커 Kakao 실명(발명 아님).
+    # 출발/복귀는 중립(집 앞, 앵커 아님).
+    c0 = cands[0]
+    mid_names = {wp.name for wp in c0.waypoints[1:-1]}
+    assert "잠원한강공원" in mid_names, f"수변 앵커 실명 노출, got {mid_names}"
+    assert all(not n.startswith("지점") for n in mid_names), f"mid는 실명(중립 아님), got {mid_names}"
+    assert c0.waypoints[0].name == "출발" and c0.waypoints[-1].name == "복귀", "출발/복귀는 중립 유지"
+    ok(f"수변 후보 최우선·wf 편입 · 앵커 mid 실명({sorted(mid_names)}) · 출발/복귀 중립")
 
     print("\n" + "=" * 52 + "\n  ALL TESTS PASSED\n" + "=" * 52)
 

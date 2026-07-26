@@ -41,7 +41,13 @@ async def _mock_ped(origin, destination, waypoints=None):
                            path=[origin, destination])
 
 
+async def _no_access_name(coord):  # 라우트빌드 테스트 call-free·결정론(중립 진입명)
+    return None
+
+
 def run():
+    _orig_access = C._access_name       # 원본 백업(진입 실명 로직 전용 테스트용)
+    C._access_name = _no_access_name    # 라우트빌드 테스트 call-free(진입 실명은 #11서)
     print("[1. _hav_m + 진입점 최근접 — 홈이 진입권(800m) 내]")
     dists = [C._hav_m(HOME, Coordinate(lat=a[0], lng=a[1])) for a in SEED["access_points"]]
     assert min(dists) < 800, f"홈 최근접 진입점 {min(dists):.0f}m < 800m"
@@ -188,6 +194,41 @@ def run():
     res1 = asyncio.run(_t10(2.7))
     assert res1 and res1[1]["laps"] == 1 and "바퀴" not in res1[0].summary, "target2.7 → 1바퀴(표기 없음)"
     ok("target 2.7 → 1바퀴(단일, '바퀴' 표기 없음)")
+
+    print("\n[11. 진입점 실명 — 인근 실 랜드마크만(발명 금지) · 없으면 중립]")
+    from app.models.schemas import Place
+    def _pl(nm, dlat): return Place(name=nm, coordinate=Coordinate(lat=HOME.lat+dlat, lng=HOME.lng),
+                                    category=None, category_code=None, address="x")
+    # 44m 랜드마크(디지털아트프라자) + 44m 카페(비랜드마크) + 222m 랜드마크(거리 초과)
+    async def _search(kw, near=None, sort=None, radius_m=None, limit=None):
+        return [_pl("스타벅스", 0.0004), _pl("청라중앙호수공원 디지털아트프라자", 0.0004), _pl("반포한강공원", 0.002)]
+    async def _t11():
+        with patch.object(map_service, "search_places", _search):
+            return await _orig_access(HOME)      # 원본 _access_name 로직
+    nm = asyncio.run(_t11())
+    assert nm == "청라중앙호수공원 디지털아트프라자", f"인근 랜드마크 실명(카페 스킵), got {nm}"
+    assert not C._ACCESS_LANDMARK.search("스타벅스"), "카페는 랜드마크 아님(발명 금지 필터)"
+    # 실 POI 없으면 None(중립)
+    async def _t11b():
+        async def _empty(*a, **k): return []
+        with patch.object(map_service, "search_places", _empty):
+            return await _orig_access(HOME)
+    assert asyncio.run(_t11b()) is None, "인근 실 POI 없으면 None(중립 폴백)"
+    ok("인근 실 랜드마크만 실명(카페 제외·90m 초과 제외) · 없으면 None(중립)")
+
+    print("\n[12. _build_served 진입 실명 반영 — _access_name 있으면 waypoint[1]에]")
+    async def _named(coord): return "청라중앙호수공원 디지털아트프라자"
+    async def _t12():
+        C._access_name = _named
+        try:
+            with patch.object(map_service, "get_pedestrian_route", _mock_ped):
+                return await C.match_and_build(HOME, 5.0)
+        finally:
+            C._access_name = _no_access_name
+    r12, _ = asyncio.run(_t12())
+    assert r12.waypoints[1].name == "청라중앙호수공원 디지털아트프라자", f"진입 waypoint 실명, got {r12.waypoints[1].name}"
+    assert r12.waypoints[0].name == "출발" and r12.waypoints[2].name == "복귀", "출발·복귀는 중립 유지"
+    ok(f"진입 waypoint 실명 '{r12.waypoints[1].name}' · 출발/복귀 중립 유지")
 
     print("\n" + "=" * 50 + "\n  ALL TESTS PASSED\n" + "=" * 50)
 
