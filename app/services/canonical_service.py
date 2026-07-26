@@ -145,11 +145,17 @@ async def _build_served(start: Coordinate, access: Coordinate, course: dict,
     n회 반복(접점→접점 이음, 0갭) + 카드에 'N바퀴' 표기."""
     loop = _rotate_loop(_coords(course["polyline"]), access)
     poly = loop * max(1, laps)                     # n바퀴 반복(접점서 이어져 0갭)
-    leg_in = await map_service.get_pedestrian_route(origin=start, destination=access)
-    leg_out = await map_service.get_pedestrian_route(origin=access, destination=start)
-    stitched = leg_in.path + poly + leg_out.path
-    total_km = round((leg_in.distance_m + leg_out.distance_m) / 1000.0
-                     + float(course["distance_km"]) * laps, 1)
+    # 진입 leg 스냅 — 단, 시작이 진입점에 거의 붙어 있으면(≤30m) leg가 ~0m라 T-map 400
+    # (start==end). 그 경우 진입 leg 생략(러너가 이미 입구에 있음) — 로버스트니스.
+    if _hav_m(start, access) <= 30.0:
+        in_path, out_path, leg_km = [], [], 0.0
+    else:
+        leg_in = await map_service.get_pedestrian_route(origin=start, destination=access)
+        leg_out = await map_service.get_pedestrian_route(origin=access, destination=start)
+        in_path, out_path = leg_in.path, leg_out.path
+        leg_km = (leg_in.distance_m + leg_out.distance_m) / 1000.0
+    stitched = in_path + poly + out_path
+    total_km = round(leg_km + float(course["distance_km"]) * laps, 1)
     _nl = openai_service._neutral_label
     aname = await _access_name(access)             # 진입점 실명(실재 POI만, best-effort)
     wps = [Waypoint(name=_nl(0, 3, False, lang), coordinate=start, is_pitstop=False),
