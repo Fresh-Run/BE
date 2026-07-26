@@ -75,13 +75,13 @@ def run():
     assert asyncio.run(_t3()) is None, "신사는 진입점 800m 밖 → None"
     ok("신사(캐노니컬 미스) → None → 생성 폴백")
 
-    print("\n[4. 거리 밴드 미스 — 홈이나 target 10km(코스 4.71+진입≠10) → None]")
+    print("\n[4. 거리 밴드 미스 — target 8.0(1바퀴 5~6·2바퀴 9~11 갭) → None]")
     async def _t4():
         with patch.object(C, "_fetch_active", return_value=[SEED]), \
                 patch.object(map_service, "get_pedestrian_route", _mock_ped):
-            return await C.match_and_build(HOME, 10.0)
-    assert asyncio.run(_t4()) is None, "10km 요청은 4.71 코스와 밴드(±0.6) 밖 → None"
-    ok("target 10km는 거리 밴드 밖 → None(1바퀴 코스 강매 안 함)")
+            return await C.match_and_build(HOME, 8.0)  # 4.71×1·×2 + 진입 어느 것도 8.0 밴드 밖
+    assert asyncio.run(_t4()) is None, "8.0km는 4.71 코스의 1·2바퀴 갭 → None"
+    ok("target 8.0은 배수 매칭 갭 → None(강매 안 함)")
 
     print("\n[5. best-effort — 조회 예외 시 None(생성 폴백, 생성 무중단)]")
     async def _t5():
@@ -165,6 +165,29 @@ def run():
         big = [i for i in range(len(course_seg)-1) if _gap(course_seg[i], course_seg[i+1]) > chord+1]
         assert not big, f"스티치에 호수 관통 현(큰 갭) {len(big)}건 — 회전 실패"
         ok("match_and_build 스티치 — 호수 관통 현 0(회전 적용)")
+
+    print("\n[10. 바퀴수 배수 매칭 — 2.5km 코스 target 5.0 → 2바퀴 서빙·카드 'N바퀴']")
+    SMALL = {**SEED, "name": "석촌호수 순환", "distance_km": 2.5,
+             "polyline": [[37.5100, 127.1000], [37.5120, 127.1010], [37.5110, 127.1030], [37.5095, 127.1015], [37.5100, 127.1000]],
+             "access_points": [[37.5100, 127.1000]]}
+    HOME3 = Coordinate(lat=37.5102, lng=127.1002)  # 진입점 코앞
+
+    async def _t10(tgt):
+        with patch.object(C, "_fetch_active", return_value=[SMALL]), \
+                patch.object(map_service, "get_pedestrian_route", _mock_ped):
+            return await C.match_and_build(HOME3, tgt)
+    res10 = asyncio.run(_t10(5.0))
+    assert res10 is not None, "2.5km 코스 target5.0 → 2바퀴 매칭"
+    r10, meta10 = res10
+    assert meta10["laps"] == 2, f"2바퀴 매칭(2.5×2=5.0), got laps {meta10['laps']}"
+    assert "2바퀴" in r10.summary, f"카드에 '2바퀴' 표기, got '{r10.summary}'"
+    assert 4.9 <= r10.total_distance_km <= 5.6, f"2바퀴 총거리 ~5.0+진입, got {r10.total_distance_km}"
+    # 폴리라인이 루프 2회 반복(접점 이음) — 코스 구간 길이 ~2× 단일
+    ok(f"2.5km 코스 → 2바퀴 서빙 '{r10.summary}' {r10.total_distance_km}km · laps={meta10['laps']}")
+    # target 2.5 근처면 1바퀴
+    res1 = asyncio.run(_t10(2.7))
+    assert res1 and res1[1]["laps"] == 1 and "바퀴" not in res1[0].summary, "target2.7 → 1바퀴(표기 없음)"
+    ok("target 2.7 → 1바퀴(단일, '바퀴' 표기 없음)")
 
     print("\n" + "=" * 50 + "\n  ALL TESTS PASSED\n" + "=" * 50)
 

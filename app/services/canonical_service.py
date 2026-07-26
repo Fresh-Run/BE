@@ -24,6 +24,7 @@ _CANONICAL_BAND_KM = 0.6          # 자동(비우선) 진입점 — |코스km + 
 # 반경·이 밴드 내면 최근접보다 우선 채택.
 _CANONICAL_PRIMARY_BAND_KM = 1.0
 _ACCESS_INFLATION = 1.3           # 진입 직선 → 도보 팽창 추정(밴드 사전판정용)
+_MAX_LAPS = 3                     # 바퀴수 배수 매칭 상한(석촌호수 2.5km×2=5km 류). 밴드가 실제 n 결정.
 _RUN_PACE_MIN_PER_KM = 6.0
 
 
@@ -66,9 +67,9 @@ async def match_and_build(start: Coordinate, target_km: float,
         return None
 
     # 진입점 우선순위: access_points[0]=큐레이션 우선진입점(관대 밴드·최우선). 나머지는
-    # 자동(표준 밴드). 후보 key=(우선순위 0/1, diff) 최소 채택 — 우선진입점이 조건 만족 시
-    # 최근접보다 이김. 반경·밴드 밖이면 다음 진입점으로.
-    best: tuple[tuple[int, float], dict, Coordinate, float, int] | None = None
+    # 자동(표준 밴드). **바퀴수 배수 매칭**: 짧은 코스(석촌호수 2.5km)는 n바퀴(course×n)로
+    # 밴드 진입 — n을 1..MAX 순회. 후보 key=(우선순위 0/1, diff) 최소 채택.
+    best: tuple[tuple[int, float], dict, Coordinate, float, int, int] | None = None
     for c in courses:
         try:
             aps = _coords(c["access_points"])
@@ -80,19 +81,20 @@ async def match_and_build(start: Coordinate, target_km: float,
             if d > _ACCESS_RADIUS_M:
                 continue
             access_rt = 2 * d / 1000.0 * _ACCESS_INFLATION   # 진입 왕복 추정(직선×스냅팽창)
-            diff = abs(dist_km + access_rt - target_km)
             band = _CANONICAL_PRIMARY_BAND_KM if rank == 0 else _CANONICAL_BAND_KM
-            if diff > band:
-                continue
-            key = (0 if rank == 0 else 1, diff)              # 우선진입점 최우선, 그다음 diff
-            if best is None or key < best[0]:
-                best = (key, c, ap, d, rank)
+            for laps in range(1, _MAX_LAPS + 1):
+                diff = abs(dist_km * laps + access_rt - target_km)
+                if diff > band:
+                    continue
+                key = (0 if rank == 0 else 1, diff)          # 우선진입점 최우선, 그다음 diff
+                if best is None or key < best[0]:
+                    best = (key, c, ap, d, rank, laps)
 
     if best is None:
         return None
-    _key, course, access, access_d, access_rank = best
+    _key, course, access, access_d, access_rank, laps = best
     try:
-        route = await _build_served(start, access, course, target_km, lang)
+        route = await _build_served(start, access, course, target_km, lang, laps)
     except Exception:  # noqa: BLE001 — 스티치/스냅 실패는 생성 폴백
         logger.warning("canonical 코스 서빙 스티치 실패 — 생성 폴백", exc_info=True)
         return None
@@ -100,6 +102,7 @@ async def match_and_build(start: Coordinate, target_km: float,
             "course_id": course.get("id"), "course_name": course.get("name"),
             "region": course.get("region"), "access_dist_m": round(access_d),
             "access_rank": access_rank,  # 0=큐레이션 우선진입점 채택
+            "laps": laps,                # 바퀴수(배수 매칭 — n바퀴)
             "course_km": round(float(course["distance_km"]), 2)}
     return route, meta
 
@@ -118,21 +121,26 @@ def _rotate_loop(poly: list[Coordinate], access: Coordinate) -> list[Coordinate]
 
 
 async def _build_served(start: Coordinate, access: Coordinate, course: dict,
-                        target_km: float, lang: str) -> RouteResponse:
+                        target_km: float, lang: str, laps: int = 1) -> RouteResponse:
     """진입 leg(home↔access) T-map 스냅 + 코스 polyline 스티치. 카드 제목=실명.
-    루프는 진입 접점 기준 회전 후 스티치(access→idx0 현 방지)."""
-    poly = _rotate_loop(_coords(course["polyline"]), access)
+    루프는 진입 접점 기준 회전 후 스티치(access→idx0 현 방지). laps>1이면 회전 루프를
+    n회 반복(접점→접점 이음, 0갭) + 카드에 'N바퀴' 표기."""
+    loop = _rotate_loop(_coords(course["polyline"]), access)
+    poly = loop * max(1, laps)                     # n바퀴 반복(접점서 이어져 0갭)
     leg_in = await map_service.get_pedestrian_route(origin=start, destination=access)
     leg_out = await map_service.get_pedestrian_route(origin=access, destination=start)
     stitched = leg_in.path + poly + leg_out.path
     total_km = round((leg_in.distance_m + leg_out.distance_m) / 1000.0
-                     + float(course["distance_km"]), 1)
+                     + float(course["distance_km"]) * laps, 1)
     _nl = openai_service._neutral_label
     wps = [Waypoint(name=_nl(0, 3, False, lang), coordinate=start, is_pitstop=False),
            Waypoint(name=_nl(1, 3, False, lang), coordinate=access, is_pitstop=False),
            Waypoint(name=_nl(2, 3, False, lang), coordinate=start, is_pitstop=False)]
+    name = str(course["name"])
+    if laps > 1:                                    # 바퀴수 표기(실명 + N바퀴/N laps)
+        name += f" {laps}바퀴" if (lang or "ko") != "en" else f" x{laps}"
     route = RouteResponse(
-        summary=str(course["name"]),               # 실명 카드 제목(DB — 발명 아님)
+        summary=name,                               # 실명 카드 제목(DB — 발명 아님)
         total_distance_km=total_km,
         estimated_duration_min=round(total_km * _RUN_PACE_MIN_PER_KM),
         waypoints=wps, polyline=stitched)
