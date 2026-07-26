@@ -92,4 +92,5 @@
 - **Expo 배치 발송 최적화 (감사 2차 L-6)** — 공지·챌린지 완료 시 크루원 N명 = 푸시 태스크 N개·Expo N요청. 100/요청 배치로 묶기. 트리거: 크루 규모 성장 시.
 - **UV '현재값' 소스 교체 검토** — 현 `/2.5/uvi`는 '오늘 최고(solar-noon)' 시맨틱(2026-07-12 계약 relabel로 대응). **트리거: 베타 중 '현재 UV' 요구 피드백 시** ⓑ 재검토 — One Call 3.0(유료 구독) 또는 Open-Meteo(신규 처리위탁 — PRIVACY_DATA_MAP 갱신 동반).
 - **러닝 공유 카드 (프론트 주도)** — 시안 외 신규 확정(2026-07-09, 결정: 지연 — 유저 공유 = 0원 마케팅 채널, 스트라바 Share Activity 참고). RN 뷰 캡처 방식, **백엔드 갭 0**(`GET /runs/{id}/track` 폴리라인 + 러닝 스탯으로 충족). 웹 랜딩(링크 공유용)은 베타 범위 밖. **트리거: 프론트 착수.**
+- **러닝 내비 maneuvers[] (T2 후보, 실현성 확정 2026-07-26)** — T-map 보행 응답 Point features에 `turnType`·`description` **100% 채움**(실덤프 확인 — "우회전 후 …를 따라 32m 이동" 한국어 안내 + 코드 + 좌표 + 랜드마크). 스냅 시 Point 캡처 + **`routes.maneuvers` jsonb additive**. 캐노니컬은 **진입 leg만 보유/코스 루프 null 폴백 계약**. **신규 콜 0**(같은 응답, 현재 LineString만 쓰고 Point 버림). **트리거: 외부 게이트 후 Ivan과 T2 협의.**
 - ~~**PB 축하 푸시 (`notif.pb` 게이트 연결)**~~ — **처리됨(2026-07-13)**: `create_run`의 `new_records[]` 비지 않으면 본인에게 `pb_achieved` 인앱+푸시(self-only 알림, allow_self=True). 신규 type CHECK 재작성(db/2026-07-13_notif_pb_achieved.sql)+`_TEMPLATES`/`_CATEGORY`(pb)+기록 종류별 문구. (`runReminder`·`weekly`는 스케줄러 필요라 여전히 별도.)
