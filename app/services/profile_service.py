@@ -527,6 +527,66 @@ async def search_users(viewer_id: str, q: str, limit: int = 20) -> list[dict]:
     ]
 
 
+async def suggested_users(viewer_id: str, limit: int = 20) -> list[dict]:
+    """추천 러너 v1 (Ivan 계약 확정, 2026-07-28) — 응답 형태 안정이 목적, 랭킹은
+    추후 변경 전제.
+
+    제외: 본인 / 이미 팔로우 중 / 차단 양방향(blocked_ids_batch 단일 소스).
+    프라이버시: 유저 검색 계약 상속 — 잠금 계정 포함하되 bio null(visible_owners
+    재사용, 신규 게이트 없음). area·public_run_count는 public run 파생이라 사실값
+    노출 정책(A′)과 정합.
+    랭킹 v1: public_run_count desc → 최근 가입순. 현 규모(수십 유저)엔 사실상 전원
+    반환 — 전 profiles 로드·클라이언트 집계로 충분, 성장 시 집계 쿼리 전환 트리거.
+    is_following: 정의상 항상 False(팔로우 중 제외)나 프론트 계약 필드로 유지.
+    """
+    limit = max(1, min(limit, _USER_SEARCH_LIMIT_MAX))
+    supabase = get_supabase_admin()
+    profs, fol = await asyncio.gather(
+        asyncio.to_thread(
+            lambda: supabase.table("profiles")
+            .select("user_id, nickname, avatar_url, bio, created_at")
+            .neq("user_id", viewer_id).execute()),
+        asyncio.to_thread(
+            lambda: supabase.table("follows").select("following_id")
+            .eq("follower_id", viewer_id).execute()),
+    )
+    following = {r["following_id"] for r in (fol.data or [])}
+    rows = [r for r in (profs.data or []) if r["user_id"] not in following]
+    if not rows:
+        return []
+    ids = [r["user_id"] for r in rows]
+    blocked, visible = await asyncio.gather(
+        blocked_ids_batch(viewer_id, ids),
+        visible_owners(viewer_id, ids),
+    )
+    rows = [r for r in rows if r["user_id"] not in blocked]
+    if not rows:
+        return []
+    ids = [r["user_id"] for r in rows]
+    runs = await asyncio.to_thread(
+        lambda: supabase.table("runs").select("user_id, area, created_at")
+        .eq("visibility", "public").in_("user_id", ids)
+        .order("created_at", desc=True).execute())
+    run_count: dict[str, int] = {}
+    area_of: dict[str, str] = {}
+    for r in runs.data or []:
+        u = r["user_id"]
+        run_count[u] = run_count.get(u, 0) + 1
+        if u not in area_of and r.get("area"):
+            area_of[u] = r["area"]     # 최근 public run의 area
+    rows.sort(key=lambda r: r.get("created_at") or "", reverse=True)       # 최근 가입순
+    rows.sort(key=lambda r: run_count.get(r["user_id"], 0), reverse=True)  # 안정 정렬로 1순위
+    return [
+        {"user_id": r["user_id"], "nickname": r["nickname"],
+         "avatar_url": r["avatar_url"],
+         "bio": r.get("bio") if r["user_id"] in visible else None,  # 잠금이면 null
+         "is_following": False,
+         "area": area_of.get(r["user_id"]),
+         "public_run_count": run_count.get(r["user_id"], 0)}
+        for r in rows[:limit]
+    ]
+
+
 async def visible_owners(viewer_id: str, owner_ids: list[str]) -> set[str]:
     """{viewer가 볼 수 있는 owner_id} — 배치(목록·검색용, N+1 방지).
 

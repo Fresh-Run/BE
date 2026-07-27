@@ -83,6 +83,7 @@ from app.models.schemas import (
     StatsResponse,
     StoredRoute,
     TransferRequest,
+    SuggestedUserItem,
     UserSearchItem,
     UserSettings,
     WeatherResponse,
@@ -368,6 +369,25 @@ async def search_users(
         return [UserSearchItem(**r) for r in rows]
     except Exception as exc:  # noqa: BLE001
         raise _bad_gateway("User search failed", exc)
+
+
+@router.get(
+    "/users/suggested",
+    response_model=list[SuggestedUserItem],
+    summary="추천 러너 (팔로우 추천 카드, v1)",
+)
+async def suggested_users(
+    limit: int = Query(20, ge=1, le=50),
+    user: CurrentUser = Depends(get_current_user),
+) -> list[SuggestedUserItem]:
+    """팔로우할 만한 러너 — 본인·이미 팔로우 중·차단(양방향) 제외, 잠금 계정은
+    bio null로 포함(유저 검색 계약 상속). 랭킹 v1: public run 수 → 최근 가입순
+    (응답 형태 안정이 목적 — 랭킹은 추후 변경 전제)."""
+    try:
+        rows = await profile_service.suggested_users(user.user_id, limit=limit)
+        return [SuggestedUserItem(**r) for r in rows]
+    except Exception as exc:  # noqa: BLE001
+        raise _bad_gateway("Suggested users failed", exc)
 
 
 @router.get(

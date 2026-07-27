@@ -524,6 +524,19 @@ class UserSearchItem(BaseModel):
     )
 
 
+class SuggestedUserItem(BaseModel):
+    """GET /users/suggested 결과 1건 (Ivan 계약 v1, 2026-07-28) — 팔로우 추천 카드.
+    프라이버시는 유저 검색 계약 상속(잠금 계정 bio null·차단 양방향 제외)."""
+
+    user_id: str
+    nickname: str
+    avatar_url: Optional[str] = None
+    bio: Optional[str] = None       # 잠금(볼 수 없는 비공개) 계정은 null
+    is_following: bool = False      # 정의상 false(팔로우 중 제외) — 계약 필드 유지
+    area: Optional[str] = None      # 최근 public run의 지역(있으면)
+    public_run_count: int = 0       # public run 수(사실값 — A′ 정합)
+
+
 class FollowDecisionRequest(BaseModel):
     """PATCH /me/follow-requests/{requester_id} — 승인/거절."""
 
