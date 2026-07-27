@@ -96,6 +96,11 @@ async def upsert_profile(user_id: str, req: ProfileUpdate) -> ProfileResponse:
         "user_id": user_id,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
+    # 베타 한정(2026-07-27): 프로필 최초 생성 시 premium 부여 — 플래그 OFF면 컬럼
+    # default(free)로 자연 원복, 갱신 분기는 tier를 만지지 않음(기존 유저·수동 조정
+    # 보존). IAP 무충돌: 구독 행 없는 premium은 lazy 강등이 유지(test1 전례 경로).
+    if is_new and settings.beta_default_premium:
+        record["tier"] = "premium"
     if req.nickname is not None:   # 생략=유지 (부분 PATCH)
         record["nickname"] = req.nickname
     # 명시 null(avatar_url 키를 보냈는데 값이 null) = 삭제 — 미전송과 구분은

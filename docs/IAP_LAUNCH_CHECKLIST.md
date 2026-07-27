@@ -34,6 +34,10 @@ mock 모드, lazy 만료 강등). 아래는 **출시 준비기(12월 전)에 남
 
 ## 5. 배포 가드 확인
 
+- [ ] **`BETA_DEFAULT_PREMIUM` OFF + 베타 테스터 tier 정리** (2026-07-27 등재) —
+  베타 신규 가입 자동 premium 플래그(fly secrets)를 제거·재배포하고, 승급된 베타
+  테스터를 `scripts/grant_beta_premium.py --revoke --apply`로 리셋(IAP 구매자는
+  subscriptions 행으로 자동 보호). 일괄 승급 이력: `db/2026-07-27_beta_testers_premium.sql`
 - [ ] 배포 환경 변수 `ENVIRONMENT=production` 설정
 - [ ] production에서 `IAP_MODE=mock`이면 **부팅 자체가 거부**되는지 확인 (main.py 가드)
 - [ ] `iap_notifications_raw` 테이블 용량 모니터링 (처리 구현 후 정리 정책)

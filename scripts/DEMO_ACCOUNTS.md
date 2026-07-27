@@ -5,6 +5,10 @@
 
 > **베타 운영(방식 A)**: 테스터 합류 시 `python scripts/grant_beta_premium.py --apply`
 > 실행 — tier=free 실계정 전원 premium 승급(시드·운영진 제외, 멱등, 기본 dry-run).
+> **2026-07-27부터 신규 가입은 자동 premium**(`BETA_DEFAULT_PREMIUM=true` fly secrets,
+> 프로필 최초 생성 시 부여) — 스크립트·SQL은 플래그 도입 전 가입자/예외분 보정용.
+> 기존분 일괄 승급 이력: `db/2026-07-27_beta_testers_premium.sql`(test2·qa-empty는
+> free 픽스처로 제외 유지).
 > 출시 전 리셋은 `--revoke --apply`(IAP 구매자는 subscriptions 행으로 자동 보호).
 > premium 무제한 근거: 모든 게이트가 get_tier 경유, 수동 premium은 lazy 강등이 존중.
 

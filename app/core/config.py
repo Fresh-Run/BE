@@ -54,6 +54,11 @@ class Settings(BaseSettings):
     # 0=off(순수 v87, 즉시 롤백) / 스테이징 2~3. Gemini 0콜(규칙 기반 앵커 체인).
     anchor_pool_n: int = 0
 
+    # 베타 한정: 신규 가입 프로필 최초 생성 시 기본 tier=premium (방식 A 자동화,
+    # 2026-07-27). 출시 전 OFF 원복(IAP_LAUNCH_CHECKLIST) — OFF 후 신규는 free
+    # (컬럼 default), 기존 행 무영향(update 분기는 tier 불변).
+    beta_default_premium: bool = False
+
     # OpenWeather (current weather + air pollution proxy)
     openweather_api_key: str = ""
     # Overridable so tests can point the proxy at a local mock server.
