@@ -25,6 +25,8 @@ _CANONICAL_BAND_KM = 0.6          # 자동(비우선) 진입점 — |코스km + 
 # 반경·이 밴드 내면 최근접보다 우선 채택.
 _CANONICAL_PRIMARY_BAND_KM = 1.0
 _ACCESS_INFLATION = 1.3           # 진입 직선 → 도보 팽창 추정(밴드 사전판정용)
+_ON_COURSE_M = 30.0               # 코스 위 시작 판정(폴리라인 최근접) — 진입 leg 생략
+                                  # 가드(_build_served ≤30m)와 임계 통일(규칙 단일화)
 _MAX_LAPS = 3                     # 바퀴수 배수 매칭 상한(석촌호수 2.5km×2=5km 류). 밴드가 실제 n 결정.
 _RUN_PACE_MIN_PER_KM = 6.0
 
@@ -94,7 +96,7 @@ async def match_and_build(start: Coordinate, target_km: float,
     # 진입점 우선순위: access_points[0]=큐레이션 우선진입점(관대 밴드·최우선). 나머지는
     # 자동(표준 밴드). **바퀴수 배수 매칭**: 짧은 코스(석촌호수 2.5km)는 n바퀴(course×n)로
     # 밴드 진입 — n을 1..MAX 순회. 후보 key=(우선순위 0/1, diff) 최소 채택.
-    best: tuple[tuple[int, float], dict, Coordinate, float, int, int] | None = None
+    best: tuple[tuple[int, float], dict, Coordinate, float, int | None, int] | None = None
     excluded_hit: set = set()   # dedup 제외로 빠진 자격 통과 코스 id(관측·바닥 판단)
     for c in courses:
         try:
@@ -102,6 +104,32 @@ async def match_and_build(start: Coordinate, target_km: float,
             dist_km = float(c["distance_km"])
         except (KeyError, TypeError, ValueError, IndexError):
             continue
+        # 코스 위 시작(오너 확정 2026-07-27): 폴리라인 최근접 ≤30m(진입 leg 생략 가드와
+        # 동일 임계)면 우선진입점 경유 없이 그 지점에서 바로 시작 — "러너는 서 있는
+        # 지점부터 뛴다"(배치4 플라자 실측: 경유 2.6km vs 제자리 2.0km). key=(-1,·)로
+        # rank0보다 우선, 진입 왕복 0이라 diff=|코스×바퀴−target|. 밴드는 관대(1.0) —
+        # 아는 코스 위에 서 있다는 신호가 큐레이션 입구 지정만큼 강함.
+        try:
+            poly = _coords(c["polyline"])
+        except (KeyError, TypeError, ValueError, IndexError):
+            poly = []
+        if poly:
+            # bbox 사전 필터(±~1.1km) — 원거리 코스 폴리라인 전수 스캔 회피
+            if (min(p.lat for p in poly) - 0.01 <= start.lat <= max(p.lat for p in poly) + 0.01
+                    and min(p.lng for p in poly) - 0.01 <= start.lng <= max(p.lng for p in poly) + 0.01):
+                near_pt = min(poly, key=lambda p: _hav_m(start, p))
+                d_poly = _hav_m(start, near_pt)
+                if d_poly <= _ON_COURSE_M:
+                    for laps in range(1, _MAX_LAPS + 1):
+                        diff = abs(dist_km * laps - target_km)
+                        if diff > _CANONICAL_PRIMARY_BAND_KM:
+                            continue
+                        if exclude_course_ids and c.get("id") in exclude_course_ids:
+                            excluded_hit.add(c.get("id"))
+                            continue
+                        key = (-1, diff)
+                        if best is None or key < best[0]:
+                            best = (key, c, near_pt, d_poly, None, laps)
         for rank, ap in enumerate(aps):
             d = _hav_m(start, ap)
             if d > _ACCESS_RADIUS_M:
@@ -132,9 +160,11 @@ async def match_and_build(start: Coordinate, target_km: float,
     meta = {"engine": "canonical", "verdict": "canonical",
             "course_id": course.get("id"), "course_name": course.get("name"),
             "region": course.get("region"), "access_dist_m": round(access_d),
-            "access_rank": access_rank,  # 0=큐레이션 우선진입점 채택
+            "access_rank": access_rank,  # 0=큐레이션 우선진입점 채택 · None=코스 위 시작
             "laps": laps,                # 바퀴수(배수 매칭 — n바퀴)
             "course_km": round(float(course["distance_km"]), 2)}
+    if access_rank is None:
+        meta["on_course_start"] = True  # 코스 위 제자리 시작(진입 leg 0) — additive 관측
     if excluded_hit:
         meta["dedup_skipped_canonical"] = len(excluded_hit)  # 차선 캐노니컬로 회피 서빙
     return route, meta
