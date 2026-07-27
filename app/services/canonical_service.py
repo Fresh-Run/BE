@@ -72,10 +72,17 @@ async def _fetch_active() -> list[dict]:
 
 
 async def match_and_build(start: Coordinate, target_km: float,
-                          lang: str = "ko") -> tuple[RouteResponse, dict] | None:
+                          lang: str = "ko",
+                          exclude_course_ids: set | None = None,
+                          dedup_obs: dict | None = None) -> tuple[RouteResponse, dict] | None:
     """loop 요청서 시작점이 캐노니컬 코스 진입권 & 거리 밴드 내면 그 코스 서빙.
     미스/장애 시 None → 상위가 현행 생성 폴백. best-effort(예외 삼킴 — 캐노니컬이
-    생성을 막지 않는다)."""
+    생성을 막지 않는다).
+
+    exclude_course_ids(반복 생성 dedup, 2026-07-27 오너 정책): 유저가 이미 가진 코스
+    id는 자격(반경·밴드) 판정을 **통과해도 후보에서 제외** — 뽑아놓고 막기 아님. 같은
+    course_id의 다른 바퀴수도 함께 제외(같은 트랙 = 사실상 같은 코스). 제외된 코스 수는
+    dedup_obs["skipped"]에 기록(미스 시 상위의 생성 gen_meta·바닥 규칙 판단용)."""
     try:
         courses = await _fetch_active()
     except Exception as exc:  # noqa: BLE001 — 조회 실패는 생성 폴백
@@ -88,6 +95,7 @@ async def match_and_build(start: Coordinate, target_km: float,
     # 자동(표준 밴드). **바퀴수 배수 매칭**: 짧은 코스(석촌호수 2.5km)는 n바퀴(course×n)로
     # 밴드 진입 — n을 1..MAX 순회. 후보 key=(우선순위 0/1, diff) 최소 채택.
     best: tuple[tuple[int, float], dict, Coordinate, float, int, int] | None = None
+    excluded_hit: set = set()   # dedup 제외로 빠진 자격 통과 코스 id(관측·바닥 판단)
     for c in courses:
         try:
             aps = _coords(c["access_points"])
@@ -104,10 +112,15 @@ async def match_and_build(start: Coordinate, target_km: float,
                 diff = abs(dist_km * laps + access_rt - target_km)
                 if diff > band:
                     continue
+                if exclude_course_ids and c.get("id") in exclude_course_ids:
+                    excluded_hit.add(c.get("id"))            # 자격은 되나 소유 — 제외
+                    continue
                 key = (0 if rank == 0 else 1, diff)          # 우선진입점 최우선, 그다음 diff
                 if best is None or key < best[0]:
                     best = (key, c, ap, d, rank, laps)
 
+    if dedup_obs is not None:
+        dedup_obs["skipped"] = len(excluded_hit)
     if best is None:
         return None
     _key, course, access, access_d, access_rank, laps = best
@@ -122,6 +135,8 @@ async def match_and_build(start: Coordinate, target_km: float,
             "access_rank": access_rank,  # 0=큐레이션 우선진입점 채택
             "laps": laps,                # 바퀴수(배수 매칭 — n바퀴)
             "course_km": round(float(course["distance_km"]), 2)}
+    if excluded_hit:
+        meta["dedup_skipped_canonical"] = len(excluded_hit)  # 차선 캐노니컬로 회피 서빙
     return route, meta
 
 

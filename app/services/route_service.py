@@ -8,6 +8,7 @@ and enriches the response with actual pedestrian routing geometry.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import math
 import statistics
@@ -467,6 +468,105 @@ def _best_in_band(in_band: list, target_km: float, quals: dict):
         abs(t[0] - target_km)))
 
 
+# ── 반복 생성 dedup (2026-07-27 오너 정책) ──────────────────────────────
+# 실측 근거: 반복 유사도 캐노니컬 100%·앵커 100%·v87 36.8%. 캐노니컬·앵커만 지문
+# 회피(v87은 좌표 발명 층이라 안정 지문 정의 불가 + 자연 다양성 실측 확보 — v1 제외,
+# 재검토 트리거: 베타 gen_meta서 v87 반복 유사도 임계 관측 시).
+
+_DEDUP_LOOKBACK_N = 50  # 소유 지문 조회 범위 — 베타 현실(수십 개)에서 사실상 전량
+
+
+def _anchor_sig_from_coords(coords: list) -> str | None:
+    """mid 좌표(정렬·소수 5자리≈1.1m)의 sha1 12자 — 방문 순서·방향 무관 동일 판정.
+    앵커 좌표는 Kakao 실 POI라 같은 조합이면 결정론(반복 중첩 100% 실측이 방증)."""
+    mids = sorted((round(la, 5), round(lo, 5)) for la, lo in coords)
+    if not mids:
+        return None
+    return hashlib.sha1(str(mids).encode()).hexdigest()[:12]
+
+
+def _anchor_sig(route: RouteResponse) -> str | None:
+    """생성 후보/응답의 앵커 지문 — 출발·복귀 제외 mid 웨이포인트 기준."""
+    return _anchor_sig_from_coords(
+        [(w.coordinate.lat, w.coordinate.lng) for w in route.waypoints[1:-1]])
+
+
+def _anchor_sig_from_row(waypoints_json: list) -> str | None:
+    """저장 행(waypoints jsonb)에서 지문 즉석 계산 — anchor_sig 키가 없는 롤아웃 전
+    구행 소급 커버(백필 아님, 조회 시 계산). 파싱 실패는 지문 없음(=중복 아님) 취급."""
+    try:
+        return _anchor_sig_from_coords(
+            [(w["coordinate"]["lat"], w["coordinate"]["lng"])
+             for w in waypoints_json[1:-1]])
+    except (KeyError, TypeError, IndexError):
+        return None
+
+
+async def _fetch_owned_fingerprints(user_id: str) -> tuple[set, set]:
+    """유저 본인 routes 최근 N행에서 지문 수집(1쿼리, best-effort — 실패가 생성을
+    막지 않는다). 캐노니컬: gen_meta.course_id(슬라이스1부터 전 행 기록). 앵커:
+    gen_meta.anchor_sig 또는 waypoints 즉석 계산. 삭제된 코스는 행이 없어 자동으로
+    재서빙 허용(오너 확정 — 삭제 = '안 가짐' 신호)."""
+    try:
+        supabase = get_supabase_admin()
+        resp = await asyncio.to_thread(
+            lambda: supabase.table("routes")
+            .select("gen_meta,waypoints")
+            .eq("user_id", user_id)
+            .order("created_at", desc=True)
+            .limit(_DEDUP_LOOKBACK_N)
+            .execute())
+        course_ids: set = set()
+        sigs: set = set()
+        for row in resp.data or []:
+            gm = row.get("gen_meta") or {}
+            eng = gm.get("engine")
+            if eng == "canonical" and gm.get("course_id"):
+                course_ids.add(gm["course_id"])
+            elif eng == "anchor":
+                sig = gm.get("anchor_sig") or _anchor_sig_from_row(row.get("waypoints") or [])
+                if sig:
+                    sigs.add(sig)
+        return course_ids, sigs
+    except Exception:  # noqa: BLE001 — dedup은 부가 레이어, 조회 실패 시 회피 없이 진행
+        logger.warning("dedup 지문 조회 실패 — 회피 없이 진행", exc_info=True)
+        return set(), set()
+
+
+def _split_in_band_dedup(in_band: list, owned_sigs: set, engine_of: dict):
+    """in-band에서 소유 앵커 지문과 일치하는 앵커 후보 제외 → (선택 풀, 제외 수,
+    exhausted). fresh 있으면 fresh만으로 tiebreak, 전 후보가 소유면 바닥(원 풀 유지 +
+    exhausted 플래그 — 빈손 502 금지, 서빙률 비퇴행). v87 후보는 항상 fresh."""
+    if not owned_sigs:
+        return in_band, 0, False
+    dup_ids = {id(r) for _, r in in_band
+               if engine_of.get(id(r)) == "anchor" and _anchor_sig(r) in owned_sigs}
+    if not dup_ids:
+        return in_band, 0, False
+    fresh = [(k, r) for k, r in in_band if id(r) not in dup_ids]
+    if fresh:
+        return fresh, len(dup_ids), False
+    return in_band, 0, True  # 전부 소유 — 기존 최선 그대로(dedup_exhausted)
+
+
+async def _canonical_dedup_last_resort(req: RouteRequest, target_km: float, lang: str,
+                                       user_id: str | None, canon_skipped: int):
+    """바닥 규칙(오너 확정): 생성이 502로 끝나기 직전, 이번 요청에서 캐노니컬을
+    dedup으로 스킵했었다면 exclude 없이 재매치해 그 코스를 서빙 — 같은 코스 재서빙이
+    502보다 낫다(§8.11 서빙률 우선의 연장). 정상 경로 비용 0(실패 경로에서만 재매치)."""
+    if not canon_skipped:
+        return None
+    _canon = await canonical_service.match_and_build(req.start, target_km, lang=lang)
+    if _canon is None:
+        return None
+    route, meta = _canon
+    meta = {**meta, "dedup_exhausted": True, "one_way": False}
+    logger.info("dedup 바닥 발동 — 생성 실패, 소유 캐노니컬 재서빙 course=%s",
+                meta.get("course_name"))
+    await _save_route(req, route, user_id, target_distance_km=target_km, gen_meta=meta)
+    return route
+
+
 def _radius_schedule(target_km: float, start_end_km: float | None = None) -> list[float]:
     """목표 거리 비례 탐색 반경 시퀀스 (최대 4시도, 상한 8km, 중복 제거).
 
@@ -649,10 +749,20 @@ async def create_running_route(
             lng=(req.start.lng + req.end.lng) / 2,
         )
 
+    # 반복 생성 dedup(2026-07-27 오너 정책) — 유저가 이미 가진 코스는 생성/선택 단계서
+    # 회피. loop 전용(캐노니컬·앵커 롤이 loop 전용). 첫 서빙은 지문이 없어 현행 동일.
+    owned_course_ids: set = set()
+    owned_anchor_sigs: set = set()
+    if req.end is None and user_id:
+        owned_course_ids, owned_anchor_sigs = await _fetch_owned_fingerprints(user_id)
+    _dedup_obs: dict = {}
+
     # 캐노니컬 코스 레이어(오너 통찰) — loop 요청서 아는 실코스가 진입권·거리 밴드 내면
     # 생성보다 우선 서빙(Gemini 0콜). 미스/장애면 None → 현행 생성 폴백(무변경).
     if req.end is None:
-        _canon = await canonical_service.match_and_build(req.start, target_km, lang=lang)
+        _canon = await canonical_service.match_and_build(
+            req.start, target_km, lang=lang,
+            exclude_course_ids=owned_course_ids, dedup_obs=_dedup_obs)
         if _canon is not None:
             _croute, _cmeta = _canon
             _celapsed = round(time.perf_counter() - _t0, 1)
@@ -713,6 +823,11 @@ async def create_running_route(
     if not gen_cands:
         excs = [r for r in results if isinstance(r, BaseException)]
         _log_perf_failed(_t0, _perf)
+        # dedup 바닥(오너 규칙 4) — 캐노니컬을 회피로 스킵했었다면 502 대신 재서빙.
+        _lr = await _canonical_dedup_last_resort(
+            req, target_km, lang, user_id, _dedup_obs.get("skipped", 0))
+        if _lr is not None:
+            return _lr
         if any(isinstance(e, OpenAIAPIError) for e in excs):
             raise next(e for e in excs if isinstance(e, OpenAIAPIError))
         await _record_gen_failure(req, target_km, _t0, [],
@@ -873,6 +988,11 @@ async def create_running_route(
     def _eng(route):  # 채택 engine (없으면 v87 — nopath 폴백 등)
         return engine_of.get(id(route), "v87")
     in_band = [(k, r) for k, r in scored if _within_band(k, target_km)]
+    # 반복 생성 dedup — 소유 앵커 지문과 일치하는 in-band 앵커 후보를 tiebreak 전 제외.
+    # fresh 소진 시 원 풀 유지(빈손 502 금지) + exhausted 플래그. 초과 폴백은 §10에서
+    # 이미 앵커 제외, 재추첨은 v87 전용이라 앵커 dup이 샐 다른 서빙 경로 없음.
+    in_band, _dedup_anchor_skipped, _dedup_exhausted = _split_in_band_dedup(
+        in_band, owned_anchor_sigs, engine_of)
     if in_band:
         _k, best = _best_in_band(in_band, target_km, quals)  # E#2: park>zigzag>거리
         # 단독 후보 품질 바닥(01:43 부검) — 유일 밴드 내가 [park==0 & longest>1200]인
@@ -967,6 +1087,11 @@ async def create_running_route(
                 await _record_gen_failure(req, target_km, _t0, snaps,
                                           {**_meta, "redraw": rd_meta}, initial_ratio,
                                           "band_cap_zero", pitstop=pitstop_obs)
+                # dedup 바닥(오너 규칙 4) — 캐노니컬 회피 스킵분이 있으면 502 대신 재서빙.
+                _lr = await _canonical_dedup_last_resort(
+                    req, target_km, lang, user_id, _dedup_obs.get("skipped", 0))
+                if _lr is not None:
+                    return _lr
                 raise RouteGenerationFailed()  # 재추첨도 실패 — 정직한 502
 
     # 아파트 관통 관측(백로그 #6, 2026-07-23) — 선택 route의 중간 waypoint 역지오코딩해
@@ -984,6 +1109,19 @@ async def create_running_route(
     # 체감 왕복 스퍼 지표(§8.16, 앵커 에픽 롤아웃 A/B의 자) — v87·앵커 공통 기록.
     best_meta.update(_spur_metrics(best.polyline))
     best_meta["engine"] = _eng(best)  # 채택 engine(v87/anchor) — 혼합 풀 A/B 관측
+
+    # 반복 생성 dedup 관측(2026-07-27) — 전부 additive. anchor_sig는 다음 요청 지문의
+    # 빠른 경로(없으면 waypoints 즉석 계산으로 소급 커버).
+    if best_meta["engine"] == "anchor":
+        _sig = _anchor_sig(best)
+        if _sig:
+            best_meta["anchor_sig"] = _sig
+    if _dedup_obs.get("skipped"):
+        best_meta["dedup_skipped_canonical"] = _dedup_obs["skipped"]
+    if _dedup_anchor_skipped:
+        best_meta["dedup_skipped_anchor"] = _dedup_anchor_skipped
+    if _dedup_exhausted:
+        best_meta["dedup_exhausted"] = True
 
     logger.info(
         "route_gen POOL n=%d snapped=%d tmap_legs=%d aim=%.1f target=%.1f verdict=%s",
