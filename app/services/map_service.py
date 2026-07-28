@@ -427,16 +427,18 @@ async def _tmap_pedestrian_route(
     total_distance_m = 0.0
     total_duration_s = 0.0
     path: list[Coordinate] = []
+    road_segments: list = []
 
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         for leg_index in range(len(points) - 1):
             leg_start = points[leg_index]
             leg_end = points[leg_index + 1]
-            distance_m, duration_s, leg_path = await _tmap_walk_leg(
+            distance_m, duration_s, leg_path, leg_roads = await _tmap_walk_leg(
                 client, leg_start, leg_end
             )
             total_distance_m += distance_m
             total_duration_s += duration_s
+            road_segments.extend(leg_roads)
 
             # Drop the first coordinate of every leg after the first so the
             # shared point between consecutive legs isn't duplicated.
@@ -449,6 +451,7 @@ async def _tmap_pedestrian_route(
         duration_s=total_duration_s,
         path=path,
         provider="tmap",
+        road_segments=road_segments,
     )
 
 
@@ -494,6 +497,7 @@ async def _tmap_walk_leg(
     duration_s = 0.0
     path: list[Coordinate] = []
 
+    road_segments: list = []   # (roadType, name, distance_m) — §8.20 T-map 관측 축
     for feature in data.get("features", []):
         props = feature.get("properties", {})
         if "totalDistance" in props:
@@ -505,6 +509,8 @@ async def _tmap_walk_leg(
         if geometry.get("type") == "LineString":
             for lng, lat in geometry.get("coordinates", []):
                 path.append(Coordinate(lat=lat, lng=lng))
+            road_segments.append((props.get("roadType"), props.get("name") or "",
+                                  float(props.get("distance") or 0)))
 
     # T-map은 보행 불가 구간에 200 + 빈/무의미 응답을 준다(에러코드가 아님).
     # 유효 경로(거리>0·점 존재) 없으면 이 leg는 실보행 불가 — 조용히 distance=0,
@@ -512,4 +518,4 @@ async def _tmap_walk_leg(
     if not path or distance_m <= 0:
         raise LegNotRoutable()
 
-    return distance_m, duration_s, path
+    return distance_m, duration_s, path, road_segments

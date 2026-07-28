@@ -665,6 +665,10 @@ class PedestrianRoute(BaseModel):
 
     distance_m: float = Field(..., description="Total walking distance in meters.")
     duration_s: float = Field(..., description="Estimated walking duration in seconds.")
+    road_segments: list = Field(
+        default_factory=list,
+        description="(roadType, name, distance_m) per LineString — T-map 도로 등급 "
+        "관측 캡처(§8.20, tmap 전용·타 provider는 빈 리스트).")
     path: list[Coordinate] = Field(
         default_factory=list, description="Ordered coordinates of the walking path."
     )

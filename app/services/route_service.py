@@ -8,9 +8,12 @@ and enriches the response with actual pedestrian routing geometry.
 from __future__ import annotations
 
 import asyncio
+import gzip
 import hashlib
+import json
 import logging
 import math
+import os
 import statistics
 import time
 from collections import defaultdict
@@ -549,6 +552,108 @@ def _split_in_band_dedup(in_band: list, owned_sigs: set, engine_of: dict):
     return in_band, 0, True  # 전부 소유 — 기존 최선 그대로(dedup_exhausted)
 
 
+# ── 도로 등급 서빙 게이트 (2026-07-29 오너 승인, §8.20) ─────────────────────
+# motorway·motorway_link(법적 보행 금지) 연속 ≥100m 물림 후보는 서빙 금지(하드).
+# trunk·trunk_link는 관측만(수도권 나들목 병행 보행로 오탐 미확정 — 잠원 회귀 케이스).
+# 데이터: app/data/motorways_kr.json.gz(OSM 정적 추출, scripts/extract_motorways_kr.py,
+# 분기 1회 갱신). 부재/로드 실패 시 게이트 무동작(생성을 막지 않는다).
+
+_ROAD_GATE_BLOCK_M = 100.0   # 하드 차단: 연속 물림 하한 — 지하차도/교량 횡단(≤40m) 보호
+_ROAD_NEAR_M = 15.0          # 물림 판정 거리(도로 중심선 기준)
+_ROAD_CELL_U = 200           # 셀 크기(1e-5도 단위 ×200 = 0.002도 ≈ 220m)
+_road_data: dict | None = None   # {'hard': (latlng array('i'), hash array('q')), 'obs': …}
+
+
+def _load_road_grid() -> dict:
+    """콤팩트 로더 — bin.gz(셀해시 정렬 int32 페어)를 배열 그대로 들고 bisect 조회.
+
+    dict-of-tuples 방식이 로컬 실측 +495MB(512MB 머신 배포 불가)라 간이화(오너
+    완료조건). 배열+해시 인덱스로 상주 ~20MB. 부재/실패 시 빈 데이터(게이트 무동작)."""
+    global _road_data
+    if _road_data is not None:
+        return _road_data
+    import struct
+    from array import array
+    path = os.path.join(os.path.dirname(__file__), "..", "data", "motorways_kr.bin.gz")
+    try:
+        with gzip.open(path, "rb") as f:
+            n_hard, n_obs = struct.unpack("<qq", f.read(16))
+            out = {}
+            for name, n in (("hard", n_hard), ("obs", n_obs)):
+                arr = array("i")
+                arr.frombytes(f.read(n * 8))
+                hashes = array("q")            # 셀해시는 팩 타임 사전계산분(v2)
+                hashes.frombytes(f.read(n * 8))
+                out[name] = (arr, hashes)
+        _road_data = out
+        logger.info("도로 등급 데이터 로드 — hard %d점 obs %d점", n_hard, n_obs)
+    except Exception:  # noqa: BLE001 — 게이트는 부가 안전층, 실패가 생성을 막지 않는다
+        logger.warning("도로 등급 데이터 로드 실패 — 게이트 비활성", exc_info=True)
+        _road_data = {"hard": (None, None), "obs": (None, None)}
+    return _road_data
+
+
+def _road_hit_m(polyline: list, bucket: str = "hard",
+                near_m: float = _ROAD_NEAR_M) -> tuple[float, float]:
+    """폴리라인의 (최장 연속 물림 m, 총 물림 m) — bucket 도로군 중심선 near_m 이내.
+
+    15m 스텝 리샘플·이웃 3×3 셀 bisect 조회. 연속 판정은 갭 3스텝(≤45m) 허용 —
+    교차로 끊김이 회랑을 쪼개지 않게. 데이터 비면 (0,0)."""
+    import bisect
+    arr, hashes = _load_road_grid()[bucket]
+    if not arr or not polyline or len(polyline) < 2:
+        return 0.0, 0.0
+    pts = [(p.lat, p.lng) if hasattr(p, "lat") else
+           ((p["lat"], p["lng"]) if isinstance(p, dict) else (p[0], p[1]))
+           for p in polyline]
+    STEP = 15.0
+    steps = []   # (lat, lng, 이 스텝이 대표하는 실거리 m) — 실거리 적산(과대계상 방지)
+    for i in range(len(pts) - 1):
+        d = _dist_km(Coordinate(lat=pts[i][0], lng=pts[i][1]),
+                     Coordinate(lat=pts[i+1][0], lng=pts[i+1][1])) * 1000
+        n = max(1, round(d / STEP))
+        sub = d / n
+        for k in range(n):
+            t = (k + 0.5) / n   # 서브구간 중점에서 판정
+            steps.append((pts[i][0] + (pts[i+1][0] - pts[i][0]) * t,
+                          pts[i][1] + (pts[i+1][1] - pts[i][1]) * t, sub))
+    total = 0.0
+    longest = 0.0
+    run = 0.0
+    gap_m = 1e9
+    near_u = near_m / 1.1132   # 1e-5도(위도) = 1.1132m — 스케일 단위 임계
+    for s in steps:
+        la_u, lo_u = int(round(s[0] * 1e5)), int(round(s[1] * 1e5))
+        coslat = math.cos(math.radians(s[0]))
+        hit = False
+        for dcy in (-1, 0, 1):
+            for dcx in (-1, 0, 1):
+                h = (la_u // _ROAD_CELL_U + dcy) << 20 | (lo_u // _ROAD_CELL_U + dcx)
+                lo_i = bisect.bisect_left(hashes, h)
+                hi_i = bisect.bisect_right(hashes, h)
+                for j in range(lo_i, hi_i):
+                    dy = arr[2*j] - la_u
+                    dx = (arr[2*j+1] - lo_u) * coslat
+                    if dy*dy + dx*dx <= near_u*near_u:
+                        hit = True
+                        break
+                if hit:
+                    break
+            if hit:
+                break
+        if hit:
+            total += s[2]
+            if run > 0 and gap_m <= 45.0:
+                run += s[2] + gap_m   # 짧은 끊김(≤45m)은 같은 회랑으로 잇기
+            else:
+                longest = max(longest, run)
+                run = s[2]
+            gap_m = 0.0
+        else:
+            gap_m += s[2]
+    return max(longest, run), total
+
+
 async def _canonical_dedup_last_resort(req: RouteRequest, target_km: float, lang: str,
                                        user_id: str | None, canon_skipped: int):
     """바닥 규칙(오너 확정): 생성이 502로 끝나기 직전, 이번 요청에서 캐노니컬을
@@ -918,8 +1023,11 @@ async def create_running_route(
     _perf["tmap_s"] += time.perf_counter() - _m
 
     scored: list[tuple[float, RouteResponse]] = []  # (raw_km, route) — 스냅 성공
-    nopath_fallback: RouteResponse | None = None    # T-map 장애 시 AI추정 폴백
+    nopath_fallback: RouteResponse | None = None    # "other" 스냅 실패 존재 표식(태그용 —
+    # 2026-07-29 B 정직화로 서빙엔 더 이상 사용 안 함, gen_failures fail=no_path 구분만)
     snaps: list[float | None] = []
+    _gate_rejected, _gate_worst_m = 0, 0.0          # 도로 등급 게이트 관측(§8.20)
+    _road_segs_of: dict = {}                        # id(route)→T-map road_segments 관측
     # 스냅 실패 분류(오늘 진단을 막았던 무기록 삼킴 수정) — 지배 원인 판정·계측용.
     snap_errs = {"quota": 0, "legnotroutable": 0, "other": 0}
     for (r, ck, rad), out in zip(to_snap, snap_out):
@@ -943,8 +1051,20 @@ async def create_running_route(
                         nopath_fallback = r
             continue
         raw_km = out.distance_m / 1000.0
+        # 도로 등급 서빙 게이트(§8.20, 2026-07-29 오너 승인) — motorway·램프 연속
+        # ≥100m 물림 후보는 scored 편입 전 폐기(법적 보행 금지). 대체 후보로 자연
+        # 폴백, 전멸 시 기존 정직 502 계약. 데이터 부재 시 (0,0)이라 무동작.
+        _hard_run, _ = _road_hit_m(out.path, "hard")
+        if _hard_run >= _ROAD_GATE_BLOCK_M:
+            _gate_rejected += 1
+            _gate_worst_m = max(_gate_worst_m, _hard_run)
+            snaps.append(None)
+            logger.warning("도로 게이트 폐기 — motorway 연속 %.0fm (후보 %.1fkm)",
+                           _hard_run, raw_km)
+            continue
         r.polyline = out.path
         r.total_distance_km = round(raw_km, 1)
+        _road_segs_of[id(r)] = getattr(out, "road_segments", []) or []
         scored.append((raw_km, r))
         snaps.append(round(raw_km, 1))
     if snap_errs["quota"]:
@@ -984,6 +1104,9 @@ async def create_running_route(
     _meta = {"pool_size": len(gen_cands), "snapped_count": len(scored),
              "tmap_legs": leg_budget, "snap_errors": snap_errs,
              "anchor_n": anchor_n, "cand_quality": cand_quality}
+    if _gate_rejected:   # 도로 등급 게이트 관측(§8.20) — additive
+        _meta["road_gate_rejected"] = _gate_rejected
+        _meta["road_gate_worst_m"] = round(_gate_worst_m)
 
     def _eng(route):  # 채택 engine (없으면 v87 — nopath 폴백 등)
         return engine_of.get(id(route), "v87")
@@ -1043,14 +1166,10 @@ async def create_running_route(
                            snap_errs["quota"], len(scored),
                            snap_errs["legnotroutable"] + snap_errs["other"])
             raise RouteGenerationUnavailable()
-        elif nopath_fallback is not None:
-            best = nopath_fallback  # AI추정(polyline 없음) — 진짜 no-path(지오 장애)
-            best.target_missed = not _within_band(best.total_distance_km, target_km)
-            best_meta = {**_meta, "verdict": "nopath", "ratio": 0.0,
-                         "park_coverage": _park_coverage(best, park_coords),
-                         "zigzag_score": _zigzag_score(best),
-                         "retrace": _polyline_retrace(best.polyline),
-                         "max_gap_m": _polyline_max_gap_m(best.polyline)}
+        # (2026-07-29 B 정직화) 구 nopath 폴백 서빙 분기 삭제 — "other" 스냅 실패 시
+        # 폴리라인 0점 AI 추정 카드를 200으로 내던 레거시("앱은 거짓말하지 않는다"
+        # 위반, dentist 실사용 3건). 이제 재추첨/502로 자연 수렴, 실패 태그만 no_path로
+        # 구분(band_cap_zero=스냅 성공·밴드 전패 / no_path=other 스냅 실패 동반).
         else:
             # 적응 재추첨(미노스 부검 2026-07-24) — band_cap_zero가 **전 후보 언더슈트
             # 지배 + snap_errors 0**이면 미등록 저팽창 격자의 조준 미스일 확률 높음.
@@ -1086,7 +1205,8 @@ async def create_running_route(
                 _log_perf_failed(_t0, _perf)
                 await _record_gen_failure(req, target_km, _t0, snaps,
                                           {**_meta, "redraw": rd_meta}, initial_ratio,
-                                          "band_cap_zero", pitstop=pitstop_obs)
+                                          "no_path" if nopath_fallback is not None
+                                          else "band_cap_zero", pitstop=pitstop_obs)
                 # dedup 바닥(오너 규칙 4) — 캐노니컬 회피 스킵분이 있으면 502 대신 재서빙.
                 _lr = await _canonical_dedup_last_resort(
                     req, target_km, lang, user_id, _dedup_obs.get("skipped", 0))
@@ -1122,6 +1242,21 @@ async def create_running_route(
         best_meta["dedup_skipped_anchor"] = _dedup_anchor_skipped
     if _dedup_exhausted:
         best_meta["dedup_exhausted"] = True
+
+    # 도로 등급 관측(§8.20, best-effort) — 채택 코스의 trunk류 물림(OSM 축)과
+    # T-map 자기 라벨(roadType) 분포. 하드 게이트와 달리 차단 없음 — 승격 판정 재료.
+    try:
+        _, _trunk_total = _road_hit_m(best.polyline, "obs")
+        if _trunk_total:
+            best_meta["trunk_hit_m"] = round(_trunk_total)
+        _segs = _road_segs_of.get(id(best)) or []
+        if _segs:
+            _agg: dict = {}
+            for _rt, _nm, _dm in _segs:
+                _agg[str(_rt)] = _agg.get(str(_rt), 0.0) + (_dm or 0.0)
+            best_meta["tmap_road_types"] = {k: round(v) for k, v in _agg.items()}
+    except Exception:  # noqa: BLE001 — 관측 실패가 서빙을 막지 않는다
+        logger.warning("도로 등급 관측 실패 — 스킵", exc_info=True)
 
     logger.info(
         "route_gen POOL n=%d snapped=%d tmap_legs=%d aim=%.1f target=%.1f verdict=%s",
