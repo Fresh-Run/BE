@@ -219,6 +219,27 @@ async def main():
         bcz = [f for f in fails2 if (f["meta"] or {}).get("fail") == "band_cap_zero"]
         assert bcz, "band_cap_zero 태그 유지"
         ok("전 후보 언더슈트(재추첨 포함 실패) → 502 + fail=band_cap_zero 유지")
+
+        print("\n[A-6 재추첨 경로 게이트 — v112 스모크서 발견한 우회 구멍 회귀]")
+        calls6 = {"n": 0}
+
+        async def snap_redraw_ramp(origin, destination, waypoints=None):
+            calls6["n"] += 1
+            if calls6["n"] <= 9:                        # 메인 풀: 클린 언더슈트
+                return _ped(fx("road_gate_jamwon_ok")[:40], 2.0)
+            return _ped(fx("road_gate_donghae_ramp"), 5.0)   # 재추첨: 밴드 내 램프 오염
+
+        map_service.get_pedestrian_route = snap_redraw_ramp
+        try:
+            await route_service.create_running_route(req, user_id=_uid)
+            raise AssertionError("재추첨의 램프 오염 후보가 서빙되면 안 됨")
+        except RouteGenerationFailed:
+            pass
+        fails3 = sb.table("gen_failures").select("id,meta").gte("created_at", t_start).execute().data
+        rrg = [f for f in fails3
+               if ((f["meta"] or {}).get("redraw") or {}).get("redraw_road_gate_rejected")]
+        assert rrg, "재추첨 게이트 폐기 관측(redraw_road_gate_rejected) 기록 필수"
+        ok("재추첨 밴드 내 램프 후보 폐기 → 502 + redraw_road_gate_rejected 기록")
     finally:
         openai_service.generate_route = orig_gen
         map_service.get_pedestrian_route = orig_snap

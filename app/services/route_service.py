@@ -764,20 +764,37 @@ async def _adaptive_redraw(req, target_km, measured_ratio, avoid_tags, prefs, la
             waypoints=via)
 
     scored = []
+    _segs_of: dict = {}
     for r, out in zip(to_snap, await asyncio.gather(*[_snap(r) for r in to_snap],
                                                     return_exceptions=True)):
         if isinstance(out, BaseException):
             continue
         raw = out.distance_m / 1000.0
+        # 도로 등급 게이트(§8.20) — 재추첨 서빙 경로도 동일 적용(§10 교훈: 하방
+        # 보호는 모든 서빙 경로에서 성립해야 — v112 스모크서 우회 구멍 발견·봉합).
+        _hr, _ = _road_hit_m(out.path, "hard")
+        if _hr >= _ROAD_GATE_BLOCK_M:
+            meta["redraw_road_gate_rejected"] = meta.get("redraw_road_gate_rejected", 0) + 1
+            continue
         r.polyline = out.path
         r.total_distance_km = round(raw, 1)
+        _segs_of[id(r)] = getattr(out, "road_segments", []) or []
         scored.append((raw, r))
     meta["redraw_snaps"] = [round(k, 1) for k, _ in scored]
     meta["blended_ratio"] = round(ratio, 3)
+
+    def _mark_types(best):
+        agg: dict = {}
+        for _rt, _nm, _dm in _segs_of.get(id(best), []):
+            agg[str(_rt)] = agg.get(str(_rt), 0.0) + (_dm or 0.0)
+        if agg:
+            meta["tmap_road_types"] = {k: round(v) for k, v in agg.items()}
+
     in_band = [(k, r) for k, r in scored if _within_band(k, target_km)]
     if in_band:
         _k, best = min(in_band, key=lambda t: abs(t[0] - target_km))
         meta.update({"redraw_hit": True, "redraw_verdict": "hit"})
+        _mark_types(best)
         return best, meta
     # in-band 없으면 over-cap missed(v87·spur 게이트 ≤800) — 메인 흐름과 동일 서빙.
     # 재추첨은 전부 v87(generate_route)이라 engine 마킹 v87.
@@ -786,6 +803,7 @@ async def _adaptive_redraw(req, target_km, measured_ratio, avoid_tags, prefs, la
         _k, best = min(over, key=lambda t: t[0] - target_km)
         best.target_missed = True
         meta.update({"redraw_hit": True, "redraw_verdict": "missed"})
+        _mark_types(best)
         return best, meta
     meta["redraw_hit"] = False
     return None, meta
@@ -1255,6 +1273,8 @@ async def create_running_route(
             for _rt, _nm, _dm in _segs:
                 _agg[str(_rt)] = _agg.get(str(_rt), 0.0) + (_dm or 0.0)
             best_meta["tmap_road_types"] = {k: round(v) for k, v in _agg.items()}
+        elif (best_meta.get("redraw") or {}).get("tmap_road_types"):
+            best_meta["tmap_road_types"] = best_meta["redraw"]["tmap_road_types"]
     except Exception:  # noqa: BLE001 — 관측 실패가 서빙을 막지 않는다
         logger.warning("도로 등급 관측 실패 — 스킵", exc_info=True)
 
