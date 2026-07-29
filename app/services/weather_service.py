@@ -211,6 +211,69 @@ def _running_index(
     return RunningIndex(score=score, label=_label(score), comment=comment)
 
 
+# ── i18n (캐시 밖 조립, 2026-07-29 Ivan) ─────────────────────────────────────
+# 캐시는 공용 원데이터(ko 텍스트+condition_code)만 저장 — en 텍스트는 응답 시점에
+# deep copy로 조립(07/05 공유 캐시 오염 전례와 같은 축: 캐시 원본 무수정·키 무변).
+# comment는 deduction 고정 문구 전수의 exact-match 사전(미스면 ko 유지 — fail-open),
+# condition은 OpenWeather lang=kr description 대신 condition_code 자체 매핑(콜 증가 0).
+
+_COMMENT_EN: dict[str, str] = {
+    "무더위예요 — 오늘은 실내 러닝을 추천해요": "Extreme heat — indoor running recommended today",
+    "많이 더워요 — 한낮을 피해 아침·저녁에 뛰세요": "Very hot — run in the morning or evening, not midday",
+    "더위 주의 — 페이스를 늦추고 수분을 챙기세요": "Heat caution — slow your pace and stay hydrated",
+    "살짝 더울 수 있어요 — 가볍게 뛰기 좋아요": "Slightly warm — good for an easy run",
+    "조금 쌀쌀해요 — 워밍업을 충분히 하세요": "A bit chilly — warm up thoroughly",
+    "추워요 — 보온에 신경 쓰고 워밍업을 길게 하세요": "Cold — layer up and take a longer warm-up",
+    "강추위예요 — 오늘은 실내 러닝을 추천해요": "Freezing — indoor running recommended today",
+    "뇌우가 있어요 — 야외 러닝은 피하세요": "Thunderstorms — avoid running outdoors",
+    "가벼운 비가 와요 — 미끄럼에 주의하세요": "Light rain — watch for slippery spots",
+    "비가 와요 — 실내 러닝을 추천해요": "Rainy — indoor running recommended",
+    "눈이 와요 — 미끄럼 주의, 실내 러닝도 좋아요": "Snowy — watch your footing, indoor running works too",
+    "시야가 흐려요 — 밝은 옷을 입고 뛰세요": "Low visibility — wear bright clothing",
+    "바람이 매우 강해요 — 실내 러닝을 추천해요": "Very strong wind — indoor running recommended",
+    "바람이 강해요 — 맞바람 구간을 짧게 잡으세요": "Strong wind — keep headwind stretches short",
+    "미세먼지 매우 나쁨 — 야외 러닝은 피하세요": "Air quality very poor — avoid running outdoors",
+    "미세먼지가 나빠요 — 실내 러닝을 추천해요": "Poor air quality — indoor running recommended",
+    "미세먼지 보통 — 민감하다면 마스크를 챙기세요": "Moderate air quality — bring a mask if sensitive",
+    "습도가 높아요 — 페이스를 평소보다 늦추세요": "High humidity — run slower than usual",
+    "뛰기 딱 좋은 날씨예요!": "Perfect running weather!",
+}
+
+
+def _condition_en(code: int) -> str:
+    if 200 <= code < 300:
+        return "Thunderstorm"
+    if 300 <= code < 400:
+        return "Drizzle"
+    if code == 500:
+        return "Light rain"
+    if 500 < code < 600:
+        return "Rain"
+    if 600 <= code < 700:
+        return "Snow"
+    if 700 <= code < 800:
+        return "Hazy"
+    if code == 800:
+        return "Clear"
+    if code in (801, 802):
+        return "Partly cloudy"
+    return "Cloudy"  # 803·804·미지 코드
+
+
+def localize_weather(response: WeatherResponse, lang: str) -> WeatherResponse:
+    """en 유저용 텍스트 조립 — ko/미설정은 원본 그대로(복사 0, 현행 동일).
+
+    personalized comment는 personalize_index가 이미 lang으로 조립하므로 스킵."""
+    if lang != "en":
+        return response
+    out = response.model_copy(deep=True)   # 공유 캐시 원본 무수정(전례 축)
+    out.condition = _condition_en(out.condition_code)
+    if not out.running_index.personalized:
+        out.running_index.comment = _COMMENT_EN.get(
+            out.running_index.comment, out.running_index.comment)  # 미스=ko 유지
+    return out
+
+
 # ── personalization (캐시 밖) ─────────────────────────────────────────────────
 
 
@@ -223,7 +286,7 @@ def _is_raining(response: WeatherResponse) -> bool:
 
 
 def personalize_index(
-    response: WeatherResponse, ws: WeatherSettings
+    response: WeatherResponse, ws: WeatherSettings, lang: str = "ko"
 ) -> WeatherResponse:
     """유저 weather 설정 기준을 넘긴 요인이 있으면 코멘트만 개인화한 복사본 반환.
 
@@ -232,6 +295,7 @@ def personalize_index(
     score/label은 공용 기준 유지, comment + personalized 플래그만 바뀐다.
     복수 트리거 시 우선순위: 미세먼지 > 더위 > 비 (건강 위해도 순).
     """
+    en = lang == "en"   # 동적 문구라 exact-match 사전 불가 — 생성 시점 lang 분기
     comment = None
     if (
         ws.avoid_dust
@@ -239,16 +303,21 @@ def personalize_index(
         and response.pm10.value >= ws.dust_level_pm10
     ):
         comment = (
+            f"Above your dust threshold (PM10 {ws.dust_level_pm10}) — "
+            "indoor running recommended" if en else
             f"설정하신 미세먼지 기준(PM10 {ws.dust_level_pm10})을 넘었어요 — "
             "실내 러닝을 추천해요"
         )
     elif ws.avoid_heat and response.temp_c >= ws.heat_temp_c:
         comment = (
+            f"Above your heat threshold ({ws.heat_temp_c}°C) — "
+            "try a morning or evening run" if en else
             f"설정하신 더위 기준({ws.heat_temp_c}°C)을 넘었어요 — "
             "아침·저녁 러닝을 추천해요"
         )
     elif ws.avoid_rain and _is_raining(response):
-        comment = "설정하신 비 회피 조건에 해당해요 — 실내 러닝을 추천해요"
+        comment = ("Matches your rain-avoidance setting — indoor running recommended"
+                   if en else "설정하신 비 회피 조건에 해당해요 — 실내 러닝을 추천해요")
 
     if comment is None:
         return response

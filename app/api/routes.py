@@ -2978,21 +2978,27 @@ async def get_weather(
     OpenWeather key can never leak through exception text.
     """
 
-    async def _weather_settings_or_none():
+    async def _settings_or_none():
         # Best-effort: 설정 조회 실패가 날씨 응답을 막으면 안 됨.
         try:
-            return (await profile_service.get_settings(user.user_id)).weather
+            return await profile_service.get_settings(user.user_id)
         except Exception:  # noqa: BLE001
-            logger.warning("weather 설정 조회 실패 — 개인화 없이 응답", exc_info=True)
+            logger.warning("weather 설정 조회 실패 — 개인화·i18n 없이 응답", exc_info=True)
             return None
 
     try:
-        weather, weather_settings = await asyncio.gather(
+        weather, user_settings = await asyncio.gather(
             weather_service.get_weather(lat, lng),
-            _weather_settings_or_none(),
+            _settings_or_none(),
         )
-        if weather_settings is not None:
-            weather = weather_service.personalize_index(weather, weather_settings)
+        # i18n(2026-07-29): 텍스트는 수신자 lang으로 응답 시점 조립 — 캐시는 ko
+        # 원데이터 공용(키 무변·deep copy로 오염 0). 푸시와 동일 lang 소스·ko 폴백.
+        lang = (user_settings.lang
+                if user_settings and user_settings.lang in ("ko", "en") else "ko")
+        if user_settings is not None:
+            weather = weather_service.personalize_index(
+                weather, user_settings.weather, lang)
+        weather = weather_service.localize_weather(weather, lang)
         return weather
     except weather_service.WeatherNotConfigured:
         raise HTTPException(
