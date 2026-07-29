@@ -41,9 +41,20 @@ DISTANCE_MISMATCH_RATIO = 0.10    # 앱신고 vs 서버 괴리 — 초과 시 �
 SUSPECT_AVG_PACE_S = 150          # 평균 < 2'30"/km → 자전거/차량 의심
 SUSPECT_SPLIT_PACE_S = 160        # 최속 1km 스플릿 < 2'40" → 의심
 
-# 한국 서비스 bbox (schemas.Coordinate와 동일 범위 — 밖의 포인트는 조용히 제거)
-_LAT_RANGE = (33.0, 39.0)
-_LNG_RANGE = (124.0, 132.0)
+# 좌표 정합성 3겹 (2026-07-30 국제화 — 한국 bbox 폐지, 호바트 테스터 실피해):
+# ① 세계 유효 범위 ② null island(0,0 반경 ~1km — GPS 미수신 쓰레기의 고전)
+# ③ 시작점 앵커 창 — 첫 유효 포인트 반경 100km 밖 드롭. 100km 근거: 단일 러닝
+# 세션의 시작점 직선 변위 상한(울트라 100km+도 루프·왕복형이라 직선반경은 그
+# 미만이 일반) — 취지는 도시 간·대륙 점프 GPS 글리치(수백 km+) 차단, 실주행 전부
+# 통과. accuracy 컷·속도 이상치·suspect 안티치트는 무변경("유효 좌표" 정의만 교체).
+_NULL_ISLAND_M = 1000.0
+_ANCHOR_RADIUS_M = 100_000.0
+
+
+def _coarse_dist_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """equirectangular 근사(정합성 필터용 — km 스케일 판정에 충분)."""
+    kx = 111320.0 * math.cos(math.radians((lat1 + lat2) / 2))
+    return math.hypot((lat1 - lat2) * 111320.0, (lng1 - lng2) * kx)
 
 
 @dataclass
@@ -92,19 +103,25 @@ def _haversine_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
 
 
 def _basic_filter(points: list[TrackPoint]) -> list[TrackPoint]:
-    """① 구조 정리(정렬·중복 t 제거) + ② accuracy/bbox 필터."""
+    """① 구조 정리(정렬·중복 t 제거) + ② accuracy/좌표 정합성 3겹 필터(글로벌)."""
     pts = sorted(points, key=lambda p: p.t_ms)
     seen: set[int] = set()
     base: list[TrackPoint] = []
+    anchor: TrackPoint | None = None
     for p in pts:
         if p.t_ms in seen:
             continue
         seen.add(p.t_ms)
-        if not (_LAT_RANGE[0] <= p.lat <= _LAT_RANGE[1]
-                and _LNG_RANGE[0] <= p.lng <= _LNG_RANGE[1]):
-            continue
+        if not (-90.0 <= p.lat <= 90.0 and -180.0 <= p.lng <= 180.0):
+            continue                                    # ① 세계 유효 범위
+        if _coarse_dist_m(p.lat, p.lng, 0.0, 0.0) < _NULL_ISLAND_M:
+            continue                                    # ② null island
         if p.acc is not None and p.acc > MAX_ACCURACY_M:
             continue
+        if anchor is None:
+            anchor = p                                  # 첫 유효 포인트 = 세션 앵커
+        elif _coarse_dist_m(p.lat, p.lng, anchor.lat, anchor.lng) > _ANCHOR_RADIUS_M:
+            continue                                    # ③ 시작점 앵커 창(대륙 점프 차단)
         base.append(p)
     return base
 
