@@ -257,7 +257,7 @@ class UserSettings(BaseModel):
 
     run: RunSettings = Field(default_factory=RunSettings)
     units: Literal["km", "mi"] = "km"
-    theme: Literal["light", "dark"] = "light"
+    theme: Literal["light", "dark", "system"] = "light"
     lang: Literal["ko", "en"] = "ko"
     ai_course: AiCourseSettings = Field(default_factory=AiCourseSettings)
     weather: WeatherSettings = Field(default_factory=WeatherSettings)
@@ -340,7 +340,7 @@ class SettingsPatch(BaseModel):
 
     run: Optional[RunSettingsPatch] = None
     units: Optional[Literal["km", "mi"]] = None
-    theme: Optional[Literal["light", "dark"]] = None
+    theme: Optional[Literal["light", "dark", "system"]] = None
     lang: Optional[Literal["ko", "en"]] = None
     ai_course: Optional[AiCourseSettingsPatch] = None
     weather: Optional[WeatherSettingsPatch] = None
