@@ -8,8 +8,12 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.routes import router as api_router
 from app.core.config import settings
@@ -69,6 +73,61 @@ app.add_middleware(
 )
 
 app.include_router(api_router)
+
+# ── error_code 계약 (2026-07-30, additive) ───────────────────────────────────
+# 모든 4xx/5xx body 최상위에 error_code 동봉 — detail은 바이트 불변(§D 에러 계약,
+# 고정 문자열 무접촉). 클라 분기·i18n 조회 키는 error_code만(와이어 값 — pm/uv
+# grade 전례와 동일 패턴). 개별 엔드포인트 수정 0 — 이 중앙 핸들러가 전량 커버.
+# 매핑: dict detail의 "error" 키 승격(기존 구조화 코드 21종) → 문자열 큐레이션 표
+# → status 제네릭 폴백(코드 없는 에러 응답 0 보장).
+
+_ERROR_CODE_BY_DETAIL = {
+    "Crew not found": "crew_not_found",
+    "Run not found": "run_not_found",
+    "User not found": "user_not_found",
+    "Route not found": "route_not_found",
+    "Route not found or not public": "route_not_found",
+    "Members only": "members_only",
+    "User is not a member of this crew": "not_crew_member",
+    "Invalid invite code": "invalid_invite_code",
+    "Crew is full": "crew_full",
+    "Already a member": "already_member",
+    "Not found": "not_found",
+    "Not authenticated": "unauthorized",
+}
+_ERROR_CODE_BY_STATUS = {400: "bad_request", 401: "unauthorized", 403: "forbidden",
+                         404: "not_found", 409: "conflict", 422: "bad_request",
+                         429: "rate_limited"}
+
+
+def _resolve_error_code(status_code: int, detail) -> str:
+    if isinstance(detail, dict) and detail.get("error"):
+        return str(detail["error"])
+    if isinstance(detail, str) and detail in _ERROR_CODE_BY_DETAIL:
+        return _ERROR_CODE_BY_DETAIL[detail]
+    if status_code >= 500:
+        return "server_error"
+    return _ERROR_CODE_BY_STATUS.get(status_code, "bad_request")
+
+
+@app.exception_handler(StarletteHTTPException)
+async def _http_exception_with_code(request: Request, exc: StarletteHTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=jsonable_encoder(
+            {"detail": exc.detail,
+             "error_code": _resolve_error_code(exc.status_code, exc.detail)}),
+        headers=getattr(exc, "headers", None),
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_with_code(request: Request, exc: RequestValidationError):
+    return JSONResponse(
+        status_code=422,
+        content=jsonable_encoder({"detail": exc.errors(),
+                                  "error_code": "validation_error"}),
+    )
 
 
 @app.get("/health", tags=["meta"])

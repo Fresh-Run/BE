@@ -39,7 +39,7 @@ class RunNotFound(Exception):
 
 
 class SelfKudos(Exception):
-    """A user tried to kudos their own run (not allowed, Strava-style)."""
+    """DEPRECATED(2026-07-30 오너 정책: 자기 좋아요 허용) — 미사용, 하위 임포트 호환용."""
 
 
 class CrewTagNotAllowed(Exception):
@@ -725,7 +725,7 @@ async def get_run(run_id: str, user_id: str) -> RunResponse | None:
         has_track=row["id"] in tracks, splits=tracks.get(row["id"]),
         moving_sec=_moving_total(tracks.get(row["id"])),
         kudos_count=kudos.get(row["id"], 0),
-        # 피드 my_kudos와 동일 계산 (본인 run은 kudos 불가 → 자연히 False)
+        # 피드 my_kudos와 동일 계산 (2026-07-30부터 본인 kudos 허용 — 본인도 true 가능)
         my_kudos=row["id"] in mine,
         comment_count=comments.get(row["id"], 0), photos=photos,
         polyline_thumb=thumbs.get(row["id"]),
@@ -1056,18 +1056,18 @@ async def _can_see_run(owner_id: str, caller_id: str, visibility: str) -> bool:
 
 
 async def give_kudos(run_id: str, user_id: str) -> None:
-    """Kudos a run. Idempotent (double-tap safe); own runs are rejected.
+    """Kudos a run. Idempotent (double-tap safe). 본인 run 허용(2026-07-30 오너 정책 —
+    route like와 일관). 자기 kudos 알림은 create_notification의 self-skip이 자동 억제.
 
     Fires a best-effort run_kudoed notification only on a genuinely new kudos.
     보이지 않는 run(팔로우·크루 무관)에는 kudos 불가 — 알림 스팸 방지 (L1).
     """
     owner_id, visibility = await _run_owner(run_id)
-    if owner_id == user_id:
-        raise SelfKudos()
-    if not await _can_see_run(owner_id, user_id, visibility):
-        raise RunNotVisible()
-    if not await profile_service.feed_allows(owner_id, "allow_likes"):
-        raise profile_service.FeedActionDisabled("likes")
+    if owner_id != user_id:   # 게이트는 타인 kudos에만(route like와 동일 패턴)
+        if not await _can_see_run(owner_id, user_id, visibility):
+            raise RunNotVisible()
+        if not await profile_service.feed_allows(owner_id, "allow_likes"):
+            raise profile_service.FeedActionDisabled("likes")
 
     supabase = get_supabase_admin()
     kudos_new = True

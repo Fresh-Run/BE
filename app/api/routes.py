@@ -1508,7 +1508,7 @@ async def copy_run_as_route(
 @router.post(
     "/runs/{run_id}/kudos",
     status_code=status.HTTP_204_NO_CONTENT,
-    summary="run에 kudos (멱등, 본인 run 불가)",
+    summary="run에 kudos (멱등 — 본인 run 허용, 2026-07-30)",
 )
 async def give_kudos(
     run_id: str,
@@ -1521,8 +1521,6 @@ async def give_kudos(
         raise HTTPException(status_code=404, detail="Run not found")
     except run_service.RunNotVisible:
         raise HTTPException(status_code=404, detail="Run not found")  # 존재 은닉
-    except run_service.SelfKudos:
-        raise HTTPException(status_code=400, detail="Cannot kudos your own run")
     except profile_service.FeedActionDisabled as exc:
         raise HTTPException(status_code=403, detail={
             "error": "likes_disabled",
