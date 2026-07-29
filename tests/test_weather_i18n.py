@@ -85,6 +85,27 @@ def run():
     ok("personalize en/ko 분기·localize는 personalized comment 스킵·condition만 교체")
 
 
+def run_label_grade():
+    print("\n[6. label en 분기 + grade 와이어 값 불변 (핵심 — 같은 응답서 갈림)]")
+    r = mk()
+    r.pm25 = PmReading(value=80.0, grade="나쁨")
+    r.pm10 = PmReading(value=30.0, grade="좋음")
+    out = ws.localize_weather(r, "en")
+    assert out.running_index.label == "Excellent", out.running_index.label
+    assert out.pm25.grade == "나쁨" and out.pm10.grade == "좋음", \
+        "grade는 와이어 값(클라 색상 키) — 번역 금지(Ivan 계약)"
+    ok(f'label "{out.running_index.label}" ↔ grade "{out.pm25.grade}/{out.pm10.grade}" 유지')
+    # label 전수(5종) en 페어
+    labels = {ws._label(s) for s in (95, 75, 55, 35, 10)}
+    missing = [x for x in labels if x not in ws._LABEL_EN]
+    assert not missing, missing
+    ok(f"label 5종({sorted(labels)}) 전부 en 페어 보유")
+    # ko 회귀 — 동일 객체
+    assert ws.localize_weather(r, "ko") is r
+    ok("ko 동일 객체 회귀 유지")
+
+
 if __name__ == "__main__":
     run()
+    run_label_grade()
     print("\n" + "=" * 50 + "\n  ALL TESTS PASSED\n" + "=" * 50)

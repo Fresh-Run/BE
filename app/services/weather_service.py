@@ -260,14 +260,25 @@ def _condition_en(code: int) -> str:
     return "Cloudy"  # 803·804·미지 코드
 
 
+_LABEL_EN: dict[str, str] = {   # 러닝지수 등급 라벨 5종 (_label 전수, 2026-07-29 Ivan)
+    "최고": "Excellent", "좋음": "Good", "보통": "Fair",
+    "주의": "Caution", "비추천": "Not recommended",
+}
+
+
 def localize_weather(response: WeatherResponse, lang: str) -> WeatherResponse:
     """en 유저용 텍스트 조립 — ko/미설정은 원본 그대로(복사 0, 현행 동일).
 
-    personalized comment는 personalize_index가 이미 lang으로 조립하므로 스킵."""
+    personalized comment는 personalize_index가 이미 lang으로 조립하므로 스킵.
+    ⚠️ pm25/pm10.grade·uv.grade(및 유사 grade 필드)는 **localize 금지** — 클라가
+    색상 매핑 조회 키(와이어 값)로 사용 중이라 번역하면 클라가 깨진다(Ivan 계약
+    2026-07-29). '마저 번역' 금지 — 표시 텍스트가 아니라 enum 값이다."""
     if lang != "en":
         return response
     out = response.model_copy(deep=True)   # 공유 캐시 원본 무수정(전례 축)
     out.condition = _condition_en(out.condition_code)
+    out.running_index.label = _LABEL_EN.get(
+        out.running_index.label, out.running_index.label)  # 미스=ko 유지
     if not out.running_index.personalized:
         out.running_index.comment = _COMMENT_EN.get(
             out.running_index.comment, out.running_index.comment)  # 미스=ko 유지
