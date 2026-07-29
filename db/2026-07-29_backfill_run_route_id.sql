@@ -6,9 +6,9 @@
 -- [ROLLBACK] — 아래 4 run은 백필 전 전부 route_id = null (원복 = null 재설정)
 -- update public.runs set route_id = null
 -- where id in ('a3b0a5d8-22be-4ce3-9408-3da09dd243e8',
-              '6e8e2179-6fe2-453b-8a7d-fc467bc67439',
-              '17788a33-b149-4175-857f-0c66b87e4537',
-              '72b9f486-82cf-4fa5-ba83-8fb237fffd80');
+--              '6e8e2179-6fe2-453b-8a7d-fc467bc67439',
+--              '17788a33-b149-4175-857f-0c66b87e4537',
+--              '72b9f486-82cf-4fa5-ba83-8fb237fffd80');
 
 -- [UPDATE]
 update public.runs set route_id = 'ea67642f-3689-4780-ae7c-9be8ce7f1f0b'
