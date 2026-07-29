@@ -1378,7 +1378,12 @@ async def _save_route(
         result = await asyncio.to_thread(
             lambda: supabase.table("routes").insert(record).execute()
         )
-        saved_id = result.data[0]["id"] if result.data else "?"
+        saved_id = result.data[0]["id"] if result.data else None
+        if saved_id:
+            # 응답에 행 id 동봉(2026-07-29 additive) — 모든 서빙 분기(캐노니컬 훅·
+            # 메인·dedup last-resort)가 _save_route 직후 이 객체를 반환하므로 단일
+            # 지점 배선으로 전수 커버(§10). 저장 실패 시 None 유지(best-effort 불변).
+            route.route_id = saved_id
         logger.info("Saved generated route to Supabase (id=%s).", saved_id)
     except Exception:  # noqa: BLE001 - persistence is best-effort
         logger.warning(

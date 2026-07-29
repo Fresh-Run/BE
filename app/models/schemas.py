@@ -604,6 +604,10 @@ class Waypoint(BaseModel):
 class RouteResponse(BaseModel):
     """Structured running route returned to the client."""
 
+    route_id: Optional[str] = Field(
+        None, description="저장된 routes 행 id (2026-07-29 additive). 정상 서빙에선 "
+        "항상 채워짐 — None은 저장 실패(best-effort 저장 계약 유지) 엣지뿐. "
+        "생성 직후 달리기 플로우: 이 값을 POST /runs의 route_id로 전달.")
     summary: str = Field(..., description="Short human-readable description of the route.")
     total_distance_km: float = Field(..., description="Estimated total distance.")
     estimated_duration_min: Optional[float] = Field(
