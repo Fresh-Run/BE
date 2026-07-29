@@ -24,6 +24,9 @@ _MAX_TOKENS_PER_USER = 10  # 감사 M-B: 초과 등록 시 오래된 것 정리 
 
 # type별 본문 템플릿 — {nickname} 치환. 제목은 앱명 고정.
 _TITLE = "FreshRun"
+# 닉네임 미해석 폴백 — 수신자 lang 분기(body 조립부의 lang과 동일 소스). 영문은
+# 문장 시작이라 관사 포함("A runner liked your course")이 자연스러움.
+_NICKNAME_FALLBACK = {"ko": "러너", "en": "A runner"}
 # 알림 type → NotifSettings 카테고리 토글 키 (시안 FrNotifSettings).
 # 매핑 없는 type은 카테고리 게이트 없이 master만 적용(안전 기본 — 신규 type이
 # 매핑보다 먼저 생겨도 master ON이면 발송). 승인제 2종(follow_requested·
@@ -205,7 +208,9 @@ async def send_for_notification(
                     if len(rtypes) == 1 and rtypes[0] in _PB_MESSAGES
                     else template[lang])
         else:
-            body = template[lang].format(nickname=nicknames.get(actor_id) or "러너")
+            # 닉네임 미해석 폴백도 lang-aware(2026-07-29 Ivan 합의) — 같은 lang 소스 재사용.
+            body = template[lang].format(
+                nickname=nicknames.get(actor_id) or _NICKNAME_FALLBACK[lang])
 
         messages = [{
             "to": t,
