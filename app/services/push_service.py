@@ -68,7 +68,7 @@ _TEMPLATES: dict[str, dict[str, str]] = {
     "route_commented": {"ko": "{nickname}님이 회원님의 코스에 댓글을 남겼어요",
                         "en": "{nickname} commented on your course"},
     "run_kudoed": {"ko": "{nickname}님이 회원님의 러닝을 응원해요",
-                   "en": "{nickname} gave kudos to your run"},
+                   "en": "{nickname} liked your run"},  # 인앱 'likes' 표기 통일(Ivan, 07/29)
     "route_saved": {"ko": "{nickname}님이 회원님의 러닝을 코스로 저장했어요",
                     "en": "{nickname} saved your run as a course"},
     "run_commented": {"ko": "{nickname}님이 회원님의 러닝에 댓글을 남겼어요",

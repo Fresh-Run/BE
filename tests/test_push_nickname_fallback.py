@@ -32,7 +32,11 @@ def run():
     assert b == "A runner liked your course", b
     b2 = assemble("follow_requested", "en", None)
     assert b2 == "A runner requested to follow you", b2
-    ok(f'"{b}" · "{b2}"')
+    # run_kudoed en 개정(07/29 Ivan — 인앱 'likes' 통일): liked + 대상(run/course) 구분
+    bk = assemble("run_kudoed", "en", None)
+    assert bk == "A runner liked your run", bk
+    assert assemble("route_liked", "en", None) == "A runner liked your course"
+    ok(f'"{b}" · "{b2}" · "{bk}" (route_liked와 동사 동일·대상 구분 확인)')
 
     print("\n[2. 미해석 + ko/미설정 → 러너 유지]")
     b3 = assemble("run_kudoed", "ko", None)
