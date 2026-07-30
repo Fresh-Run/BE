@@ -24,6 +24,37 @@ from supabase import create_client  # noqa: E402
 
 sb = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_ROLE_KEY"])
 
+# 스키마 자가검증 대상 — 이 스크립트가 참조하는 (테이블, 컬럼) 전목록.
+# 드리프트 시 조용히 빈 값 대신 시끄럽게 죽는다(§B). select문 수정 시 여기도 갱신.
+_SCHEMA_REFS = {
+    "profiles": ["user_id", "nickname"],
+    "runs": ["id", "user_id", "ran_at", "distance_km", "verification", "title",
+             "start_lat", "start_lng", "route_id"],
+    "run_tracks": ["run_id", "points", "avg_accuracy_m",
+                   "raw_point_count", "kept_point_count"],
+    "canonical_courses": ["name", "polyline"],
+}
+
+
+def verify_schema():
+    """PostgREST 루트 OpenAPI(실카탈로그에서 생성)로 (테이블,컬럼) 일괄 대조."""
+    import httpx
+    k = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
+    spec = httpx.get(os.environ["SUPABASE_URL"] + "/rest/v1/",
+                     headers={"apikey": k, "Authorization": f"Bearer {k}"},
+                     timeout=30).json()
+    defs = spec.get("definitions", {})
+    missing = []
+    for table, cols in _SCHEMA_REFS.items():
+        actual = set(defs.get(table, {}).get("properties", {}))
+        if not actual:
+            missing.append(f"{table} (테이블 없음)")
+            continue
+        missing += [f"{table}.{c}" for c in cols if c not in actual]
+    if missing:
+        sys.exit("[스키마 드리프트] DB에 없는 참조: " + ", ".join(missing))
+
+
 # 데모·운영·테스트 계정(시드 재료 제외) — DEMO_ACCOUNTS.md 기준
 _EXCLUDED_EMAIL_HINTS = ("@freshrun.com", "freshrun0609", "ascreview")
 # 닉네임이 아니라 user_id로 제외(2026-07-30 — '이준'→'이반' 닉변으로 dev 6런 혼입 전례)
@@ -58,6 +89,7 @@ def coverage(a_pts, b_pts, near=40):
 
 def main():
     import httpx
+    verify_schema()
     k = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
     users, page = [], 1
     while True:
