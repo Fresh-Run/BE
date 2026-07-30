@@ -1633,6 +1633,10 @@ class CrewRunItem(BaseModel):
         None, description="연결된 코스 요약 — 공개 코스일 때만, 비공개면 null."
     )
     comment_count: int = Field(0, description="run 댓글 수 (카드 💬).")
+    # kudos 필드 (2026-07-31 additive, Ivan c) — K1 활동 피드와 동일 시맨틱
+    # (v120 자기 kudos 허용 포함). ActivityFeedItem은 상속으로 기존 계약 그대로.
+    kudos_count: int = 0
+    my_kudos: bool = Field(False, description="내가 이 run에 kudos를 눌렀는지.")
     # 피드 설정 렌더 힌트 (2026-07-13 additive) — run 소유자 설정값. false면 프론트가
     # 좋아요/댓글 버튼 렌더 생략(403은 레이스 폴백). ActivityFeedItem에 자동 전파.
     allow_likes: Optional[bool] = Field(None, description="소유자에게 kudos 가능?")
@@ -1656,8 +1660,7 @@ class ActivityFeedItem(CrewRunItem):
     """
 
     is_mine: bool = Field(False, description="내 run이면 true (kudos 버튼 비활성용).")
-    kudos_count: int = 0
-    my_kudos: bool = Field(False, description="내가 이 run에 kudos를 눌렀는지.")
+    # kudos_count·my_kudos는 부모(CrewRunItem)로 승격(2026-07-31) — 와이어 불변.
     visibility: Optional[str] = Field(
         None, description="공개 범위 (본인 프로필 뱃지용). 활동 피드/크루 피드에선 생략(null)."
     )

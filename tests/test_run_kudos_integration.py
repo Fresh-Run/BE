@@ -111,15 +111,18 @@ def run():
             assert api(c, "POST", f"/users/{uid2}/follow", tok1).status_code == 204
             ok("u1→u2 팔로우, run 4개 (a:2h/b:1h/c:3h/mine:30m 전)")
 
-            # ── 2. kudos 멱등 + 본인 400 + 404 ────────────────────────────
-            step("2. kudos: 멱등 / 본인 400 / 없는 run 404")
+            # ── 2. kudos 멱등 + 본인 허용(v120) + 404 ─────────────────────
+            step("2. kudos: 멱등 / 본인 204(v120 자기 kudos 허용) / 없는 run 404")
             assert api(c, "POST", f"/runs/{run_a}/kudos", tok1).status_code == 204
             assert api(c, "POST", f"/runs/{run_a}/kudos", tok1).status_code == 204, "더블탭 204"
             r = api(c, "POST", f"/runs/{run_a}/kudos", tok2)
-            assert r.status_code == 400, f"본인 run kudos → 400, got {r.status_code}"
+            assert r.status_code == 204, \
+                f"본인 run kudos → 204(2026-07-30 오너 정책, 구 400 계약 폐기), got {r.status_code}"
+            # 이후 카운트 불변식 보존을 위해 자기 kudos는 즉시 회수(회수도 204 멱등)
+            assert api(c, "DELETE", f"/runs/{run_a}/kudos", tok2).status_code == 204
             assert api(c, "POST", f"/runs/{_NOBODY}/kudos", tok1).status_code == 404
             assert api(c, "GET", f"/runs/{_NOBODY}/kudos", tok1).status_code == 404
-            ok("멱등 204 ✓ 본인 400 ✓ 404 ✓")
+            ok("멱등 204 ✓ 본인 204(v120) 후 회수 ✓ 404 ✓")
 
             # ── 3. 알림: 새 kudos만 1건 ───────────────────────────────────
             step("3. run_kudoed 알림 (더블탭 중복 없음)")

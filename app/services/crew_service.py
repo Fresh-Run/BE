@@ -938,6 +938,8 @@ async def list_crew_runs(
 
     from app.services.run_service import (  # local: 순환 import 회피
         _comment_counts,
+        _kudos_counts,
+        _my_kudos_set,
         _polyline_thumbs,
         _signed_photo_urls,
     )
@@ -945,13 +947,18 @@ async def list_crew_runs(
     # 정기런 세션 참여자 수 — 이 크루 태그(crew_id==this) run들의 session_key만 집계.
     session_keys = [r["session_key"] for r in rows
                     if r.get("crew_id") == crew_id and r.get("session_key")]
-    briefs, summaries, comment_counts, signed, thumbs, participants = await asyncio.gather(
+    # kudos 2종(2026-07-31, Ivan c) — K1 피드와 동일 배치 헬퍼 재사용.
+    # 페이지당 각 1쿼리(run id IN), N+1 없음.
+    (briefs, summaries, comment_counts, signed, thumbs, participants,
+     kudos_counts, my_kudos) = await asyncio.gather(
         profile_service.get_profile_briefs([r["user_id"] for r in rows]),
         _public_route_summaries(),
         _comment_counts([r["id"] for r in rows]),
         _signed_photo_urls([p for p in firsts.values() if p]),
         _polyline_thumbs([r["id"] for r in rows]),
         _session_participant_counts(session_keys),
+        _kudos_counts([r["id"] for r in rows]),
+        _my_kudos_set([r["id"] for r in rows], caller_id),
     )
     return [
         CrewRunItem(
@@ -968,6 +975,8 @@ async def list_crew_runs(
             route_id=row.get("route_id"),
             route_summary=summaries.get(row.get("route_id")),
             comment_count=comment_counts.get(row["id"], 0),
+            kudos_count=kudos_counts.get(row["id"], 0),
+            my_kudos=row["id"] in my_kudos,
             photo_thumb=signed.get(firsts.get(row["id"])),
             polyline_thumb=thumbs.get(row["id"]),
             # L1: 이 크루의 정기런 태그면 배지 + 세션 참여자 수
