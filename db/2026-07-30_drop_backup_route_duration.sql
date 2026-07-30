@@ -1,4 +1,5 @@
--- _backup_route_duration_20260720 DROP (2026-07-30, 오너 실행).
+-- _backup_route_duration_20260720 DROP (2026-07-30). ✅ 실행 완료(오너 확인 —
+-- 잔여 rowsecurity=false는 spatial_ref_sys(PostGIS 불가 항목)뿐, 린터 경고 해소 확정).
 -- 정체: 07/20 duration 러닝 환산 백필의 사전 스냅샷(원파일 주석에 "안정 확인 후
 -- drop 예정" — 의도된 임시물). RLS 미적용 상태로 열흘 방치 → Supabase 린터
 -- rls_disabled_in_public 유일 실대상(§C 함정 신규 등재).

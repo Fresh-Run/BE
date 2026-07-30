@@ -1,4 +1,5 @@
--- Supabase 린터 rls_disabled_in_public 경고(7/26 메일) 판별·해소 (실행: 오너).
+-- Supabase 린터 rls_disabled_in_public 경고(7/26 메일) 판별·해소. ✅ 실행 완료
+-- (2026-07-30 오너 확인 — 백업 테이블 DROP과 함께 해소 확정, 잔여는 spatial_ref_sys뿐).
 --
 -- 서버측 사전 조사(2026-07-30): ① 데이터 프로브(scripts/verify_rls.py) — 33테이블 중
 --   29 deny 확정, 4는 빈 테이블이라 판정 보류(iap_notifications_raw·monthly_insights·
