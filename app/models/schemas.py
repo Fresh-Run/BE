@@ -57,8 +57,20 @@ NEGATIVE_TAGS = [
 class Coordinate(BaseModel):
     """A WGS84 geographic point."""
 
-    lat: float = Field(..., description="Latitude (위도)", ge=33.0, le=39.0)
-    lng: float = Field(..., description="Longitude (경도)", ge=124.0, le=132.0)
+    # 2026-07-30 세계 범위로 완화(뉴욕 트랙 조회 502 전례) — 저장·응답 공용 타입.
+    # 저장된 사실을 응답이 재검증으로 거부하면 안 된다. 서비스 지역 입구 차단은
+    # KoreaCoordinate(입력 전용)가 담당.
+    lat: float = Field(..., description="Latitude (위도)", ge=-90.0, le=90.0)
+    lng: float = Field(..., description="Longitude (경도)", ge=-180.0, le=180.0)
+
+
+class KoreaCoordinate(Coordinate):
+    """입력 전용 — 서비스 지역(한국) 입구 차단. **응답 모델에 쓰지 말 것**
+    (전례: 2026-07-30 뉴욕 502 — 해외 저장 트랙을 응답 스키마가 거부해 /runs·
+    /feed/activities 연쇄 502). 코스 생성 등 한국 전제 기능의 요청 좌표만."""
+
+    lat: float = Field(..., description="Latitude (위도, 한국)", ge=33.0, le=39.0)
+    lng: float = Field(..., description="Longitude (경도, 한국)", ge=124.0, le=132.0)
 
 
 class CurrentUser(BaseModel):
@@ -546,8 +558,8 @@ class FollowDecisionRequest(BaseModel):
 class RouteRequest(BaseModel):
     """Input from the client to generate a running route."""
 
-    start: Coordinate = Field(..., description="Starting point")
-    end: Optional[Coordinate] = Field(
+    start: KoreaCoordinate = Field(..., description="Starting point (한국 — 입구 차단)")
+    end: Optional[KoreaCoordinate] = Field(
         None,
         description="End point. If omitted, a loop back to start is assumed.",
     )
