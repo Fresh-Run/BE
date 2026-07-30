@@ -4,6 +4,10 @@
 기존 캐노니컬 중첩 <50%. 루프/구간 판별·같은 격자 반복 주행(다유저 동일 회랑)
 신호 포함. 천곡·습지 레시피(실유저 궤적 시드)의 입구 계기판.
 
+자동화 착수 트리거(2026-07-30 재설정): **다유저 동일회랑 3건+ 또는 미처리 재료급
+동시 5건+** — 1회랑·2명 규모는 수동 레시피가 더 쌈(제주 이호테우 건으로 실증,
+배치7 수동 등재). 평택(36.95,127.04) 격자는 부대 내부 전례(§8.19 ⑤)로 재제외.
+
 Run: python scripts/seed_inventory.py
 """
 from __future__ import annotations
@@ -22,7 +26,8 @@ sb = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_ROLE
 
 # 데모·운영·테스트 계정(시드 재료 제외) — DEMO_ACCOUNTS.md 기준
 _EXCLUDED_EMAIL_HINTS = ("@freshrun.com", "freshrun0609", "ascreview")
-_EXCLUDED_NICKS = {"이준"}  # 프론트 개발(Ivan) — 실유저 아님
+# 닉네임이 아니라 user_id로 제외(2026-07-30 — '이준'→'이반' 닉변으로 dev 6런 혼입 전례)
+_EXCLUDED_USER_IDS = {"1c6e6330-fb15-480c-abac-8656033812ea"}  # Ivan(프론트 개발)
 
 
 def hav(a, b):
@@ -70,7 +75,7 @@ def main():
         e = email.get(uid, "")
         if any(h in e for h in _EXCLUDED_EMAIL_HINTS):
             return False
-        return nick.get(uid, "") not in _EXCLUDED_NICKS
+        return uid not in _EXCLUDED_USER_IDS
 
     runs = sb.table("runs").select(
         "id,user_id,ran_at,distance_km,verification,title,start_lat,start_lng,route_id"
