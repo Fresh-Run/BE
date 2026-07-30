@@ -1,0 +1,76 @@
+-- _backup_route_duration_20260720 DROP (2026-07-30, 오너 실행).
+-- 정체: 07/20 duration 러닝 환산 백필의 사전 스냅샷(원파일 주석에 "안정 확인 후
+-- drop 예정" — 의도된 임시물). RLS 미적용 상태로 열흘 방치 → Supabase 린터
+-- rls_disabled_in_public 유일 실대상(§C 함정 신규 등재).
+-- 존치 불필요 판정 근거: ① 백필 55/55 실측 검증 완료(941be7c)·열흘 무이슈
+-- ② 주간 pg_dump(--schema=public 전체 — exclude 없음, 최근 07/27 03:00 KST분)에
+--    이 테이블 포함 보존 ③ 아래 ROLLBACK에 55행 전량 인라인 박제(3중 안전망).
+-- 드랍 전 스키마·행수: (id uuid, estimated_duration_min numeric) · 55행.
+--
+-- [ROLLBACK] — 전량 복원문(주석 해제 후 실행):
+-- create table public._backup_route_duration_20260720 (id uuid, estimated_duration_min numeric);
+-- alter table public._backup_route_duration_20260720 enable row level security;
+-- insert into public._backup_route_duration_20260720 (id, estimated_duration_min) values
+--   ('000dd813-fb4e-480d-acd4-5214320643dd',143.0),
+--   ('0439fd76-f75f-4451-97ef-6369a684f1a3',32.0),
+--   ('09423787-375a-4e95-bf64-5d11df9470dd',78.0),
+--   ('0f96e060-8ef8-48c8-a326-be0d88fc863d',39.0),
+--   ('11cc76c6-7fce-490d-9bec-b29772cf786e',88.0),
+--   ('12df3534-2df2-436c-a5f6-344a6d448334',40.0),
+--   ('14e17feb-b971-484b-aeb6-d811aca09049',53.0),
+--   ('186aa1b2-1d3d-497a-9b9e-2765fbcfaf14',58.0),
+--   ('205266af-d673-49fc-94aa-1717581a6ef4',37.0),
+--   ('2636dbda-704b-4e6d-8369-11ae99b5612b',89.5),
+--   ('3103f4fe-8a8a-481a-8244-3b89a94ff523',66.3),
+--   ('3afa1c00-a4ea-44b1-8c89-4e0a5059943f',46.0),
+--   ('447d641f-af87-4875-bfa6-55a45c077bcf',32.0),
+--   ('4f1c3d9c-aa85-47ea-8cbe-02fe1dd71e01',21.0),
+--   ('57bcfd40-5e02-4b69-b7a2-a6ec6c417d2d',67.0),
+--   ('5ab0f4af-f217-4629-b378-6212c131c477',75.0),
+--   ('5d22f1b0-bde5-432f-b257-422ab8db240d',83.0),
+--   ('5de6ac56-c3e5-4498-a70f-2d7904ca9a1c',32.0),
+--   ('61a6197d-3749-450c-82e2-3d56681fd7ce',52.6),
+--   ('6b0f09fc-4059-4d59-bb64-0dd0b20e4017',52.0),
+--   ('7710a6db-d6c1-4b67-8d36-55b010c209b7',46.0),
+--   ('779443e0-6222-4e6b-8ed5-cd1105d483d2',52.8),
+--   ('77dc190c-95ef-489c-b3c0-2a7dd93b9fa3',46.0),
+--   ('793378b4-ca5f-483e-83f3-e3459edf6944',44.0),
+--   ('7c45ce8d-14c0-4941-8681-5fc3c521f41e',65.0),
+--   ('84119848-68f0-47d9-a868-88b3aa767cdf',26.0),
+--   ('85124a44-3627-4f64-816d-50ad51cd0bf6',55.0),
+--   ('8532ecfb-6a05-4e5a-b635-a6097f3f088a',46.0),
+--   ('8605ef01-839f-4ebb-88c5-8118f30e457b',60.0),
+--   ('8d73539d-f0c1-485b-a9df-08f49f7407e2',101.8),
+--   ('90604c4e-7664-4940-a522-2ed6048d91bf',67.0),
+--   ('90d93d82-7345-4a5f-ae05-b6912c2d0469',156.0),
+--   ('9ba3a12e-3057-459d-9c85-e275177f31c1',97.5),
+--   ('9ebdfe11-7703-4816-8b54-0115d40e22ed',90.0),
+--   ('a0b5aec9-236a-4619-afcb-3da2d0013ff7',80.3),
+--   ('a5413dde-68ec-4e42-af8d-dfa7b583dc60',90.2),
+--   ('a5f94974-ab9a-4a8c-86d7-4672fb503114',81.0),
+--   ('a92d04d5-521d-47a2-bff6-a7a9ec5e0e89',52.0),
+--   ('b3072d4a-3657-4aa0-b4f0-67e640c2dcf5',36.0),
+--   ('b52202e4-3f05-4262-8ff8-a29767a2cfdb',34.0),
+--   ('b8f37a7c-19df-44ff-9a11-1d1707d8acb3',161.0),
+--   ('c359d431-b0f6-4b4d-82f9-7d3ffaf9de0c',52.0),
+--   ('c6063c98-3546-4bda-9fb1-2c47821b3d16',52.0),
+--   ('c642df14-7718-4eee-ae76-757175b2c1a9',82.0),
+--   ('cda79c51-07e4-4544-87a3-9cd2677cc630',133.1),
+--   ('d3a2dc3d-22af-41ed-995e-145585e96b65',59.0),
+--   ('d6aacd09-7b5a-457f-9902-5ac354586c84',81.0),
+--   ('de030fc9-27bf-444f-a5c3-25b8acb90bb1',32.0),
+--   ('def7aaa2-ff35-4c76-8b37-0f3b37806ad3',55.4),
+--   ('e3887e9b-6a06-4176-8933-1640b1191975',34.0),
+--   ('e76e15e0-3c2d-49d9-b28f-f2c3af61f0da',23.0),
+--   ('e88cd627-bbb9-49ed-9253-3b348c53ec28',46.0),
+--   ('eaf8b4a6-952d-4c74-b8e3-b6f88a57ce65',29.0),
+--   ('eb6ad45b-3644-4bea-898e-4d122a73906d',101.0),
+--   ('f43913b3-3bcd-4d62-b268-e52c3bdf7477',72.0);
+
+-- [APPLY]
+drop table if exists public._backup_route_duration_20260720;
+
+-- [확인쿼리] — 판정 기준: rowsecurity=false 잔여가 PostGIS류(불가 항목)뿐
+select tablename from pg_tables
+where schemaname = 'public' and rowsecurity = false
+order by tablename;

@@ -75,6 +75,8 @@
   채택 0/30 자책 회귀). 업소텀은 이름에 공원/산책로/둘레길/천/숲 토큰이 없을 때만 제외.
 - **신규 테이블은 반드시 `enable row level security`**(정책 없이 — deny-by-default
   백스톱, 전 테이블 표준. 앱은 service_role로만 접근).
+- **백업/임시 테이블도 생성 즉시 RLS enable 또는 작업 완료 시 즉시 DROP** — 전례:
+  `_backup_route_duration_20260720` 열흘 방치 → Supabase 린터 경고(2026-07-30).
 - GH Actions schedule은 repo **60일 무활동 시 비활성**.
 - **시간대**: DB는 UTC 저장, 주/월 경계는 **KST 기준** 계산. 클라이언트 naive
   datetime은 422 거부.
