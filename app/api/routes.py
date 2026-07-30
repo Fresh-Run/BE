@@ -9,6 +9,8 @@ from datetime import datetime
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from openai import InternalServerError as GeminiOverloaded
+from openai import RateLimitError as GeminiRateLimited
 from fastapi.responses import JSONResponse
 
 from app.core.auth import get_current_user, require_admin
@@ -795,6 +797,19 @@ async def generate_route(
             detail={
                 "error": "route_generation_unavailable",
                 "message": "일시적인 문제로 코스를 만들 수 없어요. 잠시 후 다시 시도해주세요.",
+            },
+        )
+    except (GeminiRateLimited, GeminiOverloaded):
+        # Gemini 업스트림 한계(전 롤 429/오버로드 — 서비스 판별 후 재raise분)를
+        # 503으로 정직화(2026-07-30) — "조건 바꿔 재시도"(502)가 아니라 "잠시 후
+        # 재시도"가 맞는 상황. T-map 쿼터 정직화와 시맨틱 통일. 쿼터 환급 동일 보장.
+        await quota_service.release_ai_generation(reservation_id)
+        logger.warning("Gemini 업스트림 한계(429/오버로드) — 503 정직화", exc_info=True)
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "route_generation_unavailable",
+                "message": "코스 생성이 잠시 혼잡해요. 잠시 후 다시 시도해 주세요.",
             },
         )
     except Exception:  # noqa: BLE001

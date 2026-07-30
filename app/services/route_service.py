@@ -18,6 +18,7 @@ import statistics
 import time
 from collections import defaultdict
 
+import openai
 from openai import APIError as OpenAIAPIError
 from postgrest.exceptions import APIError
 from pydantic import ValidationError
@@ -951,12 +952,17 @@ async def create_running_route(
             req, target_km, lang, user_id, _dedup_obs.get("skipped", 0))
         if _lr is not None:
             return _lr
-        if any(isinstance(e, OpenAIAPIError) for e in excs):
-            raise next(e for e in excs if isinstance(e, OpenAIAPIError))
+        # Gemini 업스트림 한계 세분(2026-07-30 오너 승인) — **전 롤이 429/오버로드로만**
+        # 죽었을 때만 재raise(라우터가 503 정직화). 혼합 실패(일부 429+일부 파싱 등)는
+        # 원인 단정 불가라 기존 502 유지(T-map 쿼터 정직화의 '지배' 원칙과 동형).
+        _upstream = [e for e in excs
+                     if isinstance(e, (openai.RateLimitError, openai.InternalServerError))]
+        if excs and len(_upstream) == len(excs):
+            raise _upstream[0]
         await _record_gen_failure(req, target_km, _t0, [],
                                   {"pool_size": 0, "snapped_count": 0, "tmap_legs": 0,
                                    "snap_errors": {}}, initial_ratio, "no_gen_cands")
-        raise RouteGenerationFailed()  # 전 롤 파싱/검증 실패
+        raise RouteGenerationFailed()  # 전 롤 파싱/검증 실패(혼합 포함) — 기존 502
 
     # 2) pre-gate: 체인 aim×[0.75,1.25] 통과분. 통과 0이면 전체(salvage). aim
     #    최근접 순 정렬 — 좋은 후보 먼저 스냅(leg 상한 컷 시 유리).
