@@ -188,13 +188,13 @@ def run_tests():
             f"강 위 2개 폐기(None)·정상 1개 스냅, got {gm['snaps']}"
         ok("강 위 leg 후보 폐기(snaps None) → 정상 후보 5.0 서빙")
 
-        step("8. nopath 폴백 — 전 스냅 T-map 장애 → AI추정")
+        step("8. nopath 정직화(v113) — 전 스냅 T-map 장애 → 정직 502")
+        # 구계약(AI추정 폴백 서빙)은 v113에서 폐기 — 가짜 카드 0, 정직 502
+        # (dentist 동해 IC 풀사이클). 현행 계약의 실폴리라인 검증은 road_gate B-1.
         scenario(c, [{"no_path": True}], pool_size=3)
-        d = gen(c, tok, target=5.0).json()
-        assert d["total_distance_km"] == 5.0, "AI 추정(=target mock) 폴백"
-        assert d.get("polyline") in (None, []), "폴백은 폴리라인 없음"
-        assert stats(c)["last_gen_meta"]["verdict"] == "nopath", stats(c)["last_gen_meta"]
-        ok("전 스냅 T-map 장애 → AI추정 폴백 · verdict=nopath")
+        r = gen(c, tok, target=5.0)
+        assert r.status_code == 502, f"전 스냅 no_path → 정직 502, got {r.status_code}"
+        ok("전 스냅 T-map 장애 → AI추정 가짜 카드 없이 정직 502 (v113 계약)")
 
         step("9. 콜 타임아웃 — 부분(성공분 서빙) / 전패(502)")
         scenario(c, [{"snap_km": 5.0}], gemini_seq=[-1, 1.0, 1.0], pool_size=3)

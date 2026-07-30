@@ -63,18 +63,18 @@ def phase_pure():
     step("2. ② 결정론 — 코스 생성 거리 1자리·소요시간 정수분 (mock)")
     def mk_route():
         return RouteResponse(summary="테스트 코스", total_distance_km=5.0, waypoints=[
-            Waypoint(name="출발", coordinate=Coordinate(lat=37.5445, lng=127.0374), is_pitstop=False),
-            Waypoint(name="반환", coordinate=Coordinate(lat=37.55, lng=127.04), is_pitstop=False)])
+            Waypoint(name="출발", coordinate=Coordinate(lat=37.51, lng=129.12), is_pitstop=False),
+            Waypoint(name="반환", coordinate=Coordinate(lat=37.5155, lng=129.1226), is_pitstop=False)])
     # T-map 5237m → 5.2km. 소요시간은 v2.2부터 T-map 도보시간 폐기 → 러닝 환산
     # (거리 × 6'30"/km): 5.2 × 6.5 = 33.8 → 34분(정수). duration_s는 이제 무시됨.
     ped = PedestrianRoute(distance_m=5237.0, duration_s=1583.0,
-                          path=[Coordinate(lat=37.5445, lng=127.0374)], provider="tmap")
+                          path=[Coordinate(lat=37.51, lng=129.12)], provider="tmap")
     with patch.object(rt.openai_service, "generate_route", AsyncMock(return_value=mk_route())), \
          patch.object(rt.map_service, "get_pedestrian_route", AsyncMock(return_value=ped)), \
          patch.object(rt.feedback_service, "collect_avoidance_hints", AsyncMock(return_value=[])), \
          patch.object(rt, "_save_route", AsyncMock()):
         out = asyncio.run(rt.create_running_route(
-            RouteRequest(start={"lat": 37.5445, "lng": 127.0374}, target_distance_km=5),
+            RouteRequest(start={"lat": 37.51, "lng": 129.12}, target_distance_km=5),
             user_id=None))
     assert out.total_distance_km == 5.2, f"거리 5237m→5.2km, got {out.total_distance_km}"
     assert out.estimated_duration_min == 34.0 and out.estimated_duration_min == int(out.estimated_duration_min), \

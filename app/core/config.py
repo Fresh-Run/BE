@@ -54,6 +54,13 @@ class Settings(BaseSettings):
     # 0=off(순수 v87, 즉시 롤백) / 스테이징 2~3. Gemini 0콜(규칙 기반 앵커 체인).
     anchor_pool_n: int = 0
 
+    # in-band spur 구제(INBAND_SPUR_RESCUE_DESIGN, 오너 승인 2026-07-30) — v87
+    # in-band hit의 longest_retrace_m > max_m 시 0원 대체→축소 재추첨→원 후보
+    # 최후 서빙. enabled=False가 1차 롤백 경로(관측 필드는 플래그 무관 발효).
+    spur_rescue_enabled: bool = False
+    spur_rescue_max_m: float = 800.0
+    spur_rescue_pool_n: int = 5
+
     # 베타 한정: 신규 가입 프로필 최초 생성 시 기본 tier=premium (방식 A 자동화,
     # 2026-07-27). 출시 전 OFF 원복(IAP_LAUNCH_CHECKLIST) — OFF 후 신규는 free
     # (컬럼 default), 기존 행 무영향(update 분기는 tier 불변).

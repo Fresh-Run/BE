@@ -21,14 +21,14 @@ import httpx  # noqa: E402
 
 from app.core.supabase_client import get_supabase_admin  # noqa: E402
 from app.core.config import settings  # noqa: E402
-from app.models.schemas import Coordinate, RouteRequest  # noqa: E402
+from app.models.schemas import Coordinate, KoreaCoordinate, RouteRequest  # noqa: E402
 from app.services import openai_service, route_service  # noqa: E402
 from app.services.route_service import (  # noqa: E402
     RouteGenerationFailed, _anchor_sig, _anchor_sig_from_row, _split_in_band_dedup,
 )
 
-CHEONGRA = Coordinate(lat=37.528678, lng=126.635812)   # 청라 우선진입점(캐노니컬)
-GAROSU = Coordinate(lat=37.52326, lng=127.02255)        # 가로수길(앵커권 실측)
+CHEONGRA = KoreaCoordinate(lat=37.528678, lng=126.635812)   # 청라 우선진입점(캐노니컬)
+GAROSU = KoreaCoordinate(lat=37.52326, lng=127.02255)        # 가로수길(앵커권 실측)
 TS = int(time.time())
 EMAIL = f"dedup-{TS}@test.com"
 
@@ -197,7 +197,7 @@ async def main():
     openai_service.generate_route = _boom  # 생성 도달 전후 비용 0(전 롤 즉시 실패)
     try:
         req_ow = RouteRequest(start=GAROSU, target_distance_km=5.0,
-                              end=Coordinate(lat=37.5250, lng=127.0250))
+                              end=KoreaCoordinate(lat=37.5250, lng=127.0250))
         try:
             await route_service.create_running_route(req_ow, user_id=uid)
             raise AssertionError("one-way 강제 실패 경로가 502를 내야")

@@ -23,7 +23,7 @@ import httpx  # noqa: E402
 
 from app.core.config import settings  # noqa: E402
 from app.core.supabase_client import get_supabase_admin  # noqa: E402
-from app.models.schemas import Coordinate, PedestrianRoute, RouteRequest, RouteResponse, Waypoint  # noqa: E402
+from app.models.schemas import Coordinate, KoreaCoordinate, PedestrianRoute, RouteRequest, RouteResponse, Waypoint  # noqa: E402
 from app.services import map_service, openai_service, route_service  # noqa: E402
 from app.services.route_service import (  # noqa: E402
     RouteGenerationFailed, RouteGenerationUnavailable, _load_road_grid, _road_hit_m,
@@ -134,8 +134,11 @@ async def main():
                          "email_confirm": True}, timeout=30)
     r.raise_for_status()
     _uid = r.json()["id"]
-    START = Coordinate(lat=37.51, lng=129.10)
-    req = RouteRequest(start=START, target_distance_km=5.0)
+    # 129.12: 천곡 캐노니컬 진입점(_ACCESS_RADIUS_M 800) 밖 앞바다 — 배치5(07-28)
+    # 시딩 후 129.10은 1층이 선서빙해 풀 경로에 도달 못 함(가로채임).
+    START = Coordinate(lat=37.51, lng=129.12)
+    req = RouteRequest(start=KoreaCoordinate(lat=START.lat, lng=START.lng),
+                       target_distance_km=5.0)
     orig_gen = openai_service.generate_route
     orig_snap = map_service.get_pedestrian_route
     orig_parks = map_service.search_places
@@ -257,7 +260,7 @@ def cleanup():
     fails = sb.table("gen_failures").select("id,meta") \
         .gte("created_at", time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(TS - 5))).execute().data
     kill = [f["id"] for f in fails
-            if (f["meta"] or {}).get("grid_lat") == 37.51 and (f["meta"] or {}).get("grid_lng") == 129.1]
+            if (f["meta"] or {}).get("grid_lat") == 37.51 and (f["meta"] or {}).get("grid_lng") == 129.12]
     if kill:
         sb.table("gen_failures").delete().in_("id", kill).execute()
     httpx.delete(f"{_SB}/auth/v1/admin/users/{_uid}", headers=_adm(), timeout=30)

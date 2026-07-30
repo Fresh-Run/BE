@@ -719,11 +719,13 @@ def _filter_conflicting_avoid_tags(
 
 
 async def _adaptive_redraw(req, target_km, measured_ratio, avoid_tags, prefs, lang,
-                           radius_center, start_end_km):
+                           radius_center, start_end_km,
+                           pool_n: int = _REDRAW_POOL_SIZE):
     """band_cap_zero 언더슈트 지배 시 1회 적응 재추첨 — 실측 ratio로 chain aim 상향,
-    축소 풀(5롤) 재생성·스냅. **in-band 우선, 없으면 over-cap missed(spur 게이트)도 서빙**
-    (01:16 미노스: 재추첨 5.7이 missed로 나갔어야 할 것을 버려 502하던 것 수정).
-    ⚠️ 재귀 없음(1회 한정) — 상한 5롤·leg 상한 재사용."""
+    풀(pool_n롤, 기본 8) 재생성·스냅. **in-band 우선, 없으면 over-cap missed(spur
+    게이트)도 서빙**(01:16 미노스: 재추첨 5.7이 missed로 나갔어야 할 것을 버려
+    502하던 것 수정). spur 구제(_spur_rescue)는 pool_n 축소(설정 기본 5)로 재사용.
+    ⚠️ 재귀 없음(1회 한정) — 상한 pool_n롤·leg 상한 재사용."""
     # measured_ratio 블렌드(01:16 부검): 소수 불운 롤에서 나온 실측이 노이즈(1.32→aim
     # 과대→오버슈트). 등록 격자면 grid ratio에 2:1 가중(신뢰), 미등록이면 실측 단독.
     grid = _grid_ratio(req.start)
@@ -732,7 +734,7 @@ async def _adaptive_redraw(req, target_km, measured_ratio, avoid_tags, prefs, la
     if start_end_km is not None:
         aim = max(aim, start_end_km * 1.05)
     aim = round(aim, 1)
-    radii = _pool_radii(target_km, start_end_km, _REDRAW_POOL_SIZE)
+    radii = _pool_radii(target_km, start_end_km, pool_n)
 
     async def _roll(j):
         if j:
@@ -743,7 +745,7 @@ async def _adaptive_redraw(req, target_km, measured_ratio, avoid_tags, prefs, la
             avoid_tags=avoid_tags, prefs=prefs, radius_km=radii[j], lang=lang,
             chain_target_km=aim, radius_center=radius_center)
 
-    results = await asyncio.gather(*[_roll(j) for j in range(_REDRAW_POOL_SIZE)],
+    results = await asyncio.gather(*[_roll(j) for j in range(pool_n)],
                                    return_exceptions=True)
     cands = [r for r in results if isinstance(r, RouteResponse)]
     meta = {"measured_ratio": round(measured_ratio, 3), "redraw_aim": aim,
@@ -808,6 +810,52 @@ async def _adaptive_redraw(req, target_km, measured_ratio, avoid_tags, prefs, la
         return best, meta
     meta["redraw_hit"] = False
     return None, meta
+
+
+async def _spur_rescue(req, target_km, in_band, best, best_km, quals, spur_of,
+                       scored, engine_of, avoid_tags, prefs, lang,
+                       radius_center, start_end_km):
+    """in-band spur 구제(INBAND_SPUR_RESCUE_DESIGN, 오너 승인 2026-07-30) —
+    v87 hit 한정(앵커는 L 관측만, 확장은 실측 후 별도 판정)이며 L(longest_retrace_m)
+    > 상한일 때만 발동. ①0원 대체: 같은 in-band 풀에서 L≤상한 후보를 기존
+    서열(_best_in_band)로 재선택(Gemini 0콜) → ②축소 재추첨: 개선만 반영(L≤상한
+    강제 아님 — 오너 결정 ④, in-band hit 산출물만) → ③원 후보 유지.
+    모든 실패의 종착이 원 후보라 서빙 비퇴행(설계 §2) — 예외는 전부 삼킨다.
+    게이트 뒷문 없음(설계 §2.5): ①은 도로 게이트 통과분(scored)의 부분집합,
+    ②는 _adaptive_redraw 내장 게이트를 그대로 지난다.
+    반환 (best, km, rescue_meta|None, redraw_meta|None)."""
+    if (not settings.spur_rescue_enabled or engine_of.get(id(best)) != "v87"
+            or spur_of.get(id(best), 0) <= settings.spur_rescue_max_m):
+        return best, best_km, None, None
+    rescue = {"attempted": True, "mode": "kept_original", "rolls_used": 0,
+              "L_before": spur_of[id(best)]}
+    rd_meta = None
+    try:
+        low = [(k, r) for k, r in in_band
+               if spur_of.get(id(r), settings.spur_rescue_max_m + 1)
+               <= settings.spur_rescue_max_m]
+        if low:
+            best_km, best = _best_in_band(low, target_km, quals)
+            rescue["mode"] = "substitute"
+            return best, best_km, rescue, None
+        v87 = [(k, r) for k, r in scored
+               if engine_of.get(id(r)) == "v87" and _waypoint_chain_km(r) > 0]
+        if not v87:
+            return best, best_km, rescue, None
+        rr, rd_meta = await _adaptive_redraw(
+            req, target_km,
+            statistics.median([k / _waypoint_chain_km(r) for k, r in v87]),
+            avoid_tags, prefs, lang, radius_center, start_end_km,
+            pool_n=settings.spur_rescue_pool_n)
+        rescue["rolls_used"] = settings.spur_rescue_pool_n  # 호출 롤 수(생성 성공 수는 redraw_gen)
+        if (rr is not None and (rd_meta or {}).get("redraw_verdict") == "hit"
+                and _spur_metrics(rr.polyline)["longest_retrace_m"]
+                < rescue["L_before"]):
+            rescue["mode"] = "redraw"
+            return rr, rr.total_distance_km, rescue, rd_meta
+    except Exception:  # noqa: BLE001 — 구제 실패는 원 후보 서빙(비퇴행)
+        logger.warning("spur 구제 실패 — 원 후보 유지", exc_info=True)
+    return best, best_km, rescue, rd_meta
 
 
 async def create_running_route(
@@ -1109,6 +1157,9 @@ async def create_running_route(
     # quals에는 tiebreak용 (park, zig, retrace)만; max_gap은 관측 전용(cand_quality).
     quals: dict = {}
     cand_quality = []
+    # 후보별 longest_retrace_m — 비서빙 후보 포함 전 engine·플래그 무관 기록
+    # (INBAND_SPUR_RESCUE_DESIGN §3: "대체 가능했는지" 사후 정량화 맹점 제거).
+    _spur_of: dict = {}
     for k, r in scored:
         park, zig = _park_coverage(r, park_coords), _zigzag_score(r)
         # 앵커 park 하한(AUDIT_BACKLOG [M] — 2026-07-26 수변 주파에서 실현): 앵커 후보의
@@ -1118,9 +1169,11 @@ async def create_running_route(
         if engine_of.get(id(r)) == "anchor":
             park = max(park, _ANCHOR_PARK_FLOOR)
         retrace, max_gap = _polyline_retrace(r.polyline), _polyline_max_gap_m(r.polyline)
+        _spur_of[id(r)] = _spur_metrics(r.polyline)["longest_retrace_m"]
         quals[id(r)] = (park, zig, retrace)
         cand_quality.append({"km": round(k, 1), "park": park, "zig": zig,
                              "retrace": retrace, "max_gap_m": max_gap,
+                             "longest_retrace_m": _spur_of[id(r)],
                              "engine": engine_of.get(id(r), "v87")})  # 롤아웃 A/B 관측
 
     # 5) 선택: 밴드 최근접(복수면 품질 tiebreak) → 캡 내 초과 최선(missed) →
@@ -1140,13 +1193,20 @@ async def create_running_route(
     # 이미 앵커 제외, 재추첨은 v87 전용이라 앵커 dup이 샐 다른 서빙 경로 없음.
     in_band, _dedup_anchor_skipped, _dedup_exhausted = _split_in_band_dedup(
         in_band, owned_anchor_sigs, engine_of)
+    _rescue = None
+    _rescue_rd = None
     if in_band:
         _k, best = _best_in_band(in_band, target_km, quals)  # E#2: park>zigzag>거리
+        best, _k, _rescue, _rescue_rd = await _spur_rescue(
+            req, target_km, in_band, best, _k, quals, _spur_of, scored, engine_of,
+            avoid_tags, prefs, lang, radius_center, start_end_km)
         # 단독 후보 품질 바닥(01:43 부검) — 유일 밴드 내가 [park==0 & longest>1200]인
         # 무의미 star면 무경쟁 서빙 금지 → 재추첨 유도. 재추첨도 못 살리면 원 후보 최후
-        # 서빙(502 벽 금지 — 서빙률 비퇴행). floor_triggered 기록.
+        # 서빙(502 벽 금지 — 서빙률 비퇴행). floor_triggered 기록. spur 구제가 발동한
+        # 요청은 스킵 — 요청당 재추첨 1회 상한(구제 조건 L>800이 floor L>1200의 상위집합).
         _floor = None
-        if (len(in_band) == 1 and quals[id(best)][0] == 0 and not any(snap_errs.values())
+        if (_rescue is None and len(in_band) == 1 and quals[id(best)][0] == 0
+                and not any(snap_errs.values())
                 and _spur_metrics(best.polyline)["longest_retrace_m"] > _FLOOR_SPUR_M):
             _v87f = [(k, r) for k, r in scored
                      if engine_of.get(id(r)) == "v87" and _waypoint_chain_km(r) > 0]
@@ -1165,6 +1225,16 @@ async def create_running_route(
                          "ratio": round(best.total_distance_km / _waypoint_chain_km(best), 3),
                          "park_coverage": _park_coverage(best, park_coords),
                          "zigzag_score": _zigzag_score(best), "retrace": _polyline_retrace(best.polyline),
+                         "max_gap_m": _polyline_max_gap_m(best.polyline)}
+        elif _rescue is not None and _rescue["mode"] == "redraw":
+            # 구제 재추첨 채택 — best가 원 풀 밖(quals 부재)이라 품질 재계산.
+            # verdict는 기존 어휘(hit_redraw) 유지 — 에러·응답 계약 불변.
+            best_meta = {**_meta, "verdict": "hit_redraw", "floor_triggered": False,
+                         "redraw": _rescue_rd,
+                         "ratio": round(_k / _waypoint_chain_km(best), 3),
+                         "park_coverage": _park_coverage(best, park_coords),
+                         "zigzag_score": _zigzag_score(best),
+                         "retrace": _polyline_retrace(best.polyline),
                          "max_gap_m": _polyline_max_gap_m(best.polyline)}
         else:
             best_meta = {**_meta, "verdict": "hit", "floor_triggered": _floor is not None,
@@ -1252,6 +1322,10 @@ async def create_running_route(
 
     # 체감 왕복 스퍼 지표(§8.16, 앵커 에픽 롤아웃 A/B의 자) — v87·앵커 공통 기록.
     best_meta.update(_spur_metrics(best.polyline))
+    if _rescue is not None:   # spur 구제 관측(INBAND_SPUR_RESCUE_DESIGN §3)
+        _rescue["L_after"] = best_meta["longest_retrace_m"]
+        _rescue["rescued"] = _rescue["L_after"] <= settings.spur_rescue_max_m
+        best_meta["spur_rescue"] = _rescue
     best_meta["engine"] = _eng(best)  # 채택 engine(v87/anchor) — 혼합 풀 A/B 관측
 
     # 반복 생성 dedup 관측(2026-07-27) — 전부 additive. anchor_sig는 다음 요청 지문의
