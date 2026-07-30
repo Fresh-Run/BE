@@ -1066,6 +1066,13 @@ class RunRequest(BaseModel):
         None,
         description="ID of the route that was run. Omit for a free (route-less) run.",
     )
+    # 클라 빌드/OTA 식별(2026-07-31 additive) — route_id null 판정에서 신·구 번들
+    # 서버측 판별 불가 맹점 제거. 자유형 문자열, 서버는 저장만(응답 미노출).
+    app_version: Optional[str] = Field(
+        None, max_length=64,
+        description="클라 빌드/OTA 식별 문자열(자유형, 예: '1.4.2 (118) ota-7f3a'). "
+                    "미전송 시 null.",
+    )
     # 상한 350km = 세계 최장 울트라(현실 초장거리) 여유. 상한 없으면 9999km
     # 1회 전송으로 랭킹·챌린지·PB·통계 오염 가능 (unverified도 집계 포함).
     # ge=0.01: gt=0이면 1e-308 같은 값이 통과해 round 후 0.00km가 됨 — 하한 명시(L8)

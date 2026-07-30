@@ -192,6 +192,10 @@ async def create_run(req: RunRequest, user_id: str | None = None) -> RunResponse
         "start_lat": start_lat,
         "start_lng": start_lng,
     }
+    # 클라 빌드/OTA 식별(2026-07-31 additive) — 미전송 시 키 생략(컬럼 default
+    # null). SQL 선실행→배포 순서가 역전돼도(컬럼 미적용 DB) 기존 경로 무해.
+    if req.app_version is not None:
+        record["app_version"] = req.app_version
 
     supabase = get_supabase_admin()
     result = await asyncio.to_thread(
