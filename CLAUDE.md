@@ -87,6 +87,11 @@
 - supabase-py 동기 httpx의 **유휴 HTTP/2 keepalive 연결**이 상대편 idle timeout
   후 재사용되며 **간헐 502** 유발 가능 — 자가 회복형(재시도 1초 내 성공). 상세와
   대응 카드는 `docs/AUDIT_BACKLOG.md` "운영 관측" 절.
+- **계약/Literal/정책 변경 커밋은 구계약을 기대하는 테스트를 전수 grep해 같은
+  커밋에서 갱신한다** — 위반 3전례: v122 좌표(Coordinate→KoreaCoordinate)·
+  037470c theme('system' 허용)·v120 자기 kudos(본인 400→204). 전부 main에
+  잠복하다 후속 작업(2026-07-31)에서야 발견 — 스테일 테스트는 "회귀 그린"
+  신호를 거짓으로 만든다.
 
 ## §D 하위 호환 — additive가 기본
 
