@@ -123,10 +123,33 @@ async def _http_exception_with_code(request: Request, exc: StarletteHTTPExceptio
 
 @app.exception_handler(RequestValidationError)
 async def _validation_with_code(request: Request, exc: RequestValidationError):
+    # input 에코백 제거(2026-07-31 오너 결정, 프라이버시) — 검증 실패 시 클라
+    # 전송 body 원문(notes·GPS 좌표 등)이 detail[].input으로 반사되던 것 차단.
+    # type·loc·msg는 유지 — 클라 분기·i18n 키는 type+loc 조합(§5 소비 규칙).
+    errors = [{k: v for k, v in e.items() if k != "input"} for e in exc.errors()]
     return JSONResponse(
         status_code=422,
-        content=jsonable_encoder({"detail": exc.errors(),
+        content=jsonable_encoder({"detail": errors,
                                   "error_code": "validation_error"}),
+    )
+
+
+@app.exception_handler(Exception)
+async def _unhandled_with_code(request: Request, exc: Exception):
+    # 미처리 예외 500 JSON화(2026-07-31, 에러 감사 ⑤ 공백) — 기존 Starlette
+    # 기본은 text/plain "Internal Server Error"(JSON도 error_code도 없음).
+    # 내부 상세는 응답에 싣지 않는다(고정 문자열) — 전문은 로그·Sentry로만.
+    # 명시 캡처: 등록 핸들러 경유 시 자동 캡처에만 의존하지 않는다(재raise 여부가
+    # 스택 구성에 의존) — Dedupe 기본 통합이 이중 캡처를 자연 방지.
+    if settings.sentry_dsn:
+        import sentry_sdk
+
+        sentry_sdk.capture_exception(exc)
+    logging.getLogger(__name__).error("미처리 예외 → 500 JSON 응답", exc_info=exc)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "일시적인 서버 오류입니다. 잠시 후 다시 시도해 주세요.",
+                 "error_code": "server_error"},
     )
 
 

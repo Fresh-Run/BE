@@ -120,7 +120,7 @@ def run():
 
             step("5. 잘못된 키/값 → 422 + 저장 안 됨")
             bad_bodies = [
-                {"theme": "system"},                      # 허용 외 값
+                {"theme": "sepia"},                       # 허용 외 값
                 {"units": "yard"},
                 {"weather": {"dust_level_pm10": 500}},    # 범위 밖
                 {"ai_course": {"default_distance_km": 0.5}},
@@ -133,6 +133,16 @@ def run():
             assert api(c, "GET", "/me/settings", tok1).json() == d1, \
                 "실패한 PATCH가 아무것도 저장하면 안 됨"
             ok("허용 외 값·범위 밖·오타 키·미지 그룹 전부 422 ✓ 저장 무변화 ✓")
+
+            step("5-1. theme 'system' 허용 (037470c Literal 확장 — 구 '허용 외' 기대 수정)")
+            r = api(c, "PATCH", "/me/settings", tok1, json={"theme": "system"})
+            assert r.status_code == 200 and r.json()["theme"] == "system", r.text
+            assert api(c, "GET", "/me/settings", tok1).json() == {**d1, "theme": "system"}, \
+                "system 저장 + 타 그룹 무영향"
+            r = api(c, "PATCH", "/me/settings", tok1, json={"theme": "dark"})
+            assert r.status_code == 200
+            assert api(c, "GET", "/me/settings", tok1).json() == d1, "원복 — 이후 단계 불변식 유지"
+            ok("theme=system 저장·조회 ✓ 타 설정 무영향 ✓ 원복 ✓")
 
             step("6. 유저 격리 + 프로필 미생성 유저")
             r = api(c, "GET", "/me/settings", tok2)

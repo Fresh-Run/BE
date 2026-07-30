@@ -353,6 +353,8 @@ fetch(`${API_BASE}/api/me/profile`, {
 | **404** | 없거나 볼 수 없음 (비공개 코스, 남의 기록도 404) | "존재하지 않음" 처리 — 403과 구분해 존재 여부를 숨기는 의도 |
 | **409** | 상태 충돌 | `nickname taken`(닉네임 중복) → 인라인 에러 표시. **`rsvp_closed`** → 투표 버튼 비활성 + "마감되었습니다" (사전에 `rsvp_open` 플래그로 버튼 상태 결정 가능). **`crew_owner`**(탈퇴 차단, `crew_ids` 포함) → 크루 위임/삭제 유도 (프로필 §"회원 탈퇴" 참조) |
 | **429** | **AI 생성 쿼터 초과** | `detail.{limit,used,remaining,reset_at}` 제공 → "이번 주 3회를 모두 사용했어요, 월요일 리셋" + 프리미엄 업셀 화면. `reset_at`은 KST ISO |
+| **422** | 요청 검증 실패 (`error_code: "validation_error"`) | **⚠️ 소비 규칙(2026-07-31)**: `detail`은 배열 — 원소의 **`type`(기계 코드, 예 `missing`·`extra_forbidden`·`string_too_long`)+`loc`(필드 경로) 조합으로 분기·i18n**. **`msg`는 디버그용 영어 원문 — 표시 금지**(번역 불가·변동 가능). **`input`은 미제공**(2026-07-31 제거 — 전송 원문 에코백 차단, 프라이버시). 구조화 422(`one_way_end_too_far`·`loop_target_too_short` 등)는 기존대로 `error_code`로 분기 |
+| **500** | 서버 내부 오류(미처리 예외) | **2026-07-31부터 JSON 고정**: `{"detail": "일시적인 서버 오류입니다. 잠시 후 다시 시도해 주세요.", "error_code": "server_error"}` — 이전엔 text/plain "Internal Server Error"라 JSON 파싱이 깨졌음. 재시도 버튼, 지속 시 문의 유도 |
 | **502** | 외부 서비스 장애 (OpenAI/지도/날씨) | "잠시 후 다시 시도" + 재시도 버튼. 코스 생성 실패는 구조화 바디 **`route_generation_failed`** — 서버가 이미 반경 확장까지 재시도한 뒤이므로 즉시 자동 재시도하지 말고 유저 액션(재시도 버튼)으로 |
 | **503** | 날씨 설정 문제: `weather_not_configured` / **`weather_key_inactive`**(키 활성화 대기) · 결제 미준비 `iap_not_configured` · **코스 생성 일시 불가 `route_generation_unavailable`**(T-map 쿼터 소진, 2026-07-21) | 날씨/결제 503은 해당 위젯·버튼만 숨김. **`route_generation_unavailable`은 502와 달리 조건 변경 불필요** — "일시적인 문제로 코스를 만들 수 없어요. 잠시 후 다시 시도해주세요" + **동일 조건 재시도 버튼**(자동 재시도는 금지, 유저 액션). 쿼터는 자정(KST) 리셋 |
 
