@@ -435,6 +435,123 @@ def _uv_at_response_time(
     return out
 
 
+# ── 에어코리아 실측 PM (AIR_QUALITY_SOURCE_DESIGN, 오너 승인 2026-07-31) ──
+# ⚠️ 문서 기반 구현 — 실채집 검증 전(공공데이터포털 개편으로 키 미발급).
+# 응답 필드명·결측 표기는 공식 문서 기준이며, 키 도착 후 실프로브 1회로
+# fixture를 채집해 TODO 지점을 대조·보정한다. 그 전까지 플래그 OFF 고정.
+
+_AIRKOREA_BASE = "https://apis.data.go.kr/B552584"
+_KOREA_BBOX = (33.0, 39.0, 124.0, 132.0)   # KoreaCoordinate와 동일 상수
+_STATION_TTL_SEC = 24 * 3600.0
+# {그리드: (expires_at_monotonic, stationName)} — 측정소는 사실상 불변이라 24h.
+_station_cache: dict[tuple[float, float], tuple[float, str]] = {}
+
+
+def _in_korea(lat: float, lng: float) -> bool:
+    a, b, c, d = _KOREA_BBOX
+    return a <= lat <= b and c <= lng <= d
+
+
+def _parse_airkorea_value(raw, flag) -> float | None:
+    """측정값 방어 파싱 — 결측이면 None(폴백 트리거).
+
+    문서 기준 결측: 값 "-"(통신장애) · 음수(-999류) · *Flag 비어있지 않음
+    ("점검및교정"/"장비점검"/"자료이상"/"통신장애").
+    TODO(실채집): 실물 fixture로 결측 표기 전수 대조 — 문서 외 표기 발견 시 보강.
+    """
+    if flag:
+        return None
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return v if v >= 0 else None
+
+
+async def _resolve_station(client: httpx.AsyncClient, lat: float, lng: float) -> str | None:
+    """그리드→근접 측정소명 (24h 캐시). Kakao transcoord(WGS84→TM, 기존 키)
+    → 에어코리아 근접 측정소 목록. 실패 시 None(폴백) — 실패는 캐시하지 않음."""
+    key = _cache_key(lat, lng)
+    hit = _station_cache.get(key)
+    if hit and hit[0] > time.monotonic():
+        return hit[1]
+    # 1) WGS84 → TM (Kakao — 신규 의존 0)
+    tc = await client.get(
+        "https://dapi.kakao.com/v2/local/geo/transcoord.json",
+        params={"x": lng, "y": lat, "input_coord": "WGS84", "output_coord": "TM"},
+        headers={"Authorization": f"KakaoAK {settings.kakao_rest_api_key}"},
+    )
+    tc.raise_for_status()
+    docs = tc.json().get("documents") or []
+    if not docs:
+        return None
+    tm_x, tm_y = docs[0]["x"], docs[0]["y"]
+    # 2) 근접 측정소 (거리순 1건)
+    # TODO(실채집): items 경로(response.body.items)·필드명(stationName) 실물 대조.
+    ns = await client.get(
+        f"{_AIRKOREA_BASE}/MsrstnInfoInqireSvc/getNearbyMsrstnList",
+        params={"tmX": tm_x, "tmY": tm_y, "returnType": "json", "ver": "1.1",
+                "serviceKey": settings.airkorea_api_key},
+    )
+    ns.raise_for_status()
+    items = (((ns.json().get("response") or {}).get("body") or {}).get("items")) or []
+    name = items[0].get("stationName") if items else None
+    if not name:
+        return None
+    _station_cache[key] = (time.monotonic() + _STATION_TTL_SEC, name)
+    return name
+
+
+async def _fetch_airkorea(
+    client: httpx.AsyncClient, lat: float, lng: float
+) -> tuple[float | None, float | None] | None:
+    """에어코리아 실시간 측정값 (pm25, pm10) µg — best-effort, 실패는 None.
+
+    grade는 khaiGrade를 쓰지 않고 상위에서 기존 breakpoint 표로 산출
+    (매핑 단일 소스 — 설계 §8). TODO(실채집): pm10Value/pm25Value/*Flag
+    필드명·dataTerm 응답 구조 실물 대조."""
+    try:
+        station = await _resolve_station(client, lat, lng)
+        if not station:
+            return None
+        res = await client.get(
+            f"{_AIRKOREA_BASE}/ArpltnInforInqireSvc/getMsrstnAcctoRltmMesureDnsty",
+            params={"stationName": station, "dataTerm": "DAILY", "pageNo": 1,
+                    "numOfRows": 1, "returnType": "json", "ver": "1.3",
+                    "serviceKey": settings.airkorea_api_key},
+        )
+        res.raise_for_status()
+        items = (((res.json().get("response") or {}).get("body") or {}).get("items")) or []
+        if not items:
+            return None
+        it = items[0]
+        pm25 = _parse_airkorea_value(it.get("pm25Value"), it.get("pm25Flag"))
+        pm10 = _parse_airkorea_value(it.get("pm10Value"), it.get("pm10Flag"))
+        return (pm25, pm10)
+    except Exception:  # noqa: BLE001 — 실측 소스 장애가 날씨 응답을 막지 않는다
+        logger.warning("에어코리아 조회 실패 — OpenWeather 폴백", exc_info=True)
+        return None
+
+
+async def _fetch_pm(
+    client: httpx.AsyncClient, lat: float, lng: float, ow_key: str
+) -> tuple[float | None, float | None]:
+    """PM 소스 오케스트레이터 — (pm25, pm10).
+
+    한국 bbox + 플래그 ON + 키 존재 → 에어코리아 실측. 해외·장애·전항 결측 →
+    OpenWeather(현행) 폴백. 부분 결측(한 항만 유효)은 실측 채택(있는 값만 —
+    현행 결측 처리와 동형). 소스 구분은 와이어 비노출(설계 §2, 로그만)."""
+    if (settings.airkorea_enabled and settings.airkorea_api_key
+            and _in_korea(lat, lng)):
+        got = await _fetch_airkorea(client, lat, lng)
+        if got is not None and (got[0] is not None or got[1] is not None):
+            logger.info("PM 소스: 에어코리아 실측 (%.2f, %.2f)", lat, lng)
+            return got
+    comp = await _fetch_air(client, lat, lng, ow_key)
+    return ((comp.get("pm2_5") if comp else None),
+            (comp.get("pm10") if comp else None))
+
+
 async def get_weather(lat: float, lng: float) -> WeatherResponse:
     """Weather + PM + running index for (lat, lng), cached ~10min per grid cell."""
     if not settings.openweather_api_key:
@@ -447,9 +564,9 @@ async def get_weather(lat: float, lng: float) -> WeatherResponse:
 
     api_key = settings.openweather_api_key
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-        current, air, uv_v = await asyncio.gather(
+        current, (pm25_v, pm10_v), uv_v = await asyncio.gather(
             _fetch_current(client, lat, lng, api_key),
-            _fetch_air(client, lat, lng, api_key),
+            _fetch_pm(client, lat, lng, api_key),
             _fetch_uv(client, lat, lng, api_key),
         )
 
@@ -468,8 +585,6 @@ async def get_weather(lat: float, lng: float) -> WeatherResponse:
     else:
         dt = current.get("dt")
         is_day = bool(_sr and _ss and dt and _sr < dt < _ss) if _sr else True
-    pm25_v = air.get("pm2_5") if air else None
-    pm10_v = air.get("pm10") if air else None
     feels = float(main.get("feels_like", main.get("temp", 15.0)))
     code = int(weather0.get("id", 800))
     wind = float(current.get("wind", {}).get("speed", 0.0))

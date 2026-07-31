@@ -1,0 +1,180 @@
+"""
+Integration: 에어코리아 실측 PM 소스 (AIR_QUALITY_SOURCE_DESIGN, 2026-07-31)
+
+⚠️ 문서 기반 mock — 실채집 검증 전(키 미발급, 포털 개편 —8/2). 에어코리아 실호출 0.
+
+U-1 결측 파싱("-"·-999·Flag·쓰레기) — 전부 None
+U-2 bbox 분기(서울/뉴욕/경계)
+P-1 플래그 OFF(기본) — 에어코리아 미호출(forbid)·현행 100%
+P-2 ON+한국+실측(21/19) — 실측 채택·러닝 지수 정합(먼지 심각 감점 소거)
+P-3 ON+한국+장애 — OpenWeather 폴백
+P-4 ON+한국+전항 결측 — 폴백 / 부분 결측 — 실측 채택(있는 값만)
+P-5 ON+해외 — 에어코리아 미호출·OpenWeather 직행
+P-6 측정소 24h 캐시 — 응답 캐시 클리어 후 재호출에도 resolve 1회
+P-7 계약 불변 — 응답 키 세트 동일
+
+Run: python tests/test_airkorea_pm_integration.py  (외부 콜 0·DB 무접촉)
+"""
+from __future__ import annotations
+
+import asyncio
+import os
+import sys
+import time
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from app.core.config import settings  # noqa: E402
+from app.services import weather_service as ws  # noqa: E402
+from tests.test_uv_night_integration import _mock_fetchers  # noqa: E402 — 하네스 재사용
+
+SEOUL = (37.5729, 126.9794)
+NY = (40.7655, -73.9980)
+
+
+def ok(m):
+    print(f"  ✓ {m}")
+
+
+def get(lat, lng):
+    return asyncio.run(ws.get_weather(lat, lng))
+
+
+def run_tests():
+    orig = (ws._fetch_current, ws._fetch_air, ws._fetch_uv, ws._fetch_airkorea,
+            ws._resolve_station, settings.openweather_api_key,
+            settings.airkorea_enabled, settings.airkorea_api_key)
+    settings.openweather_api_key = settings.openweather_api_key or "test-dummy"
+    fc, fa, fu = _mock_fetchers(icon="01d", uv=5.0)
+    ws._fetch_current, ws._fetch_uv = fc, fu
+
+    async def ow_air(client, lat, lng, key):
+        return {"pm2_5": 102.71, "pm10": 119.13}   # 모델값(사건 실측)
+
+    async def forbid_ak(*a, **k):
+        raise AssertionError("에어코리아 경로가 호출되면 안 됨")
+
+    def ak_returning(val):
+        async def f(client, lat, lng):
+            return val
+        return f
+
+    try:
+        print("[U-1 결측 파싱 — 문서 기준 방어]")
+        p = ws._parse_airkorea_value
+        assert p("45", None) == 45.0 and p("45", "") == 45.0
+        for bad in [("-", None), ("-999", None), (-999, None), (None, None),
+                    ("x", None), ("45", "점검및교정"), ("45", "통신장애")]:
+            assert p(*bad) is None, bad
+        ok('"45"→45.0 · "-"/-999/Flag/쓰레기 → 전부 None')
+
+        print("\n[U-2 bbox 분기]")
+        assert ws._in_korea(*SEOUL) and not ws._in_korea(*NY)
+        assert ws._in_korea(33.0, 124.0) and ws._in_korea(39.0, 132.0)
+        assert not ws._in_korea(32.99, 127.0) and not ws._in_korea(37.5, 132.01)
+        ok("서울 O · 뉴욕 X · 경계 포함/직외 정확")
+
+        print("\n[P-1 플래그 OFF(기본) — 현행 100%]")
+        settings.airkorea_enabled = False
+        settings.airkorea_api_key = "dummy"
+        ws._fetch_air, ws._fetch_airkorea = ow_air, forbid_ak
+        ws._cache.clear()
+        r = get(*SEOUL)
+        assert r.pm10.value == 119.13 and r.pm25.value == 102.71
+        ok("OFF → 에어코리아 미호출(forbid 통과)·OpenWeather 값 그대로")
+
+        print("\n[P-2 ON+한국+실측 21/19 — 채택 + 러닝 지수 정합]")
+        settings.airkorea_enabled = True
+        ws._fetch_airkorea = ak_returning((19.0, 21.0))   # (pm25, pm10) 실측 사건값
+        async def ow_forbid(*a, **k):
+            raise AssertionError("실측 성공 시 OpenWeather air 미호출")
+        ws._fetch_air = ow_forbid
+        ws._cache.clear()
+        r = get(*SEOUL)
+        assert r.pm10.value == 21.0 and r.pm10.grade == "좋음", r.pm10
+        assert r.pm25.value == 19.0 and r.pm25.grade == "보통", r.pm25
+        # 사건 재발 방지: 모델 119/102는 지수 0/100 "무리하지 마세요"였다.
+        # 실측 21/19 주입 시 먼지의 심각 감점(나쁨 25/매우나쁨 50)이 소거되는지.
+        # ⚠️ 감점 완전 0은 아님 — PM2.5 19는 환경부 표상 '보통'(16~35)이라 5점
+        # (마스크 안내)이 정확. 지수 95 이상·심각 문구 아님을 물린다.
+        ri = r.running_index
+        assert ri.score >= 90, f"실측 주입 시 지수 90+, got {ri.score}"
+        assert "피하세요" not in (ri.comment or "") and "실내" not in (ri.comment or ""), ri
+        ok(f"21/19 채택(좋음/보통) · 지수 {ri.score}(심각 감점 소거 — 보통 5점만)")
+
+        print("\n[P-3 ON+한국+장애 — 폴백]")
+        ws._fetch_airkorea = ak_returning(None)
+        ws._fetch_air = ow_air
+        ws._cache.clear()
+        r = get(*SEOUL)
+        assert r.pm10.value == 119.13, "장애 시 OpenWeather 폴백"
+        ok("에어코리아 None → OpenWeather 값")
+
+        print("\n[P-4 전항 결측 → 폴백 / 부분 결측 → 실측 채택]")
+        ws._fetch_airkorea = ak_returning((None, None))
+        ws._cache.clear()
+        r = get(*SEOUL)
+        assert r.pm10.value == 119.13, "전항 결측 → 폴백"
+        ws._fetch_airkorea = ak_returning((None, 30.0))   # pm10만 유효
+        ws._fetch_air = ow_forbid
+        ws._cache.clear()
+        r = get(*SEOUL)
+        assert r.pm10.value == 30.0 and r.pm25 is None, (r.pm10, r.pm25)
+        ok("전항 결측 폴백 ✓ 부분 결측은 있는 값만 채택(pm25 null — 현행 결측 동형)")
+
+        print("\n[P-5 ON+해외 — 에어코리아 미호출·OpenWeather 직행]")
+        ws._fetch_airkorea = forbid_ak
+        ws._fetch_air = ow_air
+        ws._cache.clear()
+        r = get(*NY)
+        assert r.pm10.value == 119.13
+        ok("해외 좌표 → bbox에서 컷(forbid 통과)")
+
+        print("\n[P-6 측정소 24h 캐시 — resolve 1회]")
+        calls = {"n": 0}
+
+        async def station_spy(client, lat, lng):
+            key = ws._cache_key(lat, lng)
+            hit = ws._station_cache.get(key)
+            if hit and hit[0] > time.monotonic():
+                return hit[1]
+            calls["n"] += 1
+            ws._station_cache[key] = (time.monotonic() + ws._STATION_TTL_SEC, "종로구")
+            return "종로구"
+
+        ws._resolve_station = station_spy
+        # _fetch_airkorea 원본 복원해 resolve 경유 경로로 — 측정값 콜은 mock
+        real_ak = orig[3]
+
+        async def ak_via_resolve(client, lat, lng):
+            st = await ws._resolve_station(client, lat, lng)
+            return (19.0, 21.0) if st else None
+
+        ws._fetch_airkorea = ak_via_resolve
+        ws._station_cache.clear()
+        ws._cache.clear()
+        get(*SEOUL)
+        ws._cache.clear()   # 응답 캐시만 비움 — 측정소 캐시는 유지
+        get(*SEOUL)
+        assert calls["n"] == 1, f"측정소 resolve는 그리드당 1회여야: {calls['n']}"
+        ok("응답 캐시 클리어 후 재호출에도 측정소 resolve 1회(24h 캐시)")
+
+        print("\n[P-7 계약 불변 — 응답 키 세트]")
+        keys = set(r.model_dump().keys())
+        expected = {"area", "temp_c", "feels_like_c", "condition", "condition_code",
+                    "humidity_pct", "wind_ms", "rain_1h_mm", "pm25", "pm10", "uv",
+                    "is_day", "running_index", "fetched_at"}
+        assert keys == expected, keys ^ expected
+        ok("응답 키 14종 기존 세트 동일(소스 비노출)")
+    finally:
+        (ws._fetch_current, ws._fetch_air, ws._fetch_uv, ws._fetch_airkorea,
+         ws._resolve_station, settings.openweather_api_key,
+         settings.airkorea_enabled, settings.airkorea_api_key) = orig
+        ws._cache.clear()
+        ws._station_cache.clear()
+        print("\n[cleanup] mock 원복·캐시 클리어 — DB 무접촉·잔여 0")
+
+
+if __name__ == "__main__":
+    run_tests()
+    print("\n" + "=" * 50 + "\n  ALL TESTS PASSED\n" + "=" * 50)

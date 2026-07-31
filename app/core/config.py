@@ -66,6 +66,13 @@ class Settings(BaseSettings):
     # (컬럼 default), 기존 행 무영향(update 분기는 tier 불변).
     beta_default_premium: bool = False
 
+    # 에어코리아 실측 PM(AIR_QUALITY_SOURCE_DESIGN, 오너 승인 2026-07-31) —
+    # enabled=False가 롤백 경로(현행 OpenWeather 100% 복원). 공공데이터포털
+    # 개편(—8/2)으로 키 미발급 — 문서 기반 구현 상태, fixture 실채집·ON은
+    # 키 도착 후 별도 단계.
+    airkorea_enabled: bool = False
+    airkorea_api_key: str = ""
+
     # OpenWeather (current weather + air pollution proxy)
     openweather_api_key: str = ""
     # Overridable so tests can point the proxy at a local mock server.
