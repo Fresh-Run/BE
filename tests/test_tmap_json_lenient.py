@@ -65,7 +65,9 @@ def run_tests():
     print("\n[2. _tmap_walk_leg(공용 loads_lenient) → 파싱 성공·경로 반환]")
     o = Coordinate(lat=37.5, lng=127.0)
     d = Coordinate(lat=37.502, lng=127.002)
-    dm, ds, path = asyncio.run(
+    # 반환 계약 갱신: 4-튜플(road_segments §8.20)→5-튜플(crossing_count 2026-07-31).
+    # 구 3-튜플 기대는 road_segments 추가 시점부터 스테일이었음(§C 4번째 전례).
+    dm, ds, path, _roads, _cross = asyncio.run(
         map_service._tmap_walk_leg(_Client(_GEOJSON_CTRL), o, d))
     assert dm == 520.0 and ds == 374.0, f"거리·시간 파싱, got {dm}, {ds}"
     assert len(path) == 3, f"LineString 3점, got {len(path)}"

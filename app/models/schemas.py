@@ -685,6 +685,9 @@ class PedestrianRoute(BaseModel):
         default_factory=list,
         description="(roadType, name, distance_m) per LineString — T-map 도로 등급 "
         "관측 캡처(§8.20, tmap 전용·타 provider는 빈 리스트).")
+    crossing_count: Optional[int] = Field(
+        None, description="횡단보도 수(관측 전용, 2026-07-31 — turnType 211 Point, "
+        "폴백 facilityType 15 라인). 파싱 실패·타 provider는 None.")
     path: list[Coordinate] = Field(
         default_factory=list, description="Ordered coordinates of the walking path."
     )

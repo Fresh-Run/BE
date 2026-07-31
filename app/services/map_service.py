@@ -428,17 +428,20 @@ async def _tmap_pedestrian_route(
     total_duration_s = 0.0
     path: list[Coordinate] = []
     road_segments: list = []
+    crossing_total: int | None = 0   # 관측 — leg 하나라도 파싱 None이면 전체 None
 
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         for leg_index in range(len(points) - 1):
             leg_start = points[leg_index]
             leg_end = points[leg_index + 1]
-            distance_m, duration_s, leg_path, leg_roads = await _tmap_walk_leg(
+            distance_m, duration_s, leg_path, leg_roads, leg_cross = await _tmap_walk_leg(
                 client, leg_start, leg_end
             )
             total_distance_m += distance_m
             total_duration_s += duration_s
             road_segments.extend(leg_roads)
+            crossing_total = (None if leg_cross is None or crossing_total is None
+                              else crossing_total + leg_cross)
 
             # Drop the first coordinate of every leg after the first so the
             # shared point between consecutive legs isn't duplicated.
@@ -452,7 +455,25 @@ async def _tmap_pedestrian_route(
         path=path,
         provider="tmap",
         road_segments=road_segments,
+        crossing_count=crossing_total,
     )
+
+
+def _count_crossings(features) -> int | None:
+    """횡단보도 수(관측 전용, 2026-07-31) — Point turnType 211 카운트, 0이면
+    LineString facilityType '15' 폴백(실프로브 확인 shape). 어떤 파싱 이상도
+    None으로 삼킨다 — 관측 실패가 경로 생성 실패로 전이되지 않는다."""
+    try:
+        pts = sum(1 for f in features
+                  if f.get("geometry", {}).get("type") == "Point"
+                  and f.get("properties", {}).get("turnType") == 211)
+        if pts:
+            return pts
+        return sum(1 for f in features
+                   if f.get("geometry", {}).get("type") != "Point"
+                   and str(f.get("properties", {}).get("facilityType")) == "15")
+    except Exception:  # noqa: BLE001 — 관측은 부가, 무해화
+        return None
 
 
 async def _tmap_walk_leg(
@@ -518,4 +539,5 @@ async def _tmap_walk_leg(
     if not path or distance_m <= 0:
         raise LegNotRoutable()
 
-    return distance_m, duration_s, path, road_segments
+    return distance_m, duration_s, path, road_segments, _count_crossings(
+        data.get("features", []))

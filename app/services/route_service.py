@@ -1099,7 +1099,8 @@ async def create_running_route(
     # 2026-07-29 B 정직화로 서빙엔 더 이상 사용 안 함, gen_failures fail=no_path 구분만)
     snaps: list[float | None] = []
     _gate_rejected, _gate_worst_m = 0, 0.0          # 도로 등급 게이트 관측(§8.20)
-    _road_segs_of: dict = {}                        # id(route)→T-map road_segments 관측
+    _road_segs_of: dict = {}
+    _crossing_of: dict = {}  # 관측 — 후보별 횡단보도 수(2026-07-31)                        # id(route)→T-map road_segments 관측
     # 스냅 실패 분류(오늘 진단을 막았던 무기록 삼킴 수정) — 지배 원인 판정·계측용.
     snap_errs = {"quota": 0, "legnotroutable": 0, "other": 0}
     for (r, ck, rad), out in zip(to_snap, snap_out):
@@ -1137,6 +1138,7 @@ async def create_running_route(
         r.polyline = out.path
         r.total_distance_km = round(raw_km, 1)
         _road_segs_of[id(r)] = getattr(out, "road_segments", []) or []
+        _crossing_of[id(r)] = getattr(out, "crossing_count", None)
         scored.append((raw_km, r))
         snaps.append(round(raw_km, 1))
     if snap_errs["quota"]:
@@ -1174,13 +1176,21 @@ async def create_running_route(
         cand_quality.append({"km": round(k, 1), "park": park, "zig": zig,
                              "retrace": retrace, "max_gap_m": max_gap,
                              "longest_retrace_m": _spur_of[id(r)],
+                             "crossing_count": _crossing_of.get(id(r)),
                              "engine": engine_of.get(id(r), "v87")})  # 롤아웃 A/B 관측
 
     # 5) 선택: 밴드 최근접(복수면 품질 tiebreak) → 캡 내 초과 최선(missed) →
     #    [쿼터 지배면 503] → AI추정 폴백 → 502
     _meta = {"pool_size": len(gen_cands), "snapped_count": len(scored),
              "tmap_legs": leg_budget, "snap_errors": snap_errs,
-             "anchor_n": anchor_n, "cand_quality": cand_quality}
+             "anchor_n": anchor_n, "cand_quality": cand_quality,
+             # 선호 관측(2026-07-31) — "그 요청에 선호가 실렸는가" 사후 판정 공백
+             # 제거. 요청 raw(미전송=null 명시) + 실제 파이프 투입분(병합 결과·
+             # 필터 후 회피 태그) 병기. 관측 전용, 서빙 행동 무영향.
+             "prefs": {"terrain": req.terrain, "avoid_hills": req.avoid_hills,
+                       "effective_terrain": prefs.terrain,
+                       "effective_avoid_hills": prefs.avoid_hills,
+                       "avoid_tags": avoid_tags}}
     if _gate_rejected:   # 도로 등급 게이트 관측(§8.20) — additive
         _meta["road_gate_rejected"] = _gate_rejected
         _meta["road_gate_worst_m"] = round(_gate_worst_m)
