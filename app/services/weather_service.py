@@ -48,8 +48,11 @@ class WeatherUnavailable(Exception):
 
 _CACHE_TTL_SEC = 600.0  # 10 minutes
 _CACHE_MAX = 1000
-# {(lat2, lng2): (expires_at_monotonic, response)}
-_cache: dict[tuple[float, float], tuple[float, WeatherResponse]] = {}
+# {(lat2, lng2): (expires_at_monotonic, response, (sunrise, sunset) epoch|None)}
+# sun은 UV 야간 0 처리(AIR_QUALITY_SOURCE_DESIGN §3 ⓐ)의 응답 시점 판정용 —
+# 와이어 비노출(응답 스키마 불변).
+_cache: dict[tuple[float, float],
+             tuple[float, WeatherResponse, tuple[float, float] | None]] = {}
 
 
 def _cache_key(lat: float, lng: float) -> tuple[float, float]:
@@ -57,23 +60,26 @@ def _cache_key(lat: float, lng: float) -> tuple[float, float]:
     return (round(lat, 2), round(lng, 2))
 
 
-def _cache_get(key: tuple[float, float]) -> WeatherResponse | None:
+def _cache_get(
+    key: tuple[float, float],
+) -> tuple[WeatherResponse, tuple[float, float] | None] | None:
     hit = _cache.get(key)
     if hit and hit[0] > time.monotonic():
-        return hit[1]
+        return hit[1], hit[2]
     return None
 
 
-def _cache_put(key: tuple[float, float], value: WeatherResponse) -> None:
+def _cache_put(key: tuple[float, float], value: WeatherResponse,
+               sun: tuple[float, float] | None = None) -> None:
     # Lazy cleanup on insert; hard cap protects memory. A concurrent miss on
     # the same key may fetch twice (no lock) — rare and harmless.
     now = time.monotonic()
     if len(_cache) >= _CACHE_MAX:
-        for k in [k for k, (exp, _) in _cache.items() if exp <= now]:
+        for k in [k for k, (exp, *_r) in _cache.items() if exp <= now]:
             _cache.pop(k, None)
         while len(_cache) >= _CACHE_MAX:
             _cache.pop(next(iter(_cache)))
-    _cache[key] = (now + _CACHE_TTL_SEC, value)
+    _cache[key] = (now + _CACHE_TTL_SEC, value, sun)
 
 
 # ── 환경부 PM grades ──────────────────────────────────────────────────────────
@@ -404,6 +410,31 @@ async def _fetch_air(
         return None
 
 
+def _uv_at_response_time(
+    response: WeatherResponse, sun: tuple[float, float] | None
+) -> WeatherResponse:
+    """UV 야간 0 처리(AIR_QUALITY_SOURCE_DESIGN §3 ⓐ, 오너 승인 2026-07-31).
+
+    daily-max UV(/2.5/uvi)가 밤에도 노출되던 것(실측: 20:53 KST "매우높음 9.3")
+    교정 — 일몰~일출엔 value 0·"낮음", 주간은 현행(오늘 최고) 유지.
+    판정은 **응답 시점**(캐시 적재 시점 아님): 낮에 적재된 캐시가 일몰 직후
+    히트돼도 밤엔 0 — lang 응답 시점 조립 함정과 동형. 비교는 epoch(UTC) 초라
+    KST 경계 계산 불요. sun 결손 시 적재 시점 is_day 폴백(best-effort).
+    grade 어휘는 기존 "낮음" 재사용 — 스키마·와이어 값 집합 불변.
+    """
+    if response.uv is None:
+        return response
+    if sun and sun[0] and sun[1]:
+        night = not (sun[0] <= time.time() <= sun[1])
+    else:
+        night = not response.is_day
+    if not night:
+        return response
+    out = response.model_copy(deep=True)   # 공유 캐시 원본 무수정(07/05 전례 축)
+    out.uv = UvReading(value=0.0, grade=_uv_grade(0.0))
+    return out
+
+
 async def get_weather(lat: float, lng: float) -> WeatherResponse:
     """Weather + PM + running index for (lat, lng), cached ~10min per grid cell."""
     if not settings.openweather_api_key:
@@ -412,7 +443,7 @@ async def get_weather(lat: float, lng: float) -> WeatherResponse:
     key = _cache_key(lat, lng)
     cached = _cache_get(key)
     if cached is not None:
-        return cached
+        return _uv_at_response_time(cached[0], cached[1])
 
     api_key = settings.openweather_api_key
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
@@ -429,12 +460,14 @@ async def get_weather(lat: float, lng: float) -> WeatherResponse:
     # 시 sys 비교 폴백, 둘 다 없으면 낮. raw icon은 노출하지 않는다(아이콘
     # 체계 종속 방지 — 프론트는 is_day로 자체 셋 분기).
     icon = weather0.get("icon") or ""
+    sys_d = current.get("sys") or {}
+    _sr, _ss = sys_d.get("sunrise"), sys_d.get("sunset")
+    _sun = (float(_sr), float(_ss)) if _sr and _ss else None  # UV 야간 판정용
     if icon:
         is_day = not icon.endswith("n")
     else:
-        sys_d = current.get("sys") or {}
-        sr, ss, dt = sys_d.get("sunrise"), sys_d.get("sunset"), current.get("dt")
-        is_day = bool(sr and ss and dt and sr < dt < ss) if sr else True
+        dt = current.get("dt")
+        is_day = bool(_sr and _ss and dt and _sr < dt < _ss) if _sr else True
     pm25_v = air.get("pm2_5") if air else None
     pm10_v = air.get("pm10") if air else None
     feels = float(main.get("feels_like", main.get("temp", 15.0)))
@@ -461,5 +494,5 @@ async def get_weather(lat: float, lng: float) -> WeatherResponse:
         running_index=_running_index(feels, code, wind, pm25_v, pm10_v, humidity),
         fetched_at=datetime.now(timezone.utc).isoformat(),
     )
-    _cache_put(key, response)
-    return response
+    _cache_put(key, response, _sun)
+    return _uv_at_response_time(response, _sun)
