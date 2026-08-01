@@ -285,10 +285,14 @@ def _log_perf_failed(t0: float, perf: dict) -> None:
 async def _record_gen_failure(
     req: RouteRequest, target_km: float, t0: float, snaps: list,
     meta: dict, initial_ratio: float, fail: str, pitstop: dict | None = None,
+    user_id: str | None = None,
 ) -> None:
     """502 관측 영속(§3 STEP 1, 2026-07-22) — gen_failures. best-effort: 저장 실패가
     502 계약을 못 막는다. 실패 케이스 snap 분포 가시화(survivorship bias 제거)용.
-    프라이버시: 유저 미저장, 시작점은 격자 수준(소수 2자리≈1.1km)만.
+    프라이버시: 시작점은 격자 수준(소수 2자리≈1.1km)만. user_id는 2026-08-01
+    오너 승인으로 병기(익명 스키마가 502 판독의 유저 특정을 막던 맹점 제거) —
+    테이블은 RLS deny·서비스 키 전용(anon 0행 실확인)이라 클라 비노출. 미인증
+    요청은 null 명시.
     pitstop: 채택 pitstop 관측(gen_meta와 대칭 — "pitstop이 실패에 관여했나" 진단용)."""
     try:
         record = {"meta": {
@@ -298,6 +302,7 @@ async def _record_gen_failure(
             "one_way": req.end is not None, "target_km": target_km,
             "grid_lat": round(req.start.lat, 2), "grid_lng": round(req.start.lng, 2),
             "fail": fail, "pitstop": pitstop,
+            "user_id": user_id,
         }}
         supabase = get_supabase_admin()
         await asyncio.to_thread(
@@ -1009,7 +1014,8 @@ async def create_running_route(
             raise _upstream[0]
         await _record_gen_failure(req, target_km, _t0, [],
                                   {"pool_size": 0, "snapped_count": 0, "tmap_legs": 0,
-                                   "snap_errors": {}}, initial_ratio, "no_gen_cands")
+                                   "snap_errors": {}}, initial_ratio, "no_gen_cands",
+                                  user_id=user_id)
         raise RouteGenerationFailed()  # 전 롤 파싱/검증 실패(혼합 포함) — 기존 502
 
     # 2) pre-gate: 체인 aim×[0.75,1.25] 통과분. 통과 0이면 전체(salvage). aim
@@ -1310,7 +1316,8 @@ async def create_running_route(
                 await _record_gen_failure(req, target_km, _t0, snaps,
                                           {**_meta, "redraw": rd_meta}, initial_ratio,
                                           "no_path" if nopath_fallback is not None
-                                          else "band_cap_zero", pitstop=pitstop_obs)
+                                          else "band_cap_zero", pitstop=pitstop_obs,
+                                          user_id=user_id)
                 # dedup 바닥(오너 규칙 4) — 캐노니컬 회피 스킵분이 있으면 502 대신 재서빙.
                 _lr = await _canonical_dedup_last_resort(
                     req, target_km, lang, user_id, _dedup_obs.get("skipped", 0))
