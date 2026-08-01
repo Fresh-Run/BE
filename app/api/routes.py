@@ -942,22 +942,28 @@ async def nearby_feed(
     radius_km: float = 10.0,
     limit: int = 20,
     offset: int = 0,
+    scope: Literal["nearby", "all"] = "nearby",
     user: CurrentUser = Depends(get_current_user),
 ) -> list[ActivityFeedItem]:
     """내 위치 반경 내 public run(본인·팔로우·비공개 계정 제외), 최신순.
 
-    홈 "전체" 탭 데이터소스(NEARBY_FEED_DESIGN). lat/lng 필수(누락 400),
-    한국 bbox 밖 400. radius_km 기본 10·상한 20(서비스에서 clamp).
+    홈 "전체" 탭 데이터소스(NEARBY_FEED_DESIGN). scope(2026-08-01 additive,
+    Ivan 계약): "nearby"(기본)=현행 그대로 — lat/lng 필수(누락 400)·한국 bbox
+    밖 400·radius_km 기본 10·상한 20(서비스 clamp). "all"=전국(전 세계) 모드 —
+    반경·좌표 무시(전송돼도 무시·bbox 게이트 스킵: 국가 필터 없음이 오너
+    결정이라 해외 좌표 400이면 모순). 허용 외 값은 422(validation_error).
+    가시성·정렬·페이지네이션 규칙은 두 모드 동일.
     """
-    if lat is None or lng is None:
-        raise HTTPException(status_code=400, detail="lat, lng are required")
-    # 한국 bbox 검증 (Coordinate 모델과 동일 범위) — 극점 좌표 차단
-    if not (33.0 <= lat <= 39.0 and 124.0 <= lng <= 132.0):
-        raise HTTPException(status_code=400, detail="lat/lng out of Korea bounds")
+    if scope == "nearby":
+        if lat is None or lng is None:
+            raise HTTPException(status_code=400, detail="lat, lng are required")
+        # 한국 bbox 검증 (Coordinate 모델과 동일 범위) — 극점 좌표 차단
+        if not (33.0 <= lat <= 39.0 and 124.0 <= lng <= 132.0):
+            raise HTTPException(status_code=400, detail="lat/lng out of Korea bounds")
     try:
         return await run_service.list_nearby_feed(
             user.user_id, lat=lat, lng=lng,
-            radius_km=radius_km, limit=limit, offset=offset,
+            radius_km=radius_km, limit=limit, offset=offset, scope=scope,
         )
     except Exception as exc:  # noqa: BLE001
         raise _bad_gateway("Nearby feed failed", exc)

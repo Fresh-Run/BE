@@ -1405,23 +1405,32 @@ _NEARBY_CANDIDATE_CAP = 500
 
 
 async def list_nearby_feed(
-    user_id: str, lat: float, lng: float,
+    user_id: str, lat: float | None = None, lng: float | None = None,
     radius_km: float = 10.0, limit: int = 20, offset: int = 0,
+    scope: str = "nearby",
 ) -> list[ActivityFeedItem]:
     """홈 "전체" 탭 — 내 위치 반경 내 public run 탐색 피드 (NEARBY_FEED_DESIGN).
 
     필터 합성(순서): visibility='public' → bbox 범위 → 본인 제외 → 팔로우 유저
     제외 → visible_owners(차단 양방향+비공개 계정 제외) → haversine 원형 후필터.
     최신순(ran_at desc), 반경 내 0건이면 []. 서버 자동 반경 확장 없음.
+
+    scope="all"(2026-08-01 additive): 반경·bbox·원형 후필터 스킵 — 전 세계
+    public run(좌표 null 미노출 불변). 가시성·정렬·페이지네이션은 동일 경로.
+    keyset(ran_at 커서) 전환 트리거: runs 5만+ 행 또는 offset 스캔 p95 300ms+
+    — 그 전엔 offset 유지(오버엔지니어링 경계). 후보 상한 경보는 기존
+    _NEARBY_CANDIDATE_CAP 로그가 겸한다.
     """
     limit = max(1, min(limit, 100))
     offset = max(0, offset)
     radius_km = max(0.1, min(radius_km, 20.0))  # 상한 20 (크루 선례 정합, 확답 B)
+    world = scope == "all"
 
-    # bounding box (위도 1도≈111km, 경도는 cos(lat) 보정)
-    dlat = radius_km / 111.0
-    coslat = math.cos(math.radians(lat))
-    dlng = radius_km / (111.0 * coslat) if coslat > 1e-9 else 180.0
+    if not world:
+        # bounding box (위도 1도≈111km, 경도는 cos(lat) 보정)
+        dlat = radius_km / 111.0
+        coslat = math.cos(math.radians(lat))
+        dlng = radius_km / (111.0 * coslat) if coslat > 1e-9 else 180.0
 
     supabase = get_supabase_admin()
 
@@ -1434,17 +1443,19 @@ async def list_nearby_feed(
 
     # bbox 범위 스캔 (부분 인덱스) + public + 제외 집합. 후필터로 줄어드므로
     # range() 없이 후보를 모아(cap) haversine·가시성 필터 후 파이썬에서 페이지네이션.
-    cand_res = await asyncio.to_thread(
-        lambda: supabase.table("runs")
-        .select(_ACTIVITY_SELECT + ", start_lat, start_lng")
-        .eq("visibility", "public")
-        .gte("start_lat", lat - dlat).lte("start_lat", lat + dlat)
-        .gte("start_lng", lng - dlng).lte("start_lng", lng + dlng)
-        .not_.in_("user_id", list(exclude_ids))
-        .order("ran_at", desc=True)
-        .limit(_NEARBY_CANDIDATE_CAP)
-        .execute()
-    )
+    def _cand_query():
+        q = (supabase.table("runs")
+             .select(_ACTIVITY_SELECT + ", start_lat, start_lng")
+             .eq("visibility", "public"))
+        if not world:
+            q = (q.gte("start_lat", lat - dlat).lte("start_lat", lat + dlat)
+                 .gte("start_lng", lng - dlng).lte("start_lng", lng + dlng))
+        return (q.not_.in_("user_id", list(exclude_ids))
+                .order("ran_at", desc=True)
+                .limit(_NEARBY_CANDIDATE_CAP)
+                .execute())
+
+    cand_res = await asyncio.to_thread(_cand_query)
     cand = cand_res.data
     if len(cand) >= _NEARBY_CANDIDATE_CAP:
         logger.warning("nearby feed 후보 상한(%d) 도달 — PostGIS 전환 검토 신호",
@@ -1455,8 +1466,9 @@ async def list_nearby_feed(
     # haversine 원형 후필터 (bbox 정사각형 모서리 컷 — 확답 A)
     in_circle = [
         r for r in cand
-        if r.get("start_lat") is not None
-        and _haversine_km(lat, lng, r["start_lat"], r["start_lng"]) <= radius_km
+        if r.get("start_lat") is not None   # 좌표 null 미노출 — 두 모드 공통 불변
+        and (world
+             or _haversine_km(lat, lng, r["start_lat"], r["start_lng"]) <= radius_km)
     ]
     if not in_circle:
         return []
