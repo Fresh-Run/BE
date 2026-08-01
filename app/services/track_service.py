@@ -313,7 +313,12 @@ def process_track(raw: list[TrackPoint]) -> ProcessedTrack | None:
 
     simplified = _dp_simplify(sm, DP_EPSILON_M)
     return ProcessedTrack(
-        polyline=[{"lat": round(p.lat, 6), "lng": round(p.lng, 6)} for p in simplified],
+        # alt 보존(2026-08-01, Ivan 계약 — 고도 차트+avoid_hills 실효 측정 소스).
+        # 미전송 포인트는 키 생략(구클라·구트랙 무영향). 수평 거리·필터 판정에는
+        # 유입되지 않는다(하버사인은 lat/lng만 — 테스트로 박제).
+        polyline=[{"lat": round(p.lat, 6), "lng": round(p.lng, 6),
+                   **({"alt": round(p.alt, 1)} if p.alt is not None else {})}
+                  for p in simplified],
         splits=splits,
         server_distance_km=round(total_km, 2),
         elev_gain_m=round(total_gain) if has_alt else None,

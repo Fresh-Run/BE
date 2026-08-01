@@ -1284,10 +1284,17 @@ class RunDetailResponse(RunResponse):
         "세션 필드 비노출/비세션이면 null.")
 
 
+class TrackCoordinate(Coordinate):
+    """트랙 포인트 — 좌표 + 선택 고도(2026-08-01 additive). 구트랙·alt 미전송
+    포인트는 null(고도 차트는 null 구간 스킵)."""
+
+    alt: Optional[float] = Field(None, description="고도(m) — 없으면 null.")
+
+
 class RunTrackResponse(BaseModel):
     """GET /runs/{run_id}/track — 상세 화면 전용 (경로 지도)."""
 
-    polyline: list[Coordinate] = Field(..., description="간축된 경로 (≤1000pt).")
+    polyline: list[TrackCoordinate] = Field(..., description="간축된 경로 (≤1000pt).")
     server_distance_km: float
     elev_gain_m: Optional[int] = None
     moving_sec: Optional[int] = Field(
