@@ -1247,6 +1247,12 @@ class RunResponse(BaseModel):
         "피드 my_kudos와 동일 계산. 본인 run은 kudos 불가라 항상 false).",
     )
     comment_count: int = Field(0, description="이 run이 받은 댓글 수 (카드 💬 표시용).")
+    # 크루 세션 필드(2026-08-01 additive, Ivan 계약·프라이버시 판정 A) — 시청자가
+    # 소유자 본인/그 크루 멤버면 노출, 그 외엔 크루 is_public일 때만. 비공개 크루는
+    # 4필드 전부 null(session_key가 crew_id 내포). 비세션 런은 전원 null.
+    crew_id: Optional[str] = None
+    crew_name: Optional[str] = Field(None, description="세션 크루 이름 — null이면 크루 배지 없음(사유 비구분).")
+    session_key: Optional[str] = Field(None, description="세션 그룹 키(a:/c: — 크루 피드와 동일 시맨틱).")
     photos: list[str] = Field(
         default_factory=list,
         description="사진 서명 URL(만료 1h) — 상세(GET /runs/{id})에서만 채움, 목록은 photo_thumb.",
@@ -1268,6 +1274,14 @@ class RunResponse(BaseModel):
     # "좋아요/댓글 버튼 렌더 여부" 판단(false면 생략, 403은 레이스 폴백). 본인 상세도 참값.
     allow_likes: Optional[bool] = Field(None, description="소유자에게 kudos 가능?")
     allow_comments: Optional[bool] = Field(None, description="소유자에게 댓글 가능?")
+
+
+class RunDetailResponse(RunResponse):
+    """단건 상세 전용(GET /runs/{id}) — 리스트 +1 필드(세션 참여자 수)."""
+
+    session_participant_count: Optional[int] = Field(
+        None, description="세션 전역 참여자 수(크루 피드와 동일 계산·동일 숫자). "
+        "세션 필드 비노출/비세션이면 null.")
 
 
 class RunTrackResponse(BaseModel):

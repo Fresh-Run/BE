@@ -27,6 +27,7 @@ from app.models.schemas import (
     CommentCreate,
     CommentResponse,
     RunCommentCreate,
+    RunDetailResponse,
     RunCommentResponse,
     Coordinate,
     CrewCreate,
@@ -1455,7 +1456,7 @@ async def list_runs(
 
 @router.get(
     "/runs/{run_id}",
-    response_model=RunResponse,
+    response_model=RunDetailResponse,
     summary="러닝 기록 단건 조회 (본인 전체 / 타인은 공개범위 내 정제 필드)",
 )
 async def get_run(

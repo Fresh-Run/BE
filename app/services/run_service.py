@@ -20,6 +20,7 @@ from app.models.schemas import (
     PeriodStats,
     RecordEntry,
     RecordsBlock,
+    RunDetailResponse,
     RunCommentResponse,
     RunPhotoUploadUrlResponse,
     RunRequest,
@@ -605,6 +606,55 @@ _PUBLIC_DETAIL_FIELDS = (
 )
 
 
+async def _crew_session_fields(
+    rows: list[dict], viewer_id: str | None
+) -> dict[str, dict]:
+    """크루 세션 필드 A 규칙(프라이버시 판정 2026-08-01) — {run_id: 3필드 dict}.
+
+    노출: 시청자=런 소유자 본인 OR 그 크루 멤버 → 항상 / 그 외 시청자는 크루
+    is_public=true일 때만. 비공개면 3필드 전부 null(session_key가 crew_id 내포).
+    비세션 런은 전원 null(대칭). 배치 고정 쿼리 — crews 1 + (타인 소유 태그런이
+    있을 때만) crew_members 1. 세션 파생 자체는 저장 시 _resolve_crew_session
+    단일 소스(여기선 행 값 재사용만).
+    """
+    nulls = {"crew_id": None, "crew_name": None, "session_key": None}
+    out = {r["id"]: dict(nulls) for r in rows}
+    tagged = [r for r in rows if r.get("crew_id") and r.get("session_key")]
+    if not tagged:
+        return out
+    supabase = get_supabase_admin()
+    crew_ids = list({r["crew_id"] for r in tagged})
+    need_membership = (viewer_id is not None
+                       and any(r["user_id"] != viewer_id for r in tagged))
+
+    async def _crews():
+        res = await asyncio.to_thread(
+            lambda: supabase.table("crews").select("id, name, is_public")
+            .in_("id", crew_ids).execute())
+        return {c["id"]: c for c in res.data}
+
+    async def _member_of():
+        if not need_membership:
+            return set()
+        res = await asyncio.to_thread(
+            lambda: supabase.table("crew_members").select("crew_id")
+            .eq("user_id", viewer_id).in_("crew_id", crew_ids).execute())
+        return {m["crew_id"] for m in res.data}
+
+    crews, member_of = await asyncio.gather(_crews(), _member_of())
+    for r in tagged:
+        crew = crews.get(r["crew_id"])
+        if crew is None:
+            continue  # 크루 삭제됨 — null 유지
+        visible = (r["user_id"] == viewer_id
+                   or r["crew_id"] in member_of
+                   or bool(crew.get("is_public")))
+        if visible:
+            out[r["id"]] = {"crew_id": r["crew_id"], "crew_name": crew["name"],
+                            "session_key": r["session_key"]}
+    return out
+
+
 async def _polyline_thumbs(run_ids: list[str]) -> dict[str, list]:
     """{run_id: polyline_thumb} — 트랙 있는 run만, 배치 1쿼리 (카드 지도용).
 
@@ -737,11 +787,20 @@ async def get_run(run_id: str, user_id: str) -> RunResponse | None:
         allow_likes=owner_flags.get("allow_likes", True),
         allow_comments=owner_flags.get("allow_comments", True),
     )
+    # 크루 세션 필드(A 규칙) + 전역 참여자 수(크루 피드와 단일 소스 헬퍼)
+    crew_fields = (await _crew_session_fields([row], user_id))[row["id"]]
+    spc = None
+    if crew_fields["session_key"]:
+        from app.services import crew_service  # local: 순환 import 회피
+        spc = (await crew_service._session_participant_counts(
+            [crew_fields["session_key"]])).get(crew_fields["session_key"])
+    common = dict(common, **crew_fields, session_participant_count=spc)
     if is_own:
         # photo_paths는 본인 상세에서만 — 서명된 photos와 같은 순서(kept_paths).
         # 편집 시 PATCH /runs {photos}에 재사용(Ivan own-run 사진 편집 블로커 해제).
-        return RunResponse(**{k: v for k, v in row.items() if k != "photos"},
-                           photo_paths=kept_paths, **common)
+        return RunDetailResponse(**{k: v for k, v in row.items()
+                                    if k not in ("photos", "crew_id", "session_key")},
+                                 photo_paths=kept_paths, **common)
 
     # 타인: 화이트리스트 + route_id는 연결 코스가 public일 때만 (프로브 차단)
     public_route_id = None
@@ -755,7 +814,7 @@ async def get_run(run_id: str, user_id: str) -> RunResponse | None:
             .execute()
         )
         public_route_id = row["route_id"] if pub.data else None
-    return RunResponse(
+    return RunDetailResponse(
         **{k: row[k] for k in _PUBLIC_DETAIL_FIELDS},
         route_id=public_route_id, visibility=None, **common,
     )
@@ -1793,15 +1852,18 @@ async def list_runs(
     # 배치 집계로 kudos·댓글 수 (활동 피드와 동일 방식, N+1 방지)
     # 썸네일: 행마다 첫 사진만, 서명 URL은 배치 1콜 (목록 정책 — 설계 §2-E)
     firsts = [(row["photos"] or [None])[0] for row in result.data]
-    tracks, kudos, comments, signed, thumbs = await asyncio.gather(
+    tracks, kudos, comments, signed, thumbs, crew_fields = await asyncio.gather(
         _track_summaries(run_ids),
         _kudos_counts(run_ids),
         _comment_counts(run_ids),
         _signed_photo_urls([p for p in firsts if p]),
         _polyline_thumbs(run_ids),
+        _crew_session_fields(result.data, user_id),
     )
     return [
-        RunResponse(**{k: v for k, v in row.items() if k != "photos"},
+        RunResponse(**{k: v for k, v in row.items()
+                       if k not in ("photos", "crew_id", "session_key")},
+                    **crew_fields[row["id"]],
                     has_track=row["id"] in tracks,
                     splits=tracks.get(row["id"]), kudos_count=kudos.get(row["id"], 0),
                     moving_sec=_moving_total(tracks.get(row["id"])),
