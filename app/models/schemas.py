@@ -1087,10 +1087,10 @@ class RunRequest(BaseModel):
         description="클라 빌드/OTA 식별 문자열(자유형, 예: '1.4.2 (118) ota-7f3a'). "
                     "미전송 시 null.",
     )
-    # K1 퍼블릭 피드 크루 배너 초이스(2026-08-01) — 미전송 시 컬럼 default true(ON).
-    # 비공개 크루는 값 무관 미노출(하드 게이트 — 서버 조립에서 강제).
+    # K1 퍼블릭 피드 크루 배너 초이스 — 미전송 시 컬럼 default 위임(2026-08-02
+    # 오너 재판정: OFF — 옵트인 포스처). 비공개 크루는 값 무관 미노출(하드 게이트).
     show_crew: Optional[bool] = Field(
-        None, description="퍼블릭 피드에 크루 배너 노출 여부(디폴트 ON). "
+        None, description="퍼블릭 피드에 크루 배너 노출 여부(디폴트 OFF — 옵트인). "
         "비공개 크루는 true여도 미노출.")
     # 상한 350km = 세계 최장 울트라(현실 초장거리) 여유. 상한 없으면 9999km
     # 1회 전송으로 랭킹·챌린지·PB·통계 오염 가능 (unverified도 집계 포함).

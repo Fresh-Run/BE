@@ -126,20 +126,30 @@ def run_tests():
               "  python tests/test_show_crew_integration.py")
         sys.exit(1)
 
+    # 디폴트 게이트(동작 기반): 미지정 insert의 실값이 false여야(2026-08-02 OFF 재판정)
+    _probe = sb_run(o, f"shc-{TS}-probe")
+    pv = httpx.get(f"{_SB}/rest/v1/runs", headers=_ADM,
+                   params={"select": "show_crew", "id": f"eq.{_probe}"},
+                   timeout=30).json()[0]["show_crew"]
+    if pv is not False:
+        print("\n[검증 불가] show_crew 디폴트가 아직 ON — 오너가 "
+              "db/2026-08-02_show_crew_default_off.sql 실행 후 재실행 필요")
+        sys.exit(1)
+
     cpub = sb_crew(o, f"shc-pub-{TS}", True)
     cpriv = sb_crew(o, f"shc-priv-{TS}", False)
-    r_on_pub = sb_run(o, f"shc-{TS}-onpub", crew=cpub)             # default true
-    r_on_priv = sb_run(o, f"shc-{TS}-onpriv", crew=cpriv)          # true + 비공개
-    r_off_pub = sb_run(o, f"shc-{TS}-offpub", crew=cpub, show=False)
+    r_on_pub = sb_run(o, f"shc-{TS}-onpub", crew=cpub, show=True)   # 명시 옵트인
+    r_on_priv = sb_run(o, f"shc-{TS}-onpriv", crew=cpriv, show=True)  # 옵트인+비공개
+    r_def_pub = sb_run(o, f"shc-{TS}-defpub", crew=cpub)            # 미지정=OFF(디폴트)
 
-    print("\n[1~4. 매트릭스]")
+    print("\n[1~4. 매트릭스 — 디폴트 OFF(2026-08-02 재판정)]")
     feed = {x["run_id"]: x for x in api("GET", "/feed/activities", tok_v).json()
             if str(x.get("title", "")).startswith(f"shc-{TS}")}
     assert feed[r_on_pub]["crew_name"] == f"shc-pub-{TS}", feed[r_on_pub]["crew_name"]
-    assert feed[r_on_priv]["crew_name"] is None, "비공개 하드 게이트"
-    assert feed[r_off_pub]["crew_name"] is None, "OFF는 공개 크루여도 null"
+    assert feed[r_on_priv]["crew_name"] is None, "비공개 하드 게이트(옵트인이어도)"
+    assert feed[r_def_pub]["crew_name"] is None, "미지정=디폴트 OFF → null"
     assert feed[plain]["crew_name"] is None
-    ok("ON×공개 실명 ✓ ON×비공개 null(하드) ✓ OFF×공개 null ✓ 비크루 null ✓")
+    ok("옵트인×공개 실명 ✓ 옵트인×비공개 null(하드) ✓ 디폴트(미지정) null ✓ 비크루 null ✓")
 
     print("\n[5. PATCH 토글 왕복]")
     r = api("PATCH", f"/runs/{r_on_pub}", tok_o, json={"show_crew": False})
@@ -165,7 +175,7 @@ def run_tests():
     orig = run_service.get_supabase_admin
     run_service.get_supabase_admin = lambda: Proxy()
     try:
-        asyncio.run(run_service._k1_crew_names([r_on_pub, r_on_priv, r_off_pub, plain]))
+        asyncio.run(run_service._k1_crew_names([r_on_pub, r_on_priv, r_def_pub, plain]))
         assert calls == {"runs": 1, "crews": 1}, calls
         asyncio.run(run_service._k1_crew_names([plain]))
         assert calls == {"runs": 2, "crews": 1}, calls   # 태그 0 → crews 스킵
