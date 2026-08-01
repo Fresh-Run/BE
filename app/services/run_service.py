@@ -197,6 +197,9 @@ async def create_run(req: RunRequest, user_id: str | None = None) -> RunResponse
     # null). SQL 선실행→배포 순서가 역전돼도(컬럼 미적용 DB) 기존 경로 무해.
     if req.app_version is not None:
         record["app_version"] = req.app_version
+    # K1 크루 배너 초이스(2026-08-01) — 미전송 키 생략(컬럼 default true, 동일 전례)
+    if req.show_crew is not None:
+        record["show_crew"] = req.show_crew
 
     supabase = get_supabase_admin()
     result = await asyncio.to_thread(
@@ -1387,6 +1390,36 @@ _ACTIVITY_SELECT = ("id, user_id, ran_at, distance_km, duration_sec, "
                     "avg_pace_sec_per_km, route_id, title, area, photos")
 
 
+async def _k1_crew_names(run_ids: list[str]) -> dict[str, str]:
+    """K1 퍼블릭 피드 크루 배너(2026-08-01, 런별 유저 초이스) — {run_id: 실명}.
+
+    실명 조건: 크루 태그런 AND show_crew=true AND 크루 is_public=true.
+    비공개 크루는 플래그 무관 미노출(오너 하드 게이트 — A-룰 원칙, 설정은
+    허용·효과만 게이트). 미해당 run은 dict에 없음(→ crew_name null).
+    고정 배치 ≤2쿼리(runs 게이트 데이터 + crews) — N+1 없음.
+    show_crew 컬럼 미적용 환경(SQL 선실행 전·롤백)은 42703 → 전부 null 폴백.
+    """
+    if not run_ids:
+        return {}
+    supabase = get_supabase_admin()
+    try:
+        res = await asyncio.to_thread(
+            lambda: supabase.table("runs").select("id, crew_id, show_crew")
+            .in_("id", run_ids).not_.is_("crew_id", "null").execute())
+    except APIError:
+        logger.warning("show_crew 컬럼 미적용 — 크루 배너 전부 null 폴백")
+        return {}
+    tagged = [r for r in res.data if r.get("crew_id") and r.get("show_crew")]
+    if not tagged:
+        return {}
+    crew_ids = list({r["crew_id"] for r in tagged})
+    cres = await asyncio.to_thread(
+        lambda: supabase.table("crews").select("id, name, is_public")
+        .in_("id", crew_ids).eq("is_public", True).execute())
+    names = {c["id"]: c["name"] for c in cres.data}   # 공개 크루만 — 하드 게이트
+    return {r["id"]: names[r["crew_id"]] for r in tagged if r["crew_id"] in names}
+
+
 async def _build_activity_items(
     rows: list[dict], viewer_id: str
 ) -> list[ActivityFeedItem]:
@@ -1415,7 +1448,8 @@ async def _build_activity_items(
         return {row["id"]: row["summary"] for row in r.data}
 
     firsts = {r["id"]: (r.get("photos") or [None])[0] for r in rows}
-    briefs, summaries, kudos_counts, my_kudos, comment_counts, signed, thumbs, flags = await asyncio.gather(
+    (briefs, summaries, kudos_counts, my_kudos, comment_counts, signed, thumbs,
+     flags, crew_names) = await asyncio.gather(
         profile_service.get_profile_briefs([r["user_id"] for r in rows]),
         _public_route_summaries(),
         _kudos_counts(run_ids),
@@ -1424,10 +1458,12 @@ async def _build_activity_items(
         _signed_photo_urls([p for p in firsts.values() if p]),
         _polyline_thumbs(run_ids),
         profile_service.feed_flags_batch([r["user_id"] for r in rows]),
+        _k1_crew_names(run_ids),
     )
     return [
         ActivityFeedItem(
             run_id=row["id"],
+            crew_name=crew_names.get(row["id"]),
             user_id=row["user_id"],
             nickname=briefs.get(row["user_id"], {}).get("nickname"),
             avatar_url=briefs.get(row["user_id"], {}).get("avatar_url"),

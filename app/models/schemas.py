@@ -1087,6 +1087,11 @@ class RunRequest(BaseModel):
         description="클라 빌드/OTA 식별 문자열(자유형, 예: '1.4.2 (118) ota-7f3a'). "
                     "미전송 시 null.",
     )
+    # K1 퍼블릭 피드 크루 배너 초이스(2026-08-01) — 미전송 시 컬럼 default true(ON).
+    # 비공개 크루는 값 무관 미노출(하드 게이트 — 서버 조립에서 강제).
+    show_crew: Optional[bool] = Field(
+        None, description="퍼블릭 피드에 크루 배너 노출 여부(디폴트 ON). "
+        "비공개 크루는 true여도 미노출.")
     # 상한 350km = 세계 최장 울트라(현실 초장거리) 여유. 상한 없으면 9999km
     # 1회 전송으로 랭킹·챌린지·PB·통계 오염 가능 (unverified도 집계 포함).
     # ge=0.01: gt=0이면 1e-308 같은 값이 통과해 round 후 0.00km가 됨 — 하한 명시(L8)
@@ -1153,6 +1158,8 @@ class RunUpdate(BaseModel):
     visibility: Optional[Literal["public", "followers", "private"]] = None
     notes: Optional[str] = Field(None, max_length=2000)
     area: Optional[str] = Field(None, max_length=50, description="지역명 (예: '성수동').")
+    show_crew: Optional[bool] = Field(
+        None, description="퍼블릭 피드 크루 배너 노출 토글(2026-08-01 additive).")
     photos: Optional[list[str]] = Field(
         None, max_length=3,
         description="사진 경로 배열 (업로드 3-step의 path 그대로, ≤3, 중복 불가). "
@@ -1701,6 +1708,10 @@ class ActivityFeedItem(CrewRunItem):
     """
 
     is_mine: bool = Field(False, description="내 run이면 true (kudos 버튼 비활성용).")
+    # K1 크루 배너(2026-08-01) — [크루 태그런 AND show_crew AND 크루 공개]일 때만
+    # 실명, 그 외 null. 비공개 크루 하드 게이트(플래그 무관)는 서버 조립 강제.
+    crew_name: Optional[str] = Field(
+        None, description="크루 배너 실명 — null이면 배너 없음(사유 비구분).")
     # kudos_count·my_kudos는 부모(CrewRunItem)로 승격(2026-07-31) — 와이어 불변.
     visibility: Optional[str] = Field(
         None, description="공개 범위 (본인 프로필 뱃지용). 활동 피드/크루 피드에선 생략(null)."
