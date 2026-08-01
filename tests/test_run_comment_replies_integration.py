@@ -106,9 +106,10 @@ def run_tests():
     reply = r.json()
     assert reply["parent_comment_id"] == base["id"]
     sb = get_supabase_admin()
-    notes = sb.table("notifications").select("recipient_id,type") \
+    # 수신자 컬럼 실명은 user_id (recipient_id는 서비스 파라미터명 — §B 실스키마)
+    notes = sb.table("notifications").select("user_id,type") \
         .eq("target_id", run1).eq("type", "run_commented").execute().data
-    recips = sorted(n["recipient_id"] for n in notes)
+    recips = sorted(n["user_id"] for n in notes)
     # B(일반 댓글)→A 1건 + C(답글)→A 1건 + C(답글)→B(부모 작성자) 1건
     assert recips.count(a) == 2 and recips.count(b) == 1, recips
     ok("parent 실림 ✓ 알림: 주인 A 2건(각 댓글)·부모 작성자 B 1건 — 전부 run_commented(표 무변경)")
