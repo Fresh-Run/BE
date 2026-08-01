@@ -981,6 +981,11 @@ async def list_crew_runs(
             polyline_thumb=thumbs.get(row["id"]),
             # L1: 이 크루의 정기런 태그면 배지 + 세션 참여자 수
             is_crew_session=(row.get("crew_id") == crew_id and bool(row.get("session_key"))),
+            # 이 크루의 세션 런만 실키 — is_crew_session과 동일 조건(타 크루 태그런
+            # 키는 이 피드에서 null: 시맨틱 정합 + 타 크루 키 비노출)
+            session_key=(row.get("session_key")
+                         if row.get("crew_id") == crew_id and row.get("session_key")
+                         else None),
             session_participant_count=(
                 participants.get(row["session_key"])
                 if row.get("crew_id") == crew_id and row.get("session_key") else None

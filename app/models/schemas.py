@@ -1663,6 +1663,12 @@ class CrewRunItem(BaseModel):
         None, description="같은 정기런 세션 참여자 수(distinct, private 제외·차단 전역). "
         "정기런 아니면 null.",
     )
+    # 세션 접기(CREW_SESSION_COLLAPSE_DESIGN ⓐ, 2026-08-01 승인) — 클라 그룹 키.
+    # 이 크루의 세션 런만 실키(a:공지/c:날짜버킷), 그 외·K1 피드는 null(조립처에서
+    # 크루 피드만 채움 — 상속 함정 처리, kudos 승격 전례).
+    session_key: Optional[str] = Field(
+        None, description="세션 그룹 키 — 같은 키 행은 한 카드로 접기. "
+        "a:{공지id}=공지 정기런, c:{크루id}:{날짜}=즉흥 날짜 버킷. 비세션 null.")
 
 
 class ActivityFeedItem(CrewRunItem):
