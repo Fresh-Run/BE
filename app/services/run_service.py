@@ -1163,6 +1163,15 @@ class RunCommentNotFound(Exception):
     """이 run에 그 댓글이 없음 (핸들러가 404로 매핑)."""
 
 
+class CommentParentInvalid(Exception):
+    """답글 부모가 없거나 다른 run 소속 — 422 comment_parent_invalid."""
+
+
+class ReplyDepthExceeded(Exception):
+    """부모가 이미 답글(1-레벨 강제) — 422 reply_depth_exceeded."""
+
+
+
 class RunCommentAccessDenied(Exception):
     """작성자도 run 주인도 아님 — 삭제 불가 (핸들러가 403)."""
 
@@ -1210,10 +1219,17 @@ async def list_run_comments(
 
 
 async def create_run_comment(
-    run_id: str, caller_id: str, content: str
+    run_id: str, caller_id: str, content: str,
+    parent_comment_id: str | None = None,
 ) -> RunCommentResponse:
     """run에 댓글 작성 — 가시성 게이트 통과 시. run 주인에게 run_commented 알림
-    (본인 댓글은 미발송). 안 보이는 run이면 RunNotVisible → 404."""
+    (본인 댓글은 미발송). 안 보이는 run이면 RunNotVisible → 404.
+
+    1-레벨 답글(2026-08-01, Ivan 계약): parent_comment_id 지정 시 부모 검증
+    3종 — 부모 미존재/타 run 소속(CommentParentInvalid)·부모가 이미 답글
+    (ReplyDepthExceeded — 서버 강제 1-레벨). 권한·가시성은 일반 댓글과 동일
+    경로. 부모 작성자에게도 기존 run_commented 타입 그대로 알림(target=run —
+    딥링크 라우팅 표 무변경). 부모 작성자==run 주인이면 중복 없이 1건."""
     owner_id, visibility = await _run_owner(run_id)  # RunNotFound if missing
     if not await _can_see_run(owner_id, caller_id, visibility):
         raise RunNotVisible()
@@ -1223,10 +1239,24 @@ async def create_run_comment(
         raise profile_service.FeedActionDisabled("comments")
 
     supabase = get_supabase_admin()
+    parent = None
+    if parent_comment_id is not None:
+        pres = await asyncio.to_thread(
+            lambda: supabase.table("run_comments")
+            .select("id, run_id, user_id, parent_comment_id")
+            .eq("id", parent_comment_id).limit(1).execute())
+        parent = pres.data[0] if pres.data else None
+        if parent is None or parent["run_id"] != run_id:
+            raise CommentParentInvalid()
+        if parent.get("parent_comment_id") is not None:
+            raise ReplyDepthExceeded()
+
+    record = {"run_id": run_id, "user_id": caller_id, "content": content}
+    if parent_comment_id is not None:
+        # 미전송 시 키 생략 — SQL 선실행→배포 순서 보호(app_version 전례)
+        record["parent_comment_id"] = parent_comment_id
     res = await asyncio.to_thread(
-        lambda: supabase.table("run_comments")
-        .insert({"run_id": run_id, "user_id": caller_id, "content": content})
-        .execute()
+        lambda: supabase.table("run_comments").insert(record).execute()
     )
     row = res.data[0]
 
@@ -1243,6 +1273,21 @@ async def create_run_comment(
         )
     except Exception:  # noqa: BLE001 - 알림 실패가 댓글 작성을 막지 않음
         logger.warning("run_commented 알림 생성 실패", exc_info=True)
+    # 부모 작성자 알림 — 기존 타입 재사용(라우팅 표 무변경). 자기 답글 미발송,
+    # 부모 작성자==run 주인이면 위에서 이미 1건(중복 방지).
+    if (parent is not None and parent["user_id"] != caller_id
+            and parent["user_id"] != owner_id):
+        try:
+            await notification_service.create_notification(
+                recipient_id=parent["user_id"],
+                actor_id=caller_id,
+                type="run_commented",
+                target_id=run_id,
+                target_type="run",
+                payload={"run_id": run_id},
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("답글 부모 작성자 알림 생성 실패", exc_info=True)
 
     brief = (await profile_service.get_profile_briefs([caller_id])).get(caller_id)
     return RunCommentResponse(**row, nickname=brief.get("nickname") if brief else None,

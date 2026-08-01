@@ -997,6 +997,14 @@ class CommentCreate(BaseModel):
     content: str = Field(..., min_length=1, max_length=500, description="댓글 내용 (1~500자)")
 
 
+class RunCommentCreate(CommentCreate):
+    """run 댓글 전용 — 1-레벨 답글(2026-08-01, Ivan 계약). route 댓글은 무접촉."""
+
+    parent_comment_id: Optional[str] = Field(
+        None, description="답글 대상 댓글 id — null이면 일반 댓글. 1-레벨만"
+        "(답글의 답글은 422 reply_depth_exceeded).")
+
+
 class CommentResponse(BaseModel):
     id: str
     route_id: str
@@ -1021,6 +1029,9 @@ class RunCommentResponse(BaseModel):
     )
     content: str
     created_at: str
+    # 1-레벨 답글(2026-08-01 additive) — 일반 댓글·구행은 null. 플랫 리스트 유지,
+    # 스레딩은 클라가 parent 참조로 조립.
+    parent_comment_id: Optional[str] = None
 
 
 class PublishRequest(BaseModel):

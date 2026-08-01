@@ -26,6 +26,7 @@ from app.models.schemas import (
     CoachScriptResponse,
     CommentCreate,
     CommentResponse,
+    RunCommentCreate,
     RunCommentResponse,
     Coordinate,
     CrewCreate,
@@ -1617,14 +1618,24 @@ async def list_run_comments(
 )
 async def create_run_comment(
     run_id: str,
-    req: CommentCreate,
+    req: RunCommentCreate,
     user: CurrentUser = Depends(get_current_user),
 ) -> RunCommentResponse:
-    """보이는 run에 댓글 작성. run 주인에게 알림(본인 댓글 제외). 안 보이면 404."""
+    """보이는 run에 댓글 작성. run 주인에게 알림(본인 댓글 제외). 안 보이면 404.
+    1-레벨 답글: parent_comment_id 동봉(부모 무효 422·깊이 초과 422)."""
     try:
         return await run_service.create_run_comment(
-            run_id, caller_id=user.user_id, content=req.content
+            run_id, caller_id=user.user_id, content=req.content,
+            parent_comment_id=req.parent_comment_id,
         )
+    except run_service.CommentParentInvalid:
+        raise HTTPException(status_code=422, detail={
+            "error": "comment_parent_invalid",
+            "message": "답글 대상 댓글을 찾을 수 없어요."})
+    except run_service.ReplyDepthExceeded:
+        raise HTTPException(status_code=422, detail={
+            "error": "reply_depth_exceeded",
+            "message": "답글에는 답글을 달 수 없어요."})
     except (run_service.RunNotFound, run_service.RunNotVisible):
         raise HTTPException(status_code=404, detail="Run not found")
     except profile_service.FeedActionDisabled:
