@@ -1260,6 +1260,10 @@ class RunResponse(BaseModel):
     crew_id: Optional[str] = None
     crew_name: Optional[str] = Field(None, description="세션 크루 이름 — null이면 크루 배지 없음(사유 비구분).")
     session_key: Optional[str] = Field(None, description="세션 그룹 키(a:/c: — 크루 피드와 동일 시맨틱).")
+    # 2026-08-03: 본인 뷰어 한정 서빙(본인 화면 배너 게이트의 유일 수단) — 타인은
+    # 항상 null(true+이름null 조합의 비공개 크루 추론 누출 차단, 오너 판정).
+    show_crew: Optional[bool] = Field(
+        None, description="퍼블릭 피드 배너 플래그 — 본인 조회만 bool, 타인 null.")
     photos: list[str] = Field(
         default_factory=list,
         description="사진 서명 URL(만료 1h) — 상세(GET /runs/{id})에서만 채움, 목록은 photo_thumb.",

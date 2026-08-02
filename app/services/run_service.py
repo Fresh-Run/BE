@@ -612,16 +612,24 @@ _PUBLIC_DETAIL_FIELDS = (
 async def _crew_session_fields(
     rows: list[dict], viewer_id: str | None
 ) -> dict[str, dict]:
-    """크루 세션 필드 A 규칙(프라이버시 판정 2026-08-01) — {run_id: 3필드 dict}.
+    """크루 필드 단일 게이트(통일 규칙 2026-08-03) — {run_id: 4필드 dict}.
 
-    노출: 시청자=런 소유자 본인 OR 그 크루 멤버 → 항상 / 그 외 시청자는 크루
-    is_public=true일 때만. 비공개면 3필드 전부 null(session_key가 crew_id 내포).
-    비세션 런은 전원 null(대칭). 배치 고정 쿼리 — crews 1 + (타인 소유 태그런이
-    있을 때만) crew_members 1. 세션 파생 자체는 저장 시 _resolve_crew_session
-    단일 소스(여기선 행 값 재사용만).
+    전 표면 공통 3-tier: **본인**=전 필드+show_crew 실값 / **크루 멤버**=크루
+    필드 표시(플래그 null) / **타인**=크루 is_public AND show_crew=true일 때만
+    (플래그 null — true+이름null 조합으로 비공개 크루를 추론하는 누출 차단).
+    비공개는 필드 전부 null(session_key가 crew_id 내포). 비세션 런은 크루 필드
+    null(show_crew는 본인이면 실값 — 런 속성). 배치 고정 쿼리 — crews 1 +
+    (타인 소유 태그런 있을 때만) crew_members 1. rows엔 id·user_id·crew_id·
+    session_key·show_crew 필요(select "*" 경로 충족).
     """
-    nulls = {"crew_id": None, "crew_name": None, "session_key": None}
-    out = {r["id"]: dict(nulls) for r in rows}
+    nulls = {"crew_id": None, "crew_name": None, "session_key": None,
+             "show_crew": None}
+    out = {}
+    for r in rows:
+        f = dict(nulls)
+        if viewer_id is not None and r.get("user_id") == viewer_id:
+            f["show_crew"] = bool(r.get("show_crew"))   # 본인 한정 서빙
+        out[r["id"]] = f
     tagged = [r for r in rows if r.get("crew_id") and r.get("session_key")]
     if not tagged:
         return out
@@ -651,10 +659,10 @@ async def _crew_session_fields(
             continue  # 크루 삭제됨 — null 유지
         visible = (r["user_id"] == viewer_id
                    or r["crew_id"] in member_of
-                   or bool(crew.get("is_public")))
+                   or (bool(crew.get("is_public")) and bool(r.get("show_crew"))))
         if visible:
-            out[r["id"]] = {"crew_id": r["crew_id"], "crew_name": crew["name"],
-                            "session_key": r["session_key"]}
+            out[r["id"]].update({"crew_id": r["crew_id"], "crew_name": crew["name"],
+                                 "session_key": r["session_key"]})
     return out
 
 
@@ -802,7 +810,8 @@ async def get_run(run_id: str, user_id: str) -> RunResponse | None:
         # photo_paths는 본인 상세에서만 — 서명된 photos와 같은 순서(kept_paths).
         # 편집 시 PATCH /runs {photos}에 재사용(Ivan own-run 사진 편집 블로커 해제).
         return RunDetailResponse(**{k: v for k, v in row.items()
-                                    if k not in ("photos", "crew_id", "session_key")},
+                                    if k not in ("photos", "crew_id", "session_key",
+                                                 "show_crew")},
                                  photo_paths=kept_paths, **common)
 
     # 타인: 화이트리스트 + route_id는 연결 코스가 public일 때만 (프로브 차단)
@@ -1390,34 +1399,24 @@ _ACTIVITY_SELECT = ("id, user_id, ran_at, distance_km, duration_sec, "
                     "avg_pace_sec_per_km, route_id, title, area, photos")
 
 
-async def _k1_crew_names(run_ids: list[str]) -> dict[str, str]:
-    """K1 퍼블릭 피드 크루 배너(2026-08-01, 런별 유저 초이스) — {run_id: 실명}.
-
-    실명 조건: 크루 태그런 AND show_crew=true AND 크루 is_public=true.
-    비공개 크루는 플래그 무관 미노출(오너 하드 게이트 — A-룰 원칙, 설정은
-    허용·효과만 게이트). 미해당 run은 dict에 없음(→ crew_name null).
-    고정 배치 ≤2쿼리(runs 게이트 데이터 + crews) — N+1 없음.
-    show_crew 컬럼 미적용 환경(SQL 선실행 전·롤백)은 42703 → 전부 null 폴백.
-    """
+async def _k1_crew_names(run_ids: list[str], viewer_id: str | None) -> dict[str, str]:
+    """피드류 크루 배너 — {run_id: 실명}. 통일 게이트(_crew_session_fields)에
+    위임(2026-08-03): 크루원 뷰어는 옵트인 무관 표시, 타인은 공개 AND 옵트인.
+    행 조회 1 + 게이트 ≤2 = 고정 ≤3쿼리. show_crew 컬럼 미적용 환경(롤백)은
+    42703 → 전부 null 폴백."""
     if not run_ids:
         return {}
     supabase = get_supabase_admin()
     try:
         res = await asyncio.to_thread(
-            lambda: supabase.table("runs").select("id, crew_id, show_crew")
+            lambda: supabase.table("runs")
+            .select("id, user_id, crew_id, session_key, show_crew")
             .in_("id", run_ids).not_.is_("crew_id", "null").execute())
     except APIError:
         logger.warning("show_crew 컬럼 미적용 — 크루 배너 전부 null 폴백")
         return {}
-    tagged = [r for r in res.data if r.get("crew_id") and r.get("show_crew")]
-    if not tagged:
-        return {}
-    crew_ids = list({r["crew_id"] for r in tagged})
-    cres = await asyncio.to_thread(
-        lambda: supabase.table("crews").select("id, name, is_public")
-        .in_("id", crew_ids).eq("is_public", True).execute())
-    names = {c["id"]: c["name"] for c in cres.data}   # 공개 크루만 — 하드 게이트
-    return {r["id"]: names[r["crew_id"]] for r in tagged if r["crew_id"] in names}
+    fields = await _crew_session_fields(res.data, viewer_id)
+    return {rid: f["crew_name"] for rid, f in fields.items() if f["crew_name"]}
 
 
 async def _build_activity_items(
@@ -1458,7 +1457,7 @@ async def _build_activity_items(
         _signed_photo_urls([p for p in firsts.values() if p]),
         _polyline_thumbs(run_ids),
         profile_service.feed_flags_batch([r["user_id"] for r in rows]),
-        _k1_crew_names(run_ids),
+        _k1_crew_names(run_ids, viewer_id),
     )
     return [
         ActivityFeedItem(
@@ -1686,7 +1685,8 @@ async def list_user_runs(
         return {row["id"]: row["summary"] for row in r.data}
 
     firsts = {r["id"]: (r.get("photos") or [None])[0] for r in rows}
-    brief, summaries, kudos_counts, my_kudos, comment_counts, signed, thumbs = await asyncio.gather(
+    (brief, summaries, kudos_counts, my_kudos, comment_counts, signed, thumbs,
+     crew_names) = await asyncio.gather(
         profile_service.get_profile_briefs([target_id]),
         _public_route_summaries(),
         _kudos_counts(run_ids),
@@ -1694,11 +1694,14 @@ async def list_user_runs(
         _comment_counts(run_ids),
         _signed_photo_urls([p for p in firsts.values() if p]),
         _polyline_thumbs(run_ids),
+        # 크루 배너 — 통일 게이트(2026-08-03, 공백 수리: 제3 빌더가 게이트 미경유)
+        _k1_crew_names(run_ids, caller_id),
     )
     is_own = caller_id == target_id
     return [
         ActivityFeedItem(
             run_id=row["id"],
+            crew_name=crew_names.get(row["id"]),
             user_id=row["user_id"],
             nickname=brief.get(target_id, {}).get("nickname"),
             avatar_url=brief.get(target_id, {}).get("avatar_url"),
@@ -1898,7 +1901,7 @@ async def list_runs(
     )
     return [
         RunResponse(**{k: v for k, v in row.items()
-                       if k not in ("photos", "crew_id", "session_key")},
+                       if k not in ("photos", "crew_id", "session_key", "show_crew")},
                     **crew_fields[row["id"]],
                     has_track=row["id"] in tracks,
                     splits=tracks.get(row["id"]), kudos_count=kudos.get(row["id"], 0),

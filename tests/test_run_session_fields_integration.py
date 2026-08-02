@@ -82,12 +82,14 @@ def sb_crew(owner, name, is_public):
     return cid
 
 
-def sb_run(uid, title, crew=None, skey=None):
+def sb_run(uid, title, crew=None, skey=None, show=None):
     body = {"user_id": uid, "distance_km": 3.0, "duration_sec": 1200,
             "visibility": "public", "title": title}
     if crew:
         body["crew_id"] = crew
         body["session_key"] = skey
+    if show is not None:
+        body["show_crew"] = show
     r = httpx.post(f"{_SB}/rest/v1/runs", headers={**_ADM, "Prefer": "return=representation"},
                    json=body, timeout=30)
     r.raise_for_status()
@@ -107,8 +109,9 @@ def run_tests():
                timeout=30).raise_for_status()
     k_priv = f"c:{cpriv}:2026-08-01"
     k_pub = f"c:{cpub}:2026-08-01"
+    # 통일 규칙(2026-08-03): 타인 노출은 공개 AND show_crew — 공개 런은 옵트인 설정
     r_priv = sb_run(o, f"rsf-{TS}-priv", crew=cpriv, skey=k_priv)
-    r_pub = sb_run(o, f"rsf-{TS}-pub", crew=cpub, skey=k_pub)
+    r_pub = sb_run(o, f"rsf-{TS}-pub", crew=cpub, skey=k_pub, show=True)
     r_plain = sb_run(o, f"rsf-{TS}-plain")
 
     cl = TestClient(app)
@@ -149,7 +152,8 @@ def run_tests():
     d = r.json()
     assert (d["crew_id"] is None and d["crew_name"] is None
             and d["session_key"] is None and d["session_participant_count"] is None), d
-    ok("run은 보이되 크루 문맥 4필드 완전 은닉")
+    assert d["show_crew"] is None, "타인에겐 플래그도 null(추론 누출 차단, 2026-08-03)"
+    ok("run은 보이되 크루 문맥 4필드+플래그 완전 은닉")
 
     print("\n[5. 비크루원 × 공개 크루 — 노출]")
     d = api("GET", f"/runs/{r_pub}", tok_x).json()

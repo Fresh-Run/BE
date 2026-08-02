@@ -162,8 +162,8 @@ def run_tests():
     assert feed[r_on_pub]["crew_name"] == f"shc-pub-{TS}", "토글 ON 복원"
     ok("PATCH false→null, true→실명 왕복")
 
-    print("\n[6. 쿼리 고정 — runs 1 + crews ≤1]")
-    calls = {"runs": 0, "crews": 0}
+    print("\n[6. 쿼리 고정 — runs 1 + crews 1 + members ≤1 (통일 게이트 2026-08-03)]")
+    calls = {"runs": 0, "crews": 0, "crew_members": 0}
     real = run_service.get_supabase_admin()
 
     class Proxy:
@@ -175,13 +175,17 @@ def run_tests():
     orig = run_service.get_supabase_admin
     run_service.get_supabase_admin = lambda: Proxy()
     try:
-        asyncio.run(run_service._k1_crew_names([r_on_pub, r_on_priv, r_def_pub, plain]))
-        assert calls == {"runs": 1, "crews": 1}, calls
-        asyncio.run(run_service._k1_crew_names([plain]))
-        assert calls == {"runs": 2, "crews": 1}, calls   # 태그 0 → crews 스킵
+        asyncio.run(run_service._k1_crew_names(
+            [r_on_pub, r_on_priv, r_def_pub, plain], o))   # 본인 뷰어 — 멤버십 스킵
+        assert calls == {"runs": 1, "crews": 1, "crew_members": 0}, calls
+        asyncio.run(run_service._k1_crew_names(
+            [r_on_pub, r_on_priv, r_def_pub, plain], v))   # 타인 뷰어 — +1
+        assert calls == {"runs": 2, "crews": 2, "crew_members": 1}, calls
+        asyncio.run(run_service._k1_crew_names([plain], v))  # 태그 0 → 게이트 조기 종료
+        assert calls == {"runs": 3, "crews": 2, "crew_members": 1}, calls
     finally:
         run_service.get_supabase_admin = orig
-    ok("혼합 4런 → runs 1+crews 1 · 비크루만 → crews 스킵 — 행 수 무관 고정")
+    ok("본인 2쿼리 · 타인 3쿼리 · 비크루만 1쿼리 — 행 수 무관 고정")
 
 
 def cleanup():
