@@ -502,6 +502,14 @@ async def _resolve_station(client: httpx.AsyncClient, lat: float, lng: float) ->
         params={"tmX": tm_x, "tmY": tm_y, "returnType": "json", "ver": "1.1",
                 "serviceKey": _airkorea_key()},
     )
+    if ns.status_code != 200:
+        # 원인 확정용 관측(2026-08-03 승인) — 포털 에러 본문에 사유 코드가 담긴다.
+        # 키 에코 대비 양형(원문·디코드) 마스킹 후 앞 200자만.
+        body = (ns.text[:400]
+                .replace(settings.airkorea_api_key, "<key>")
+                .replace(_airkorea_key(), "<key>"))[:200]
+        logger.warning("에어코리아 근접 측정소 비200 — status %s body %r",
+                       ns.status_code, body)
     ns.raise_for_status()
     items = (((ns.json().get("response") or {}).get("body") or {}).get("items")) or []
     name = items[0].get("stationName") if items else None

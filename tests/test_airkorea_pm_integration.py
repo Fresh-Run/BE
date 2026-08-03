@@ -88,6 +88,8 @@ def run_tests():
              "pm10Grade": "1", "pm25Grade": "2", "mangName": "도시대기"}]}}}
 
         class _FR:
+            status_code = 200
+            text = ""
             def __init__(self, payload): self._p = payload
             def raise_for_status(self): pass
             def json(self): return self._p
@@ -104,6 +106,40 @@ def run_tests():
         assert got == (21.0, 24.0), f"(pm25, pm10) 실물 파싱: {got}"
         assert ws._station_cache, "측정소 캐시 적재"
         ok("실물 shape 체인: 중구 측정소 → (pm25 21.0, pm10 24.0) · Flag null 통과")
+
+        print("\n[U-4 비200 관측 — 본문 로깅+키 마스킹+폴백 불변]")
+        import logging
+        records = []
+
+        class _Cap(logging.Handler):
+            def emit(self, rec): records.append(rec.getMessage())
+
+        cap = _Cap()
+        logging.getLogger("app.services.weather_service").addHandler(cap)
+        SECRET = "MzP%2FFAKEKEY%3D%3D"
+        settings.airkorea_api_key = SECRET
+
+        class _FR400:
+            status_code = 400
+            text = '{"error":"LIMITED_..."} serviceKey=' + SECRET
+            def raise_for_status(self):
+                import httpx as _h
+                raise _h.HTTPStatusError("400", request=None, response=None)
+            def json(self): return {}
+
+        class FC400:
+            async def get(self, url, params=None, headers=None):
+                if "transcoord" in url: return _FR(FX_TRANSCOORD)
+                return _FR400()
+
+        ws._station_cache.clear()
+        got = asyncio.run(ws._fetch_airkorea(FC400(), 37.10, 127.10))
+        logging.getLogger("app.services.weather_service").removeHandler(cap)
+        assert got is None, "비200 → None(폴백 경로 불변)"
+        obs = [m for m in records if "비200" in m]
+        assert obs and "400" in obs[0], records
+        assert SECRET not in obs[0] and "<key>" in obs[0], "키 마스킹 실패"
+        ok("400 본문 로깅 ✓ 키 → <key> 마스킹 ✓ 반환 None(폴백) ✓")
 
         print("\n[P-1 플래그 OFF(기본) — 현행 100%]")
         settings.airkorea_enabled = False
