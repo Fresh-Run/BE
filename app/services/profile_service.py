@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 from datetime import datetime, timezone
 
 from postgrest.exceptions import APIError
@@ -576,6 +577,11 @@ async def suggested_users(viewer_id: str, limit: int = 20) -> list[dict]:
             area_of[u] = r["area"]     # 최근 public run의 area
     rows.sort(key=lambda r: r.get("created_at") or "", reverse=True)       # 최근 가입순
     rows.sort(key=lambda r: run_count.get(r["user_id"], 0), reverse=True)  # 안정 정렬로 1순위
+    # rank-select 후 shuffle(2026-08-03, Ivan 트리거 앞당김 승인) — 선발(랭킹
+    # ×limit)은 불변, **표시 순서만** 요청별 랜덤. 마운트-원스 소비 특성상
+    # 세션별 신선도("매 세션 같은 얼굴 같은 순서 = 레일 사망" 필드 근거).
+    selected = rows[:limit]
+    random.shuffle(selected)
     return [
         {"user_id": r["user_id"], "nickname": r["nickname"],
          "avatar_url": r["avatar_url"],
@@ -583,7 +589,7 @@ async def suggested_users(viewer_id: str, limit: int = 20) -> list[dict]:
          "is_following": False,
          "area": area_of.get(r["user_id"]),
          "public_run_count": run_count.get(r["user_id"], 0)}
-        for r in rows[:limit]
+        for r in selected
     ]
 
 
