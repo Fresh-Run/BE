@@ -15,6 +15,7 @@ import time
 from datetime import datetime, timezone
 
 import httpx
+import urllib.parse
 
 from app.core.config import settings
 from app.models.schemas import (
@@ -436,15 +437,23 @@ def _uv_at_response_time(
 
 
 # ── 에어코리아 실측 PM (AIR_QUALITY_SOURCE_DESIGN, 오너 승인 2026-07-31) ──
-# ⚠️ 문서 기반 구현 — 실채집 검증 전(공공데이터포털 개편으로 키 미발급).
-# 응답 필드명·결측 표기는 공식 문서 기준이며, 키 도착 후 실프로브 1회로
-# fixture를 채집해 TODO 지점을 대조·보정한다. 그 전까지 플래그 OFF 고정.
+# 실채집 검증 완료(2026-08-03 광화문 실프로브): items 경로(response.body.items)·
+# 필드명(stationName/pm10Value/pm25Value/*Flag — 정상 시 Flag는 null) 실물 일치.
+# 결측 실물은 정상 시간대라 미채집 — "-"·음수·Flag 방어는 문서 기준 유지
+# (실결측 관측 시 fixture 보강). 키는 Encoding/Decoding 양형 지원(_airkorea_key).
 
 _AIRKOREA_BASE = "https://apis.data.go.kr/B552584"
 _KOREA_BBOX = (33.0, 39.0, 124.0, 132.0)   # KoreaCoordinate와 동일 상수
 _STATION_TTL_SEC = 24 * 3600.0
 # {그리드: (expires_at_monotonic, stationName)} — 측정소는 사실상 불변이라 24h.
 _station_cache: dict[tuple[float, float], tuple[float, str]] = {}
+
+
+def _airkorea_key() -> str:
+    """포털 키 양형 지원 — Encoding형(% 포함)이면 디코드해 httpx가 1회만
+    인코딩하게(이중 인코딩 인증 실패 방지 — 2026-08-03 실채집 검증 방식)."""
+    k = settings.airkorea_api_key
+    return urllib.parse.unquote(k) if "%" in k else k
 
 
 def _in_korea(lat: float, lng: float) -> bool:
@@ -456,8 +465,8 @@ def _parse_airkorea_value(raw, flag) -> float | None:
     """측정값 방어 파싱 — 결측이면 None(폴백 트리거).
 
     문서 기준 결측: 값 "-"(통신장애) · 음수(-999류) · *Flag 비어있지 않음
-    ("점검및교정"/"장비점검"/"자료이상"/"통신장애").
-    TODO(실채집): 실물 fixture로 결측 표기 전수 대조 — 문서 외 표기 발견 시 보강.
+    ("점검및교정"/"장비점검"/"자료이상"/"통신장애"). 정상 시 Flag는 null(실채집).
+    결측 실물은 미채집(정상 시간대) — 문서 기준 유지, 실결측 관측 시 보강.
     """
     if flag:
         return None
@@ -487,11 +496,11 @@ async def _resolve_station(client: httpx.AsyncClient, lat: float, lng: float) ->
         return None
     tm_x, tm_y = docs[0]["x"], docs[0]["y"]
     # 2) 근접 측정소 (거리순 1건)
-    # TODO(실채집): items 경로(response.body.items)·필드명(stationName) 실물 대조.
+    # 실채집 일치(2026-08-03): response.body.items[list]·stationName·tm(km) 확인.
     ns = await client.get(
         f"{_AIRKOREA_BASE}/MsrstnInfoInqireSvc/getNearbyMsrstnList",
         params={"tmX": tm_x, "tmY": tm_y, "returnType": "json", "ver": "1.1",
-                "serviceKey": settings.airkorea_api_key},
+                "serviceKey": _airkorea_key()},
     )
     ns.raise_for_status()
     items = (((ns.json().get("response") or {}).get("body") or {}).get("items")) or []
@@ -508,8 +517,8 @@ async def _fetch_airkorea(
     """에어코리아 실시간 측정값 (pm25, pm10) µg — best-effort, 실패는 None.
 
     grade는 khaiGrade를 쓰지 않고 상위에서 기존 breakpoint 표로 산출
-    (매핑 단일 소스 — 설계 §8). TODO(실채집): pm10Value/pm25Value/*Flag
-    필드명·dataTerm 응답 구조 실물 대조."""
+    (매핑 단일 소스 — 설계 §8). 실채집 일치(2026-08-03): pm10Value/pm25Value
+    문자열·정상 시 *Flag null(falsy라 파서 통과) 확인."""
     try:
         station = await _resolve_station(client, lat, lng)
         if not station:
@@ -518,7 +527,7 @@ async def _fetch_airkorea(
             f"{_AIRKOREA_BASE}/ArpltnInforInqireSvc/getMsrstnAcctoRltmMesureDnsty",
             params={"stationName": station, "dataTerm": "DAILY", "pageNo": 1,
                     "numOfRows": 1, "returnType": "json", "ver": "1.3",
-                    "serviceKey": settings.airkorea_api_key},
+                    "serviceKey": _airkorea_key()},
         )
         res.raise_for_status()
         items = (((res.json().get("response") or {}).get("body") or {}).get("items")) or []

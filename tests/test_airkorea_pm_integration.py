@@ -1,7 +1,7 @@
 """
 Integration: 에어코리아 실측 PM 소스 (AIR_QUALITY_SOURCE_DESIGN, 2026-07-31)
 
-⚠️ 문서 기반 mock — 실채집 검증 전(키 미발급, 포털 개편 —8/2). 에어코리아 실호출 0.
+실채집 검증 완료(2026-08-03 광화문) — U-3가 실물 shape fixture. 에어코리아 실호출 0.
 
 U-1 결측 파싱("-"·-999·Flag·쓰레기) — 전부 None
 U-2 bbox 분기(서울/뉴욕/경계)
@@ -12,6 +12,8 @@ P-4 ON+한국+전항 결측 — 폴백 / 부분 결측 — 실측 채택(있는 
 P-5 ON+해외 — 에어코리아 미호출·OpenWeather 직행
 P-6 측정소 24h 캐시 — 응답 캐시 클리어 후 재호출에도 resolve 1회
 P-7 계약 불변 — 응답 키 세트 동일
+
+U-3 실물 fixture — 2026-08-03 광화문 실채집 shape로 체인 파싱 검증(FakeClient)
 
 Run: python tests/test_airkorea_pm_integration.py  (외부 콜 0·DB 무접촉)
 """
@@ -73,6 +75,35 @@ def run_tests():
         assert ws._in_korea(33.0, 124.0) and ws._in_korea(39.0, 132.0)
         assert not ws._in_korea(32.99, 127.0) and not ws._in_korea(37.5, 132.01)
         ok("서울 O · 뉴욕 X · 경계 포함/직외 정확")
+
+        print("\n[U-3 실물 fixture — 실채집 shape 체인 파싱(2026-08-03 광화문)]")
+        # 실프로브 캡처 축약본 — 필드명·구조 실물 그대로(값만 대표치)
+        FX_TRANSCOORD = {"documents": [{"x": 198110.6, "y": 452290.1}]}
+        FX_NEARBY = {"response": {"body": {"totalCount": 3, "pageNo": 1, "numOfRows": 10,
+                     "items": [{"stationCode": "111121", "tm": 0.8,
+                                "addr": "서울 중구 덕수궁길 15", "stationName": "중구"}]}}}
+        FX_MEASURE = {"response": {"body": {"items": [
+            {"dataTime": "2026-08-03 15:00", "pm10Value": "24", "pm10Flag": None,
+             "pm25Value": "21", "pm25Flag": None, "khaiGrade": "2",
+             "pm10Grade": "1", "pm25Grade": "2", "mangName": "도시대기"}]}}}
+
+        class _FR:
+            def __init__(self, payload): self._p = payload
+            def raise_for_status(self): pass
+            def json(self): return self._p
+
+        class FakeClient:
+            async def get(self, url, params=None, headers=None):
+                if "transcoord" in url: return _FR(FX_TRANSCOORD)
+                if "getNearbyMsrstnList" in url: return _FR(FX_NEARBY)
+                if "getMsrstnAcctoRltmMesureDnsty" in url: return _FR(FX_MEASURE)
+                raise AssertionError(url)
+
+        ws._station_cache.clear()
+        got = asyncio.run(ws._fetch_airkorea(FakeClient(), 37.5729, 126.9794))
+        assert got == (21.0, 24.0), f"(pm25, pm10) 실물 파싱: {got}"
+        assert ws._station_cache, "측정소 캐시 적재"
+        ok("실물 shape 체인: 중구 측정소 → (pm25 21.0, pm10 24.0) · Flag null 통과")
 
         print("\n[P-1 플래그 OFF(기본) — 현행 100%]")
         settings.airkorea_enabled = False
