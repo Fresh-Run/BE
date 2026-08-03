@@ -14,6 +14,7 @@ P-6 측정소 24h 캐시 — 응답 캐시 클리어 후 재호출에도 resolve
 P-7 계약 불변 — 응답 키 세트 동일
 
 U-3 실물 fixture — 2026-08-03 광화문 실채집 shape로 체인 파싱 검증(FakeClient)
+R-1~3 재시도 — 1차 실패→2차 채택 / 2연패 폴백 / 200 시 단일 콜(비용 방어)
 
 Run: python tests/test_airkorea_pm_integration.py  (외부 콜 0·DB 무접촉)
 """
@@ -140,6 +141,59 @@ def run_tests():
         assert obs and "400" in obs[0], records
         assert SECRET not in obs[0] and "<key>" in obs[0], "키 마스킹 실패"
         ok("400 본문 로깅 ✓ 키 → <key> 마스킹 ✓ 반환 None(폴백) ✓")
+
+        print("\n[R-1 재시도 — 1차 400 → 2차 200 → 실측 채택]")
+        calls = {"nearby": 0, "measure": 0}
+
+        class _FR400b:
+            status_code = 400
+            text = '{"err":"gw"}'
+            def raise_for_status(self):
+                import httpx as _h
+                raise _h.HTTPStatusError("400", request=None, response=None)
+            def json(self): return {}
+
+        class FCRetry:
+            async def get(self, url, params=None, headers=None):
+                if "transcoord" in url: return _FR(FX_TRANSCOORD)
+                if "getNearbyMsrstnList" in url:
+                    calls["nearby"] += 1
+                    return _FR400b() if calls["nearby"] == 1 else _FR(FX_NEARBY)
+                calls["measure"] += 1
+                return _FR(FX_MEASURE)
+
+        ws._station_cache.clear()
+        got = asyncio.run(ws._fetch_airkorea(FCRetry(), 37.20, 127.20))
+        assert got == (21.0, 24.0), got
+        assert calls == {"nearby": 2, "measure": 1}, calls
+        ok("1차 실패→재시도 200→실측 채택 (nearby 2시도·measure 1시도)")
+
+        print("\n[R-2 2연패 → 폴백(None) — 현행 동일]")
+        class FCFail:
+            def __init__(self): self.n = 0
+            async def get(self, url, params=None, headers=None):
+                if "transcoord" in url: return _FR(FX_TRANSCOORD)
+                self.n += 1
+                return _FR400b()
+        fc = FCFail()
+        ws._station_cache.clear()
+        got = asyncio.run(ws._fetch_airkorea(fc, 37.21, 127.21))
+        assert got is None and fc.n == 2, (got, fc.n)
+        ok("2시도 전패 → None(폴백)·시도 수 정확히 2")
+
+        print("\n[R-3 200 시 단일 콜(비용 방어)]")
+        calls2 = {"nearby": 0, "measure": 0}
+        class FCOk:
+            async def get(self, url, params=None, headers=None):
+                if "transcoord" in url: return _FR(FX_TRANSCOORD)
+                if "getNearbyMsrstnList" in url:
+                    calls2["nearby"] += 1; return _FR(FX_NEARBY)
+                calls2["measure"] += 1; return _FR(FX_MEASURE)
+        ws._station_cache.clear()
+        got = asyncio.run(ws._fetch_airkorea(FCOk(), 37.22, 127.22))
+        assert got == (21.0, 24.0)
+        assert calls2 == {"nearby": 1, "measure": 1}, calls2
+        ok("성공 경로 재시도 0 — 각 1콜 고정")
 
         print("\n[P-1 플래그 OFF(기본) — 현행 100%]")
         settings.airkorea_enabled = False

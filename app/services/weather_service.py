@@ -477,6 +477,35 @@ def _parse_airkorea_value(raw, flag) -> float | None:
     return v if v >= 0 else None
 
 
+async def _airkorea_get(client: httpx.AsyncClient, url: str, params: dict,
+                       label: str) -> httpx.Response:
+    """에어코리아 게이트웨이 간헐 불안정(실측 실패율 ~30% — 400 reason10·504
+    혼재, 2026-08-03 진단) 대응 — 비200·예외 공통 즉시 재시도 1회(합계 2시도).
+    200이면 재시도 없음(비용 방어). 최종 실패는 관측 로그(키 양형 마스킹) 후
+    예외 전파 → 상위 폴백(OpenWeather) 체인 불변."""
+    last_exc: Exception | None = None
+    last_res: httpx.Response | None = None
+    for attempt in (1, 2):
+        try:
+            res = await client.get(url, params=params)
+        except Exception as exc:  # noqa: BLE001 — 다음 시도/폴백
+            logger.warning("에어코리아 %s 예외(시도 %d/2): %s",
+                           label, attempt, type(exc).__name__)
+            last_exc, last_res = exc, None
+            continue
+        if res.status_code == 200:
+            return res
+        body = (res.text[:400]
+                .replace(settings.airkorea_api_key, "<key>")
+                .replace(_airkorea_key(), "<key>"))[:200]
+        logger.warning("에어코리아 %s 비200(시도 %d/2) — status %s body %r",
+                       label, attempt, res.status_code, body)
+        last_exc, last_res = None, res
+    if last_res is not None:
+        last_res.raise_for_status()
+    raise last_exc  # type: ignore[misc]
+
+
 async def _resolve_station(client: httpx.AsyncClient, lat: float, lng: float) -> str | None:
     """그리드→근접 측정소명 (24h 캐시). Kakao transcoord(WGS84→TM, 기존 키)
     → 에어코리아 근접 측정소 목록. 실패 시 None(폴백) — 실패는 캐시하지 않음."""
@@ -497,20 +526,10 @@ async def _resolve_station(client: httpx.AsyncClient, lat: float, lng: float) ->
     tm_x, tm_y = docs[0]["x"], docs[0]["y"]
     # 2) 근접 측정소 (거리순 1건)
     # 실채집 일치(2026-08-03): response.body.items[list]·stationName·tm(km) 확인.
-    ns = await client.get(
-        f"{_AIRKOREA_BASE}/MsrstnInfoInqireSvc/getNearbyMsrstnList",
-        params={"tmX": tm_x, "tmY": tm_y, "returnType": "json", "ver": "1.1",
-                "serviceKey": _airkorea_key()},
-    )
-    if ns.status_code != 200:
-        # 원인 확정용 관측(2026-08-03 승인) — 포털 에러 본문에 사유 코드가 담긴다.
-        # 키 에코 대비 양형(원문·디코드) 마스킹 후 앞 200자만.
-        body = (ns.text[:400]
-                .replace(settings.airkorea_api_key, "<key>")
-                .replace(_airkorea_key(), "<key>"))[:200]
-        logger.warning("에어코리아 근접 측정소 비200 — status %s body %r",
-                       ns.status_code, body)
-    ns.raise_for_status()
+    ns = await _airkorea_get(
+        client, f"{_AIRKOREA_BASE}/MsrstnInfoInqireSvc/getNearbyMsrstnList",
+        {"tmX": tm_x, "tmY": tm_y, "returnType": "json", "ver": "1.1",
+         "serviceKey": _airkorea_key()}, "근접 측정소")
     items = (((ns.json().get("response") or {}).get("body") or {}).get("items")) or []
     name = items[0].get("stationName") if items else None
     if not name:
@@ -531,13 +550,11 @@ async def _fetch_airkorea(
         station = await _resolve_station(client, lat, lng)
         if not station:
             return None
-        res = await client.get(
-            f"{_AIRKOREA_BASE}/ArpltnInforInqireSvc/getMsrstnAcctoRltmMesureDnsty",
-            params={"stationName": station, "dataTerm": "DAILY", "pageNo": 1,
-                    "numOfRows": 1, "returnType": "json", "ver": "1.3",
-                    "serviceKey": _airkorea_key()},
-        )
-        res.raise_for_status()
+        res = await _airkorea_get(
+            client, f"{_AIRKOREA_BASE}/ArpltnInforInqireSvc/getMsrstnAcctoRltmMesureDnsty",
+            {"stationName": station, "dataTerm": "DAILY", "pageNo": 1,
+             "numOfRows": 1, "returnType": "json", "ver": "1.3",
+             "serviceKey": _airkorea_key()}, "실시간 측정값")
         items = (((res.json().get("response") or {}).get("body") or {}).get("items")) or []
         if not items:
             return None
