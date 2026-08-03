@@ -487,7 +487,10 @@ async def _airkorea_get(client: httpx.AsyncClient, url: str, params: dict,
     last_res: httpx.Response | None = None
     for attempt in (1, 2):
         try:
-            res = await client.get(url, params=params)
+            # 전용 타임아웃 3s(2026-08-03 승인) — 게이트웨이 timeout 모드에서
+            # 최악 지연을 콜당 3×2=6s로 캡. 요청 단위 오버라이드라 같은 클라이언트의
+            # 타 콜(OpenWeather·Kakao — 기본 _TIMEOUT 10s)은 무영향.
+            res = await client.get(url, params=params, timeout=3.0)
         except Exception as exc:  # noqa: BLE001 — 다음 시도/폴백
             logger.warning("에어코리아 %s 예외(시도 %d/2): %s",
                            label, attempt, type(exc).__name__)
