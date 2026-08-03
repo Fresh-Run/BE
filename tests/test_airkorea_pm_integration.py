@@ -62,6 +62,13 @@ def run_tests():
             return val
         return f
 
+    # 우회(2026-08-03) 후 data.go.kr 응답은 _airkorea_transport 심으로 주입.
+    # FakeClient는 Kakao transcoord만 담당(mock 지점 조정 내역 — 커밋 메시지 참조).
+    orig_transport = ws._airkorea_transport
+
+    def set_transport(fn):
+        ws._airkorea_transport = fn
+
     try:
         print("[U-1 결측 파싱 — 문서 기준 방어]")
         p = ws._parse_airkorea_value
@@ -98,10 +105,14 @@ def run_tests():
         class FakeClient:
             async def get(self, url, params=None, headers=None, timeout=None):
                 if "transcoord" in url: return _FR(FX_TRANSCOORD)
-                if "getNearbyMsrstnList" in url: return _FR(FX_NEARBY)
-                if "getMsrstnAcctoRltmMesureDnsty" in url: return _FR(FX_MEASURE)
                 raise AssertionError(url)
 
+        def transport_ok(url, params):
+            if "getNearbyMsrstnList" in url: return _FR(FX_NEARBY)
+            if "getMsrstnAcctoRltmMesureDnsty" in url: return _FR(FX_MEASURE)
+            raise AssertionError(url)
+
+        set_transport(transport_ok)
         ws._station_cache.clear()
         got = asyncio.run(ws._fetch_airkorea(FakeClient(), 37.5729, 126.9794))
         assert got == (21.0, 24.0), f"(pm25, pm10) 실물 파싱: {got}"
@@ -128,13 +139,9 @@ def run_tests():
                 raise _h.HTTPStatusError("400", request=None, response=None)
             def json(self): return {}
 
-        class FC400:
-            async def get(self, url, params=None, headers=None, timeout=None):
-                if "transcoord" in url: return _FR(FX_TRANSCOORD)
-                return _FR400()
-
+        set_transport(lambda url, params: _FR400())
         ws._station_cache.clear()
-        got = asyncio.run(ws._fetch_airkorea(FC400(), 37.10, 127.10))
+        got = asyncio.run(ws._fetch_airkorea(FakeClient(), 37.10, 127.10))
         logging.getLogger("app.services.weather_service").removeHandler(cap)
         assert got is None, "비200 → None(폴백 경로 불변)"
         obs = [m for m in records if "비200" in m]
@@ -153,69 +160,66 @@ def run_tests():
                 raise _h.HTTPStatusError("400", request=None, response=None)
             def json(self): return {}
 
-        class FCRetry:
-            async def get(self, url, params=None, headers=None, timeout=None):
-                if "transcoord" in url: return _FR(FX_TRANSCOORD)
-                if "getNearbyMsrstnList" in url:
-                    calls["nearby"] += 1
-                    return _FR400b() if calls["nearby"] == 1 else _FR(FX_NEARBY)
-                calls["measure"] += 1
-                return _FR(FX_MEASURE)
+        def transport_retry(url, params):
+            if "getNearbyMsrstnList" in url:
+                calls["nearby"] += 1
+                return _FR400b() if calls["nearby"] == 1 else _FR(FX_NEARBY)
+            calls["measure"] += 1
+            return _FR(FX_MEASURE)
 
+        set_transport(transport_retry)
         ws._station_cache.clear()
-        got = asyncio.run(ws._fetch_airkorea(FCRetry(), 37.20, 127.20))
+        got = asyncio.run(ws._fetch_airkorea(FakeClient(), 37.20, 127.20))
         assert got == (21.0, 24.0), got
         assert calls == {"nearby": 2, "measure": 1}, calls
         ok("1차 실패→재시도 200→실측 채택 (nearby 2시도·measure 1시도)")
 
         print("\n[R-2 2연패 → 폴백(None) — 현행 동일]")
-        class FCFail:
-            def __init__(self): self.n = 0
-            async def get(self, url, params=None, headers=None, timeout=None):
-                if "transcoord" in url: return _FR(FX_TRANSCOORD)
-                self.n += 1
-                return _FR400b()
-        fc = FCFail()
+        fail_n = {"n": 0}
+        def transport_fail(url, params):
+            fail_n["n"] += 1
+            return _FR400b()
+        set_transport(transport_fail)
         ws._station_cache.clear()
-        got = asyncio.run(ws._fetch_airkorea(fc, 37.21, 127.21))
-        assert got is None and fc.n == 2, (got, fc.n)
+        got = asyncio.run(ws._fetch_airkorea(FakeClient(), 37.21, 127.21))
+        assert got is None and fail_n["n"] == 2, (got, fail_n["n"])
         ok("2시도 전패 → None(폴백)·시도 수 정확히 2")
 
         print("\n[R-3 200 시 단일 콜(비용 방어)]")
         calls2 = {"nearby": 0, "measure": 0}
-        class FCOk:
-            async def get(self, url, params=None, headers=None, timeout=None):
-                if "transcoord" in url: return _FR(FX_TRANSCOORD)
-                if "getNearbyMsrstnList" in url:
-                    calls2["nearby"] += 1; return _FR(FX_NEARBY)
-                calls2["measure"] += 1; return _FR(FX_MEASURE)
+        def transport_ok2(url, params):
+            if "getNearbyMsrstnList" in url:
+                calls2["nearby"] += 1; return _FR(FX_NEARBY)
+            calls2["measure"] += 1; return _FR(FX_MEASURE)
+        set_transport(transport_ok2)
         ws._station_cache.clear()
-        got = asyncio.run(ws._fetch_airkorea(FCOk(), 37.22, 127.22))
+        got = asyncio.run(ws._fetch_airkorea(FakeClient(), 37.22, 127.22))
         assert got == (21.0, 24.0)
         assert calls2 == {"nearby": 1, "measure": 1}, calls2
         ok("성공 경로 재시도 0 — 각 1콜 고정")
 
         print("\n[R-4 전용 타임아웃 3s — 에어코리아만·타 콜 무영향·timeout 폴백]")
-        seen = {"airkorea_timeout": [], "kakao_timeout": []}
+        seen = {"kakao_timeout": [], "tries": 0}
 
-        class FCTimeout:
-            def __init__(self): self.n = 0
+        class FCKakao:
             async def get(self, url, params=None, headers=None, timeout=None):
-                if "transcoord" in url:
-                    seen["kakao_timeout"].append(timeout)
-                    return _FR(FX_TRANSCOORD)
-                seen["airkorea_timeout"].append(timeout)
-                self.n += 1
-                import httpx as _h
-                raise _h.ReadTimeout("gw timeout")   # 게이트웨이 timeout 모드 재현
+                assert "transcoord" in url
+                seen["kakao_timeout"].append(timeout)
+                return _FR(FX_TRANSCOORD)
 
-        fc = FCTimeout()
+        def transport_timeout(url, params):
+            seen["tries"] += 1
+            import httpx as _h
+            raise _h.ReadTimeout("gw timeout")   # 게이트웨이 timeout 모드 재현
+
+        set_transport(transport_timeout)
         ws._station_cache.clear()
-        got = asyncio.run(ws._fetch_airkorea(fc, 37.23, 127.23))
-        assert got is None and fc.n == 2, (got, fc.n)
-        assert seen["airkorea_timeout"] == [3.0, 3.0], seen
+        got = asyncio.run(ws._fetch_airkorea(FCKakao(), 37.23, 127.23))
+        assert got is None and seen["tries"] == 2, (got, seen)
         assert seen["kakao_timeout"] == [None], "Kakao는 타임아웃 오버라이드 없음(클라이언트 기본)"
-        ok("timeout 2시도(각 3.0s) → 폴백 ✓ Kakao 무영향(None=기본) ✓")
+        # 지연 캡 구조 증명: 전용 상수 3.0 × 최대 2시도 = 6s (콜당)
+        assert ws._AIRKOREA_TIMEOUT == 3.0
+        ok("timeout 2시도 → 폴백 ✓ 캡 3.0×2 ✓ Kakao 무영향(None=기본) ✓")
 
         print("\n[P-1 플래그 OFF(기본) — 현행 100%]")
         settings.airkorea_enabled = False
@@ -313,6 +317,7 @@ def run_tests():
         (ws._fetch_current, ws._fetch_air, ws._fetch_uv, ws._fetch_airkorea,
          ws._resolve_station, settings.openweather_api_key,
          settings.airkorea_enabled, settings.airkorea_api_key) = orig
+        ws._airkorea_transport = orig_transport
         ws._cache.clear()
         ws._station_cache.clear()
         print("\n[cleanup] mock 원복·캐시 클리어 — DB 무접촉·잔여 0")

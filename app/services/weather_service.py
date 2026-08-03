@@ -477,20 +477,39 @@ def _parse_airkorea_value(raw, flag) -> float | None:
     return v if v >= 0 else None
 
 
+_AIRKOREA_TIMEOUT = 3.0   # 전용 타임아웃 — 최악 지연 캡 = 3×2시도 = 6s
+
+
+def _mask_key(text: str) -> str:
+    return (text.replace(settings.airkorea_api_key, "<key>")
+            .replace(_airkorea_key(), "<key>"))
+
+
+def _airkorea_transport(url: str, params: dict) -> httpx.Response:
+    """동기 전송 심(2026-08-03 승인 우회) — **콜마다 새 동기 클라이언트**로
+    공유 풀·커넥션 상태를 원천 배제(uvicorn 서빙 프로세스 내 요청만 포털이
+    400 거부하던 격리 결과 대응 — 동일 바이트 URL이 ssh에선 성공).
+    to_thread로 호출된다(supabase-py 동형 관례). 테스트는 이 심을 패치.
+    요청 관측: 전송 직전 실제 헤더·최종 URL(키 마스킹) — 원인 실체 기록용."""
+    with httpx.Client(timeout=_AIRKOREA_TIMEOUT) as c:
+        req = c.build_request("GET", url, params=params)
+        logger.info("에어코리아 요청 관측 — url=%s headers=%s",
+                    _mask_key(str(req.url)), dict(req.headers))
+        return c.send(req)
+
+
 async def _airkorea_get(client: httpx.AsyncClient, url: str, params: dict,
                        label: str) -> httpx.Response:
-    """에어코리아 게이트웨이 간헐 불안정(실측 실패율 ~30% — 400 reason10·504
-    혼재, 2026-08-03 진단) 대응 — 비200·예외 공통 즉시 재시도 1회(합계 2시도).
-    200이면 재시도 없음(비용 방어). 최종 실패는 관측 로그(키 양형 마스킹) 후
-    예외 전파 → 상위 폴백(OpenWeather) 체인 불변."""
+    """에어코리아 호출 공통 — 비200·예외 즉시 재시도 1회(합계 2시도), 200이면
+    재시도 없음(비용 방어). 전송은 _airkorea_transport(동기+새 클라이언트,
+    to_thread) — client 인자는 Kakao 등 타 콜용으로 상위가 쥐고 있을 뿐
+    여기선 미사용(우회 2026-08-03). 최종 실패는 관측 로그 후 예외 전파 →
+    상위 폴백(OpenWeather) 체인 불변."""
     last_exc: Exception | None = None
     last_res: httpx.Response | None = None
     for attempt in (1, 2):
         try:
-            # 전용 타임아웃 3s(2026-08-03 승인) — 게이트웨이 timeout 모드에서
-            # 최악 지연을 콜당 3×2=6s로 캡. 요청 단위 오버라이드라 같은 클라이언트의
-            # 타 콜(OpenWeather·Kakao — 기본 _TIMEOUT 10s)은 무영향.
-            res = await client.get(url, params=params, timeout=3.0)
+            res = await asyncio.to_thread(_airkorea_transport, url, params)
         except Exception as exc:  # noqa: BLE001 — 다음 시도/폴백
             logger.warning("에어코리아 %s 예외(시도 %d/2): %s",
                            label, attempt, type(exc).__name__)
@@ -498,9 +517,7 @@ async def _airkorea_get(client: httpx.AsyncClient, url: str, params: dict,
             continue
         if res.status_code == 200:
             return res
-        body = (res.text[:400]
-                .replace(settings.airkorea_api_key, "<key>")
-                .replace(_airkorea_key(), "<key>"))[:200]
+        body = _mask_key(res.text[:400])[:200]
         logger.warning("에어코리아 %s 비200(시도 %d/2) — status %s body %r",
                        label, attempt, res.status_code, body)
         last_exc, last_res = None, res
