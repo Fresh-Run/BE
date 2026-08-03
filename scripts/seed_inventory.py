@@ -87,18 +87,34 @@ def coverage(a_pts, b_pts, near=40):
     return 100*hit/len(a)
 
 
-def _load_qa_verdicts() -> dict:
-    """{run_id: 사유} — 오너 QA 기각 원장(scripts/seed_qa_verdicts.json).
-    기각 런은 ★ 후보에서 제외하고 '기각됨'으로 표기(재발굴 방지)."""
+def _load_qa_verdicts() -> tuple[dict, dict]:
+    """오너 QA 기각 원장 로드 — ({run_id: 사유}, {(lat2, lng2): 사유}).
+    run 기각·grid 재제외 모두 ★ 후보에서 제외하고 '기각됨' 표기(재발굴 방지)."""
     import json
     path = os.path.join(os.path.dirname(__file__), "seed_qa_verdicts.json")
     try:
         with open(path) as f:
             data = json.load(f)
-        return {v["run_id"]: v["reason"] for v in data.get("verdicts", [])
-                if v.get("verdict") == "rejected"}
     except FileNotFoundError:
-        return {}
+        return {}, {}
+    runs_r, grids_r = {}, {}
+    for v in data.get("verdicts", []):
+        if v.get("verdict") != "rejected":
+            continue
+        if v.get("type", "run") == "grid":
+            grids_r[tuple(v["grid"])] = v["reason"]
+        else:
+            runs_r[v["run_id"]] = v["reason"]
+    return runs_r, grids_r
+
+
+def _is_rejected(run_id: str, grid, runs_r: dict, grids_r: dict) -> str | None:
+    """기각 사유 반환(미기각이면 None) — run 개별 우선, 다음 격자."""
+    if run_id in runs_r:
+        return runs_r[run_id]
+    if grid is not None and tuple(grid) in grids_r:
+        return grids_r[tuple(grid)]
+    return None
 
 
 def main():
@@ -131,7 +147,7 @@ def main():
     cpolys = [( c["name"], [(p[0], p[1]) if isinstance(p, list) else (p["lat"], p["lng"])
                             for p in c["polyline"]]) for c in canon]
 
-    qa_rejected = _load_qa_verdicts()
+    qa_runs, qa_grids = _load_qa_verdicts()
     real = [r for r in runs if is_real(r["user_id"])]
     print(f"실유저 run: {len(real)}건 (전체 {len(runs)}건, 제외 계정분 {len(runs)-len(real)})")
     rows, seedable = [], []
@@ -155,9 +171,10 @@ def main():
         ok_seed = (r["verification"] == "verified" and (t.get("avg_accuracy_m") or 99) <= 10
                    and (r["distance_km"] or 0) >= 2.0 and best_cov < 50)
         rows.append((r, t, best_cov, best_name, kind))
-        if ok_seed and r["id"] in qa_rejected:
-            print(f"  [기각됨] {nick.get(r['user_id'],'?')} {r['distance_km']}km — "
-                  f"{qa_rejected[r['id']][:60]}")
+        _rej = _is_rejected(r["id"], grid, qa_runs, qa_grids) if ok_seed else None
+        if ok_seed and _rej:
+            print(f"  [기각됨] {nick.get(r['user_id'],'?')} {r['distance_km']}km "
+                  f"{grid} — {_rej[:60]}")
         elif ok_seed:
             seedable.append((r, t, best_cov, best_name, kind, grid, pts))
         print(f"  {nick.get(r['user_id'],'?'):10} | {grid} | {r['distance_km']}km {r['verification']} "

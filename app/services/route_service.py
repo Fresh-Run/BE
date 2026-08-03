@@ -468,13 +468,29 @@ def _serveable_over_cap(scored: list, target_km: float, engine_of: dict) -> list
 
 def _best_in_band(in_band: list, target_km: float, quals: dict):
     """밴드 내 후보 선택 — 1개면 그대로(현행), 복수면 tiebreak
-    [park_coverage desc · zigzag_score asc · retrace asc · 거리 근접 asc].
-    quals: id(route)→(park, zig, retrace). retrace는 스냅 폴리라인 되돌기(Phase 1 C)."""
+    [park desc · zigzag asc · retrace asc · **crossing asc(4순위, 2026-08-03
+    승인 — null은 최후순위)** · 거리 근접 asc].
+    quals: id(route)→(park, zig, retrace, crossing|None).
+    반환 (km, route, crossing_engaged) — engaged는 crossing 축이 실제로 승자를
+    바꿨을 때만 True(개입률 관측용). 상위 3기준 동률이 아닐 땐 기존 선택과
+    바이트 동일(무교란)."""
     if len(in_band) == 1:
-        return in_band[0]
-    return min(in_band, key=lambda t: (
-        -quals[id(t[1])][0], quals[id(t[1])][1], quals[id(t[1])][2],
-        abs(t[0] - target_km)))
+        k, r = in_band[0]
+        return k, r, False
+
+    def _old_key(t):
+        q = quals[id(t[1])]
+        return (-q[0], q[1], q[2], abs(t[0] - target_km))
+
+    def _new_key(t):
+        q = quals[id(t[1])]
+        cross = q[3] if len(q) > 3 else None
+        return (-q[0], q[1], q[2], (cross is None, cross if cross is not None else 0),
+                abs(t[0] - target_km))
+
+    k_old, r_old = min(in_band, key=_old_key)
+    k_new, r_new = min(in_band, key=_new_key)
+    return k_new, r_new, (r_new is not r_old)
 
 
 # ── 반복 생성 dedup (2026-07-27 오너 정책) ──────────────────────────────
@@ -723,6 +739,23 @@ def _filter_conflicting_avoid_tags(
     return [t for t in avoid_tags if t not in dropped]
 
 
+def _redraw_pick_in_band(in_band: list, target_km: float):
+    """재추첨 밴드 내 선택(2026-08-03 승인 ⓑ) — 거리 근접(0.1km 버킷) 1순위,
+    동률이면 longest_retrace_m 낮은 쪽(L tiebreak — Gemini 0콜, CPU 계산만).
+    반환 (km, route, l_engaged) — engaged는 L 축이 승자를 바꿨을 때만 True.
+    0.1 버킷 동률이 아닐 땐 기존 선택(순수 최근접)과 바이트 동일(무교란).
+    배경: hit_redraw 서빙분 L>800이 50%(n=12 실측) — 구제(spur_rescue)가 못
+    닿는 상호 배타 경로라 선택 단계에서 잡는다."""
+    if len(in_band) == 1:
+        k, r = in_band[0]
+        return k, r, False
+    k_old, r_old = min(in_band, key=lambda t: abs(t[0] - target_km))
+    spur = {id(r): _spur_metrics(r.polyline)["longest_retrace_m"] for _, r in in_band}
+    k_new, r_new = min(in_band, key=lambda t: (round(abs(t[0] - target_km), 1),
+                                               spur[id(t[1])]))
+    return k_new, r_new, (r_new is not r_old)
+
+
 async def _adaptive_redraw(req, target_km, measured_ratio, avoid_tags, prefs, lang,
                            radius_center, start_end_km,
                            pool_n: int = _REDRAW_POOL_SIZE):
@@ -800,8 +833,10 @@ async def _adaptive_redraw(req, target_km, measured_ratio, avoid_tags, prefs, la
 
     in_band = [(k, r) for k, r in scored if _within_band(k, target_km)]
     if in_band:
-        _k, best = min(in_band, key=lambda t: abs(t[0] - target_km))
+        _k, best, _l_tb = _redraw_pick_in_band(in_band, target_km)
         meta.update({"redraw_hit": True, "redraw_verdict": "hit"})
+        if _l_tb:
+            meta["l_tiebreak"] = True   # 개입률 관측(2026-08-03)
         _mark_types(best)
         return best, meta
     # in-band 없으면 over-cap missed(v87·spur 게이트 ≤800) — 메인 흐름과 동일 서빙.
@@ -840,7 +875,7 @@ async def _spur_rescue(req, target_km, in_band, best, best_km, quals, spur_of,
                if spur_of.get(id(r), settings.spur_rescue_max_m + 1)
                <= settings.spur_rescue_max_m]
         if low:
-            best_km, best = _best_in_band(low, target_km, quals)
+            best_km, best, _ = _best_in_band(low, target_km, quals)
             rescue["mode"] = "substitute"
             return best, best_km, rescue, None
         v87 = [(k, r) for k, r in scored
@@ -1178,7 +1213,7 @@ async def create_running_route(
             park = max(park, _ANCHOR_PARK_FLOOR)
         retrace, max_gap = _polyline_retrace(r.polyline), _polyline_max_gap_m(r.polyline)
         _spur_of[id(r)] = _spur_metrics(r.polyline)["longest_retrace_m"]
-        quals[id(r)] = (park, zig, retrace)
+        quals[id(r)] = (park, zig, retrace, _crossing_of.get(id(r)))
         cand_quality.append({"km": round(k, 1), "park": park, "zig": zig,
                              "retrace": retrace, "max_gap_m": max_gap,
                              "longest_retrace_m": _spur_of[id(r)],
@@ -1212,7 +1247,9 @@ async def create_running_route(
     _rescue = None
     _rescue_rd = None
     if in_band:
-        _k, best = _best_in_band(in_band, target_km, quals)  # E#2: park>zigzag>거리
+        _k, best, _cross_tb = _best_in_band(in_band, target_km, quals)  # E#2+crossing 4순위
+        if _cross_tb:
+            _meta["crossing_tiebreak"] = True   # 개입률 관측(2026-08-03)
         best, _k, _rescue, _rescue_rd = await _spur_rescue(
             req, target_km, in_band, best, _k, quals, _spur_of, scored, engine_of,
             avoid_tags, prefs, lang, radius_center, start_end_km)

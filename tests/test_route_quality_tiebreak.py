@@ -64,7 +64,7 @@ def run_tests():
     quals = {id(A): (_park_coverage(A, [PARK]), _zigzag_score(A), 0),
              id(B): (_park_coverage(B, [PARK]), _zigzag_score(B), 0)}
     in_band = [(5.0, A), (5.0, B)]
-    _k, best = _best_in_band(in_band, 5.0, quals)
+    _k, best, _tb = _best_in_band(in_band, 5.0, quals)
     assert best is A, "공원 커버리지 높은 후보 채택(지그재그 아님)"
     ok(f"동밴드 공원 후보(park {quals[id(A)][0]}) > 지그재그 후보(park {quals[id(B)][0]}) 채택")
 
@@ -142,6 +142,45 @@ def run_tests():
     only_bad = _serveable_over_cap([(6.0, v87_star), (6.0, anc_clean)], 5.0, eng)
     assert only_bad == [], "긴팔 v87+앵커만 → 초과 서빙 0(→band_cap_zero 재추첨/502)"
     ok("긴팔·앵커만 존재 → 초과 서빙 후보 0")
+
+    print("\n[10. crossing 4순위 tiebreak (2026-08-03 승인 ⓐ)]")
+    E, F = route([(37.53, 126.63)] * 4), route([(37.53, 126.63)] * 4)
+    # 상위 3기준 동률 + crossing 차이 → crossing 낮은 쪽. engaged는 "승자가
+    # 실제로 바뀐 개입"만 True(구키 선두와 같으면 False — 개입률 관측 정의)
+    q5 = {id(E): (0.5, 0, 0, 9), id(F): (0.5, 0, 0, 3)}
+    k, best, tb = _best_in_band([(5.0, E), (5.0, F)], 5.0, q5)
+    assert best is F and tb is True, "동률 시 crossing 낮은 쪽 + 개입 플래그"
+    q5b = {id(E): (0.5, 0, 0, 3), id(F): (0.5, 0, 0, 9)}
+    k, best, tb = _best_in_band([(5.0, E), (5.0, F)], 5.0, q5b)
+    assert best is E and tb is False, "구키 선두와 동일 승자면 개입 아님"
+    # 상위 기준 비동률 → crossing이 역방향이어도 기존 선택(무교란)·engaged False
+    q6 = {id(E): (0.9, 0, 0, 99), id(F): (0.5, 0, 0, 1)}
+    k, best, tb = _best_in_band([(5.0, E), (5.0, F)], 5.0, q6)
+    assert best is E and tb is False, "park 우위가 crossing 열세를 이김(무교란)"
+    # None은 최후순위
+    q7 = {id(E): (0.5, 0, 0, None), id(F): (0.5, 0, 0, 20)}
+    k, best, tb = _best_in_band([(5.0, E), (5.0, F)], 5.0, q7)
+    assert best is F and tb is True, "crossing None은 실값(20)보다 후순위"
+    # 구형 3-튜플 quals 방어(스퍼 테스트 등 — crossing 없음 취급)
+    q8 = {id(E): (0.5, 0, 0), id(F): (0.5, 0, 2)}
+    assert _best_in_band([(5.0, E), (5.0, F)], 5.0, q8)[1] is E
+    ok("동률 개입 ✓ 비동률 무교란 ✓ None 최후순위 ✓ 3-튜플 방어 ✓")
+
+    print("\n[11. 재추첨 L tiebreak (2026-08-03 승인 ⓑ)]")
+    from app.services.route_service import _redraw_pick_in_band
+    def C4(la, lo): return Coordinate(lat=la, lng=lo)
+    arm = [C4(37.50, 126.60 + i * 0.001) for i in range(8)]
+    star_r = route([(37.5, 126.6)] * 4); star_r.polyline = arm + arm[::-1][1:]   # L 큼
+    clean_r = route([(37.5, 126.6)] * 4); clean_r.polyline = [C4(37.50, 126.60), C4(37.505, 126.605)]
+    # 0.1 버킷 동률(4.98 vs 5.02 — 근접차 0.02/0.02) → L 낮은 쪽
+    k, best, tb = _redraw_pick_in_band([(4.98, star_r), (5.02, clean_r)], 5.0)
+    assert best is clean_r and tb is True, "동률 버킷 → L 낮은 쪽"
+    # 비동률(5.0 vs 5.4) → 기존 최근접 그대로(무교란 — star여도)
+    k, best, tb = _redraw_pick_in_band([(5.0, star_r), (5.4, clean_r)], 5.0)
+    assert best is star_r and tb is False, "거리 우위 무교란"
+    # 단일 후보 그대로
+    assert _redraw_pick_in_band([(5.2, star_r)], 5.0)[1] is star_r
+    ok("0.1 버킷 동률 시 L 개입 ✓ 비동률 무교란 ✓ 단일 그대로 ✓")
 
     print("\n" + "=" * 50 + "\n  ALL TESTS PASSED\n" + "=" * 50)
 
