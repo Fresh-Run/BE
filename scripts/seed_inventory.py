@@ -87,6 +87,20 @@ def coverage(a_pts, b_pts, near=40):
     return 100*hit/len(a)
 
 
+def _load_qa_verdicts() -> dict:
+    """{run_id: 사유} — 오너 QA 기각 원장(scripts/seed_qa_verdicts.json).
+    기각 런은 ★ 후보에서 제외하고 '기각됨'으로 표기(재발굴 방지)."""
+    import json
+    path = os.path.join(os.path.dirname(__file__), "seed_qa_verdicts.json")
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        return {v["run_id"]: v["reason"] for v in data.get("verdicts", [])
+                if v.get("verdict") == "rejected"}
+    except FileNotFoundError:
+        return {}
+
+
 def main():
     import httpx
     verify_schema()
@@ -117,6 +131,7 @@ def main():
     cpolys = [( c["name"], [(p[0], p[1]) if isinstance(p, list) else (p["lat"], p["lng"])
                             for p in c["polyline"]]) for c in canon]
 
+    qa_rejected = _load_qa_verdicts()
     real = [r for r in runs if is_real(r["user_id"])]
     print(f"실유저 run: {len(real)}건 (전체 {len(runs)}건, 제외 계정분 {len(runs)-len(real)})")
     rows, seedable = [], []
@@ -140,7 +155,10 @@ def main():
         ok_seed = (r["verification"] == "verified" and (t.get("avg_accuracy_m") or 99) <= 10
                    and (r["distance_km"] or 0) >= 2.0 and best_cov < 50)
         rows.append((r, t, best_cov, best_name, kind))
-        if ok_seed:
+        if ok_seed and r["id"] in qa_rejected:
+            print(f"  [기각됨] {nick.get(r['user_id'],'?')} {r['distance_km']}km — "
+                  f"{qa_rejected[r['id']][:60]}")
+        elif ok_seed:
             seedable.append((r, t, best_cov, best_name, kind, grid, pts))
         print(f"  {nick.get(r['user_id'],'?'):10} | {grid} | {r['distance_km']}km {r['verification']} "
               f"| acc {t.get('avg_accuracy_m')}m {t.get('raw_point_count')}→{t.get('kept_point_count')} "
