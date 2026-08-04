@@ -617,6 +617,22 @@ async def decide_report(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+# TEMP — 에어코리아 서빙 프로세스 400 미스터리 진단 프로브 (2026-08-04).
+# 제거 트리거: 미스터리 해소 시 이 엔드포인트 + weather_service 프로브 블록 +
+# scripts/diag_airkorea_shell.py + tests/test_airkorea_probe_integration.py 삭제.
+# API_GUIDE 비등재(임시 admin 진단 — 유저 표면 노출 0).
+@router.get(
+    "/admin/diag/airkorea-probe",
+    summary="에어코리아 전송 관측 프로브 (TEMP·운영 전용 — 비운영진 404)",
+)
+async def airkorea_probe_diag(
+    admin: CurrentUser = Depends(require_admin),
+) -> dict:
+    """실기능 동일 경로(동기 클라이언트+to_thread)로 에어코리아 1회 요청,
+    TLS·소켓·헤더 관측 반환. DB 쓰기 0·부수효과 0·serviceKey 마스킹(뒤 4자만)."""
+    return await weather_service.airkorea_probe()
+
+
 @router.delete(
     "/me/followers/{user_id}",
     status_code=status.HTTP_204_NO_CONTENT,

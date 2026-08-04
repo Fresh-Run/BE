@@ -587,6 +587,79 @@ async def _fetch_airkorea(
         return None
 
 
+# ── TEMP: 에어코리아 서빙 프로세스 400 미스터리 진단 프로브 (2026-08-04) ──
+# 제거 트리거: 미스터리 해소 시(포털 회신 or TLS/커넥션 계층 원인 확정) 이 블록 +
+# routes의 /admin/diag/airkorea-probe + scripts/diag_airkorea_shell.py +
+# tests/test_airkorea_probe_integration.py 일괄 삭제.
+# 관측 전용 — DB 쓰기 0·캐시 무접촉·airkorea_enabled 플래그와 무관하게 동작.
+
+_PROBE_STATION = "종로구"   # 광화문 실채집(2026-08-03)과 동일 측정소
+
+
+def _probe_mask(text: str) -> str:
+    """serviceKey 원문 노출 금지 — 원문·디코드형·URL인코드형 전부 ****+뒤4자."""
+    raw = settings.airkorea_api_key
+    if not raw:
+        return text
+    forms = {raw, _airkorea_key(),
+             urllib.parse.quote(_airkorea_key(), safe="")}
+    for k in forms:
+        if k:
+            text = text.replace(k, "****" + raw[-4:])
+    return text
+
+
+def _probe_transport_observe(url: str, params: dict) -> dict:
+    """_airkorea_transport와 동일 구성(새 httpx.Client(timeout=_AIRKOREA_TIMEOUT)
+    + build_request→send) — 커넥션이 살아있는 컨텍스트 안에서 TLS·소켓 관측만 추가.
+    재시도 0(원샷 관측). 테스트는 이 심을 패치."""
+    started = time.monotonic()
+    with httpx.Client(timeout=_AIRKOREA_TIMEOUT) as c:
+        req = c.build_request("GET", url, params=params)
+        res = c.send(req)
+        elapsed_ms = round((time.monotonic() - started) * 1000, 1)
+        server_addr = client_addr = tls_version = tls_cipher = None
+        stream = res.extensions.get("network_stream")
+        if stream is not None:
+            server_addr = stream.get_extra_info("server_addr")
+            client_addr = stream.get_extra_info("client_addr")
+            ssl_obj = stream.get_extra_info("ssl_object")
+            if ssl_obj is not None:
+                tls_version = ssl_obj.version()
+                cipher = ssl_obj.cipher()
+                tls_cipher = cipher[0] if cipher else None
+        return {
+            "url": _probe_mask(str(req.url)),
+            "status": res.status_code,
+            "http_version": res.http_version,
+            "headers": {k: _probe_mask(v) for k, v in res.headers.items()},
+            "body_head": _probe_mask(res.text[:500]),
+            "peer": list(server_addr) if server_addr else None,
+            "local": list(client_addr) if client_addr else None,
+            "tls_version": tls_version,
+            "tls_cipher": tls_cipher,
+            "elapsed_ms": elapsed_ms,
+        }
+
+
+async def airkorea_probe() -> dict:
+    """에어코리아에 실기능 동일 경로(동기 클라이언트 + to_thread)로 정확히 1회
+    요청하고 관측을 반환. 부수효과 0 — 측정소 캐시·응답 캐시 무접촉."""
+    if not settings.airkorea_api_key:
+        return {"ok": False, "error": "NotConfigured",
+                "detail": "airkorea_api_key 미설정"}
+    url = f"{_AIRKOREA_BASE}/ArpltnInforInqireSvc/getMsrstnAcctoRltmMesureDnsty"
+    params = {"stationName": _PROBE_STATION, "dataTerm": "DAILY", "pageNo": 1,
+              "numOfRows": 1, "returnType": "json", "ver": "1.3",
+              "serviceKey": _airkorea_key()}
+    try:
+        obs = await asyncio.to_thread(_probe_transport_observe, url, params)
+    except Exception as exc:  # noqa: BLE001 — 관측 실패도 관측 결과다
+        return {"ok": False, "error": type(exc).__name__,
+                "detail": _probe_mask(str(exc))}
+    return {"ok": True, **obs}
+
+
 async def _fetch_pm(
     client: httpx.AsyncClient, lat: float, lng: float, ow_key: str
 ) -> tuple[float | None, float | None]:
