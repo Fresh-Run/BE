@@ -619,7 +619,7 @@ async def decide_report(
 
 # TEMP — 에어코리아 서빙 프로세스 400 미스터리 진단 프로브 (2026-08-04).
 # 제거 트리거: 미스터리 해소 시 이 엔드포인트 + weather_service 프로브 블록 +
-# scripts/diag_airkorea_shell.py + tests/test_airkorea_probe_integration.py 삭제.
+# app/diag_airkorea_shell.py + tests/test_airkorea_probe_integration.py 삭제.
 # API_GUIDE 비등재(임시 admin 진단 — 유저 표면 노출 0).
 @router.get(
     "/admin/diag/airkorea-probe",

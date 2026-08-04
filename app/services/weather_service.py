@@ -589,7 +589,7 @@ async def _fetch_airkorea(
 
 # ── TEMP: 에어코리아 서빙 프로세스 400 미스터리 진단 프로브 (2026-08-04) ──
 # 제거 트리거: 미스터리 해소 시(포털 회신 or TLS/커넥션 계층 원인 확정) 이 블록 +
-# routes의 /admin/diag/airkorea-probe + scripts/diag_airkorea_shell.py +
+# routes의 /admin/diag/airkorea-probe + app/diag_airkorea_shell.py +
 # tests/test_airkorea_probe_integration.py 일괄 삭제.
 # 관측 전용 — DB 쓰기 0·캐시 무접촉·airkorea_enabled 플래그와 무관하게 동작.
 

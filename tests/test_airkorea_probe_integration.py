@@ -1,5 +1,5 @@
 # TEMP — 에어코리아 진단 프로브 테스트 (2026-08-04). 제거 트리거: 미스터리 해소 시
-# 프로브 엔드포인트·weather_service 블록·scripts/diag_airkorea_shell.py와 일괄 삭제.
+# 프로브 엔드포인트·weather_service 블록·app/diag_airkorea_shell.py와 일괄 삭제.
 """
 Integration: GET /admin/diag/airkorea-probe (TEMP 진단 — 관측 전용)
 
