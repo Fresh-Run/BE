@@ -13,7 +13,16 @@
 키는 env(AIRKOREA_API_KEY → settings)에서 읽고, 출력은 전부 ****+뒤4자 마스킹.
 출력은 sort_keys JSON — 서빙 측은 `| jq -S .`로 받아 diff.
 
-Run (fly ssh console 안에서): python /app/app/diag_airkorea_shell.py
+모드 (센트리 가설 결정 실험, 2026-08-04):
+  기본           — 무센트리 프로세스(기존 셸 조건 그대로).
+  --with-sentry  — 앱과 **문자 그대로 동일한** 초기화 경로(import app.main —
+                   sentry_sdk.init 포함, 단일 소스)를 먼저 밟은 뒤 프로브 1회.
+                   DSN은 env(SENTRY_DSN → settings)에서만 읽고 화면 출력 0.
+                   셸 400 재현 = 센트리 헤더 주입 가설 확정 재료.
+
+Run (fly ssh console 안에서):
+  python /app/app/diag_airkorea_shell.py
+  python /app/app/diag_airkorea_shell.py --with-sentry
 외부 콜: 에어코리아 정확히 1회. DB 무접촉·부수효과 0.
 """
 from __future__ import annotations
@@ -28,11 +37,22 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from app.services import weather_service as ws  # noqa: E402
 
 
-def main() -> int:
+def main(argv: list[str]) -> int:
+    if "--with-sentry" in argv:
+        # 별도 init 복제 금지 — 앱 부팅과 동일 코드가 실행되게 import로 밟는다
+        # (드리프트 0). DSN 미설정이면 앱과 동일하게 no-op — active로 판별.
+        import app.main  # noqa: F401
+        import sentry_sdk
+        active = sentry_sdk.get_client().is_active()
+        print(f"# mode=with-sentry active={active}", file=sys.stderr)
+        if not active:
+            print("# 경고: SENTRY_DSN 미설정 — 무센트리와 동일 조건", file=sys.stderr)
+    else:
+        print("# mode=plain (무센트리)", file=sys.stderr)
     obs = asyncio.run(ws.airkorea_probe())
     print(json.dumps(obs, ensure_ascii=False, indent=2, sort_keys=True))
     return 0 if obs.get("ok") else 1
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv[1:]))

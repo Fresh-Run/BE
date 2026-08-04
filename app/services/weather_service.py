@@ -609,12 +609,30 @@ def _probe_mask(text: str) -> str:
     return text
 
 
+# Authorization류는 값 전체 마스킹(관측 불요 — 존재 여부만 의미).
+_PROBE_SENSITIVE_HEADERS = {"authorization", "proxy-authorization", "cookie"}
+
+
 def _probe_transport_observe(url: str, params: dict) -> dict:
     """_airkorea_transport와 동일 구성(새 httpx.Client(timeout=_AIRKOREA_TIMEOUT)
     + build_request→send) — 커넥션이 살아있는 컨텍스트 안에서 TLS·소켓 관측만 추가.
-    재시도 0(원샷 관측). 테스트는 이 심을 패치."""
+    재시도 0(원샷 관측). 테스트는 이 심을 패치.
+
+    sent_headers: request 이벤트 훅으로 캡처한 **실발신 직전** 헤더 전체.
+    훅은 원본 send 내부(전송 직전)에서 실행되므로 Sentry send 래퍼가 주입하는
+    sentry-trace/baggage가 있으면 여기 잡힌다 — 조립 단계 로그(_airkorea_transport)
+    가 못 보는 주입을 관측(센트리 가설 결정 실험, 2026-08-04). 훅은 순수 관측 —
+    와이어 바이트 무접촉."""
     started = time.monotonic()
-    with httpx.Client(timeout=_AIRKOREA_TIMEOUT) as c:
+    sent_headers: dict[str, str] = {}
+
+    def _capture_sent(request: httpx.Request) -> None:
+        for k, v in request.headers.items():
+            sent_headers[k] = ("****" if k.lower() in _PROBE_SENSITIVE_HEADERS
+                               else _probe_mask(v))
+
+    with httpx.Client(timeout=_AIRKOREA_TIMEOUT,
+                      event_hooks={"request": [_capture_sent]}) as c:
         req = c.build_request("GET", url, params=params)
         res = c.send(req)
         elapsed_ms = round((time.monotonic() - started) * 1000, 1)
@@ -632,6 +650,7 @@ def _probe_transport_observe(url: str, params: dict) -> dict:
             "url": _probe_mask(str(req.url)),
             "status": res.status_code,
             "http_version": res.http_version,
+            "sent_headers": sent_headers,
             "headers": {k: _probe_mask(v) for k, v in res.headers.items()},
             "body_head": _probe_mask(res.text[:500]),
             "peer": list(server_addr) if server_addr else None,

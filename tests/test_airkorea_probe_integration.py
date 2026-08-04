@@ -9,14 +9,16 @@ Integration: GET /admin/diag/airkorea-probe (TEMP 진단 — 관측 전용)
 A-1 미인증 → 401
 A-2 비admin → 404 은닉(detail "Not Found")
 A-3 ADMIN_USER_IDS 미설정(빈 set) → admin이어도 404 fail-safe
-P-1 admin + 관측 성공 → 200 shape(필드 11종)·전송 정확히 1회(재시도 0)·
-    요청 url/params 실기능 동일(측정소·ver·serviceKey 디코드형)
+P-1 admin + 관측 성공 → 200 shape(필드 12종 — sent_headers 포함)·전송 정확히
+    1회(재시도 0)·요청 url/params 실기능 동일(측정소·ver·serviceKey 디코드형)
 P-2 응답 전체에 키 원문 부재 + ****뒤4자 마스크 존재 (프라이버시 이중 검증)
 P-3 전송 예외 → 200 {ok:false, error, detail(마스킹)} — 500 아님
 P-4 키 미설정 → NotConfigured·전송 0회
 M-1 _probe_mask — 원문·디코드형·URL인코드형 3형 전부 ****뒤4자
 T-1 _probe_transport_observe 실코드 — FakeClient(send만 대체)로 URL 조립·
     마스킹·관측 필드 실검증 (extensions 부재 시 peer/tls None 방어 포함)
+T-2 sent_headers — send 내부 주입(센트리 래퍼 시뮬)이 request 이벤트 훅에
+    잡히는지 + Authorization류 값 마스킹·비밀값 응답 부재
 S-1 부수효과 없음 — _station_cache·_cache(응답 캐시) 전후 동일, DB 콜 0
 
 Run: python tests/test_airkorea_probe_integration.py
@@ -44,8 +46,9 @@ PLAIN_UID = "00000000-0000-4000-8000-0000000000bb"
 ENC_KEY = "test%2Bkey%2FENC%3Dabcd"
 DEC_KEY = "test+key/ENC=abcd"
 
-EXPECT_FIELDS = {"ok", "url", "status", "http_version", "headers", "body_head",
-                 "peer", "local", "tls_version", "tls_cipher", "elapsed_ms"}
+EXPECT_FIELDS = {"ok", "url", "status", "http_version", "sent_headers",
+                 "headers", "body_head", "peer", "local", "tls_version",
+                 "tls_cipher", "elapsed_ms"}
 
 
 def ok(m):
@@ -68,6 +71,8 @@ def run_tests():
         return {
             "url": ws._probe_mask(f"{url}?serviceKey={DEC_KEY}&returnType=json"),
             "status": 400, "http_version": "HTTP/1.1",
+            "sent_headers": {"host": "apis.data.go.kr",
+                             "sentry-trace": "0af7-0bd9-1"},
             "headers": {"server": "NIA-GW"},
             "body_head": ws._probe_mask(
                 '{"errMsg":"SERVICE ERROR","returnReasonCode":"10"}'),
@@ -117,7 +122,7 @@ def run_tests():
         assert c["params"]["stationName"] == ws._PROBE_STATION
         assert c["params"]["ver"] == "1.3" and c["params"]["dataTerm"] == "DAILY"
         assert c["params"]["serviceKey"] == DEC_KEY, "실기능 동일 — 디코드형 전달"
-        ok("P-1 200 shape 11필드 · 전송 1회 · 실기능 동일 url/params")
+        ok("P-1 200 shape 12필드 · 전송 1회 · 실기능 동일 url/params")
 
         raw = r.text
         for leak in (ENC_KEY, DEC_KEY):
@@ -157,8 +162,9 @@ def run_tests():
         class FakeClient:
             sent: list = []
 
-            def __init__(self, timeout=None):
+            def __init__(self, timeout=None, event_hooks=None):
                 assert timeout == ws._AIRKOREA_TIMEOUT, "전용 타임아웃 3s 동일 구성"
+                self._hooks = (event_hooks or {}).get("request", [])
                 self._real = httpx.Client(timeout=timeout)
 
             def __enter__(self):
@@ -171,6 +177,13 @@ def run_tests():
                 return self._real.build_request(method, url, params=params)
 
             def send(self, req):
+                # 실순서 재현: Sentry send 래퍼의 주입(원본 send 진입 전) →
+                # 원본 send 내부의 request 이벤트 훅 실행 → 전송.
+                req.headers["sentry-trace"] = "aaaa1111-bbbb2222-1"
+                req.headers["baggage"] = "sentry-environment=production"
+                req.headers["Authorization"] = "Bearer super-secret"
+                for h in self._hooks:
+                    h(req)
                 FakeClient.sent.append(str(req.url))
                 return httpx.Response(
                     400, headers={"Server": "NIA API GW"},
@@ -200,6 +213,14 @@ def run_tests():
             "extensions 부재 시 None 방어")
         assert isinstance(obs["elapsed_ms"], float)
         ok("T-1 실 URL 조립·본문/URL 마스킹·상태·헤더·extensions 부재 방어")
+
+        sh = obs["sent_headers"]
+        assert sh.get("sentry-trace") == "aaaa1111-bbbb2222-1", sh
+        assert sh.get("baggage") == "sentry-environment=production"
+        assert sh.get("authorization") == "****", "Authorization류 값 마스킹"
+        assert "super-secret" not in str(obs)
+        assert sh.get("host") == "apis.data.go.kr" and "user-agent" in sh
+        ok("T-2 sent_headers — send 내 주입(센트리 시뮬) 캡처 + Authorization 마스킹")
 
         print("[S 부수효과 없음]")
         assert ws._station_cache == station_before, "측정소 캐시 오염"
