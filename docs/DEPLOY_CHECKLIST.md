@@ -35,6 +35,7 @@
 - [x] test1 로그인 → `GET /api/me/quota` 200
 - [x] `GET /api/weather?lat=37.5445&lng=127.0374` 200 (OpenWeather 실키·PM·러닝지수 정상)
 - [ ] `POST /api/routes/generate` — Gemini 무료 티어 일일 quota 상황 따라 별도 확인(코드 검증 완료분이라 배포 게이트는 아님)
+- **생성 스모크 기본 계정은 test1(premium)** — free 픽스처(qa-empty)는 주 3회 한도로 부적합(2026-08-04 실측 429). 생성분은 스모크 후 즉삭(응답 id 필드는 `route_id` — `id` 아님).
 - [x] `POST /api/iap/verify` `{"jws":"a.b.c"}` → **503 iap_not_configured** (mock 닫힘 확인 ✅)
 - [x] `/me/stats` p50 **~290ms** (< 300ms) → 도쿄↔서울 리전 선택 성공
 

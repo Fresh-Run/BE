@@ -1757,6 +1757,13 @@ async def delete_route(route_id: str, user_id: str) -> None:
     route_id인 polymorphic 알림이라 FK 없음, 방치 시 stale 404 탭(run-delete 선례).
     코스엔 Storage 자산 없음(코스 이미지는 크루 전용) — 사진 정리 불필요.
     """
+    import uuid as _uuid
+    try:
+        _uuid.UUID(route_id)
+    except ValueError:
+        # 비uuid path param = 존재할 수 없는 id → 404 은닉(2026-08-04 실서버 관측
+        # 교정: PostgREST 22P02 APIError가 일반 예외 경로로 502 server_error 노출).
+        raise RouteNotFound()
     supabase = get_supabase_admin()
     res = await asyncio.to_thread(
         lambda: supabase.table("routes")
