@@ -1346,6 +1346,8 @@ async def create_run_comment(
         logger.warning("run_commented 알림 생성 실패", exc_info=True)
     # 부모 작성자 알림 — 기존 타입 재사용(라우팅 표 무변경). 자기 답글 미발송,
     # 부모 작성자==run 주인이면 위에서 이미 1건(중복 방지).
+    # payload additive 2종(2026-08-04, Ivan): is_reply·parent_comment_id는
+    # **이 발송 건에만** — 주인 발송 건은 바이트 불변(미전송 키 생략, §D).
     if (parent is not None and parent["user_id"] != caller_id
             and parent["user_id"] != owner_id):
         try:
@@ -1355,7 +1357,8 @@ async def create_run_comment(
                 type="run_commented",
                 target_id=run_id,
                 target_type="run",
-                payload={"run_id": run_id},
+                payload={"run_id": run_id, "is_reply": True,
+                         "parent_comment_id": parent_comment_id},
             )
         except Exception:  # noqa: BLE001
             logger.warning("답글 부모 작성자 알림 생성 실패", exc_info=True)

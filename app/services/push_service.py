@@ -98,6 +98,13 @@ _TEMPLATES: dict[str, dict[str, str]] = {
                      "en": "{nickname} invited you to a crew"},
 }
 
+# run_commented 답글 세분(2026-08-04, Ivan) — payload.is_reply(부모 댓글 작성자
+# 수신 건에만 실림) 시 문구 분기. 신 type 아님 — 딥링크 표·카테고리(comments) 불변.
+_RUN_COMMENT_REPLY: dict[str, str] = {
+    "ko": "{nickname}님이 내 댓글에 답글을 남겼어요",
+    "en": "{nickname} replied to your comment",
+}
+
 # M-11 (감사 3차): 로드 시 정합 강제 — 템플릿 있는 type(=실제 발송)은 반드시
 # 카테고리 매핑이 있어야 한다. 없으면 send_for_notification에서 category=None →
 # master만으로 발송돼 사용자의 카테고리 토글을 무시하는 우회가 생긴다(fail-closed).
@@ -157,6 +164,28 @@ async def _drop_tokens(tokens: list[str]) -> None:
     )
 
 
+def _render_body(type: str, lang: str, payload: dict | None,
+                 nickname: str | None) -> str:
+    """푸시 본문 선택 — 순수 함수(테스트 단일 소스). type은 _TEMPLATES 존재 전제
+    (호출측이 사전 게이트).
+
+    - pb_achieved: 자기 대상 — {nickname} 없이 기록 종류별 세분, 복수·미지는 제네릭.
+    - run_commented + payload.is_reply: 답글 세분(2026-08-04 — 부모 작성자 수신
+      건에만 is_reply가 실린다. 주인 수신 건은 키 부재 → 기존 문구 불변).
+    - 그 외: 템플릿 + 닉네임(미해석 폴백도 lang-aware — 2026-07-29 Ivan 합의).
+    """
+    template = _TEMPLATES[type]
+    if type == "pb_achieved":
+        rtypes = (payload or {}).get("record_types") or []
+        return (_PB_MESSAGES[rtypes[0]][lang]
+                if len(rtypes) == 1 and rtypes[0] in _PB_MESSAGES
+                else template[lang])
+    nick = nickname or _NICKNAME_FALLBACK[lang]
+    if type == "run_commented" and (payload or {}).get("is_reply"):
+        return _RUN_COMMENT_REPLY[lang].format(nickname=nick)
+    return template[lang].format(nickname=nick)
+
+
 async def send_for_notification(
     recipient_id: str,
     actor_id: str,
@@ -200,17 +229,7 @@ async def send_for_notification(
             logger.info("푸시 스킵: %s OFF (recipient=%s, type=%s)", category, recipient_id, type)
             return
         lang = recipient_settings.lang if recipient_settings.lang in ("ko", "en") else "ko"
-        if type == "pb_achieved":
-            # PB는 자기 대상 — {nickname} 없이 기록 종류별 문구. 단일 종류면 세분,
-            # 복수·미지면 제네릭 템플릿. record_types는 payload에 실려 옴.
-            rtypes = (payload or {}).get("record_types") or []
-            body = (_PB_MESSAGES[rtypes[0]][lang]
-                    if len(rtypes) == 1 and rtypes[0] in _PB_MESSAGES
-                    else template[lang])
-        else:
-            # 닉네임 미해석 폴백도 lang-aware(2026-07-29 Ivan 합의) — 같은 lang 소스 재사용.
-            body = template[lang].format(
-                nickname=nicknames.get(actor_id) or _NICKNAME_FALLBACK[lang])
+        body = _render_body(type, lang, payload, nicknames.get(actor_id))
 
         messages = [{
             "to": t,
