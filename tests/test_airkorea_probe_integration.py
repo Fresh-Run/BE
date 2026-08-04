@@ -19,12 +19,17 @@ T-1 _probe_transport_observe 실코드 — FakeClient(send만 대체)로 URL 조
     마스킹·관측 필드 실검증 (extensions 부재 시 peer/tls None 방어 포함)
 T-2 sent_headers — send 내부 주입(센트리 래퍼 시뮬)이 request 이벤트 훅에
     잡히는지 + Authorization류 값 마스킹·비밀값 응답 부재
+I-1 --inject-headers 서브모드 3종(both/trace-only/baggage-only) shape·
+    실측 포맷 모사·미지 서브모드 ValueError
+I-2 airkorea_probe(extra_headers) 단일 소스 경유 — 전송 심 도달
+T-3 수동 주입 실전송 코드 관통 — sent_headers에 주입값 그대로
 S-1 부수효과 없음 — _station_cache·_cache(응답 캐시) 전후 동일, DB 콜 0
 
 Run: python tests/test_airkorea_probe_integration.py
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 
@@ -66,8 +71,9 @@ def run_tests():
     client = TestClient(app)
     calls: list[dict] = []
 
-    def observe_ok(url, params):
-        calls.append({"url": url, "params": dict(params)})
+    def observe_ok(url, params, extra_headers=None):
+        calls.append({"url": url, "params": dict(params),
+                      "extra": extra_headers})
         return {
             "url": ws._probe_mask(f"{url}?serviceKey={DEC_KEY}&returnType=json"),
             "status": 400, "http_version": "HTTP/1.1",
@@ -122,7 +128,8 @@ def run_tests():
         assert c["params"]["stationName"] == ws._PROBE_STATION
         assert c["params"]["ver"] == "1.3" and c["params"]["dataTerm"] == "DAILY"
         assert c["params"]["serviceKey"] == DEC_KEY, "실기능 동일 — 디코드형 전달"
-        ok("P-1 200 shape 12필드 · 전송 1회 · 실기능 동일 url/params")
+        assert c["extra"] is None, "서빙 엔드포인트는 수동 주입 항상 None"
+        ok("P-1 200 shape 12필드 · 전송 1회 · 실기능 동일 url/params · 주입 None")
 
         raw = r.text
         for leak in (ENC_KEY, DEC_KEY):
@@ -130,8 +137,9 @@ def run_tests():
         assert "****abcd" in raw, "마스크(****+뒤4자) 부재"
         ok("P-2 응답 전체 키 원문 부재 + ****abcd 마스크 존재")
 
-        def observe_boom(url, params):
-            calls.append({"url": url, "params": dict(params)})
+        def observe_boom(url, params, extra_headers=None):
+            calls.append({"url": url, "params": dict(params),
+                          "extra": extra_headers})
             raise httpx.ConnectError(f"boom serviceKey={DEC_KEY}")
 
         ws._probe_transport_observe = observe_boom
@@ -179,9 +187,10 @@ def run_tests():
             def send(self, req):
                 # 실순서 재현: Sentry send 래퍼의 주입(원본 send 진입 전) →
                 # 원본 send 내부의 request 이벤트 훅 실행 → 전송.
-                req.headers["sentry-trace"] = "aaaa1111-bbbb2222-1"
-                req.headers["baggage"] = "sentry-environment=production"
-                req.headers["Authorization"] = "Bearer super-secret"
+                # setdefault — 수동 주입(extra_headers, T-3)이 이미 넣은 값 보존.
+                req.headers.setdefault("sentry-trace", "aaaa1111-bbbb2222-1")
+                req.headers.setdefault("baggage", "sentry-environment=production")
+                req.headers.setdefault("Authorization", "Bearer super-secret")
                 for h in self._hooks:
                     h(req)
                 FakeClient.sent.append(str(req.url))
@@ -221,6 +230,41 @@ def run_tests():
         assert "super-secret" not in str(obs)
         assert sh.get("host") == "apis.data.go.kr" and "user-agent" in sh
         ok("T-2 sent_headers — send 내 주입(센트리 시뮬) 캡처 + Authorization 마스킹")
+
+        print("[I --inject-headers 인과 증명 장치]")
+        import re
+
+        import app.diag_airkorea_shell as diag
+        h_both = diag.build_inject_headers("both")
+        assert set(h_both) == {"sentry-trace", "baggage"}
+        assert set(diag.build_inject_headers("trace-only")) == {"sentry-trace"}
+        assert set(diag.build_inject_headers("baggage-only")) == {"baggage"}
+        assert re.fullmatch(r"[0-9a-f]{32}-[0-9a-f]{16}-1", h_both["sentry-trace"])
+        assert h_both["baggage"].startswith("sentry-trace_id=")
+        try:
+            diag.build_inject_headers("nope")
+            raise AssertionError("미지 서브모드가 허용됨")
+        except ValueError:
+            pass
+        ok("I-1 서브모드 3종 shape · 실측 포맷(32hex-16hex-1) · 미지 서브모드 거부")
+
+        ws._probe_transport_observe = observe_ok
+        r2 = asyncio.run(ws.airkorea_probe(extra_headers=h_both))
+        assert r2["ok"] is True and calls[-1]["extra"] == h_both
+        ok("I-2 단일 소스 경유 — airkorea_probe(extra_headers)가 전송 심에 도달")
+
+        ws.httpx = HttpxShim()
+        try:
+            obs3 = orig_observe(
+                f"{ws._AIRKOREA_BASE}/ArpltnInforInqireSvc/getMsrstnAcctoRltmMesureDnsty",
+                {"stationName": ws._PROBE_STATION,
+                 "serviceKey": ws._airkorea_key()},
+                diag.build_inject_headers("trace-only"))
+        finally:
+            ws.httpx = orig_httpx
+        assert obs3["sent_headers"]["sentry-trace"] == h_both["sentry-trace"], (
+            "수동 주입값이 실발신 직전 캡처에 그대로 잡혀야 함")
+        ok("T-3 수동 주입 실전송 코드 관통 — sent_headers에 주입값 실림")
 
         print("[S 부수효과 없음]")
         assert ws._station_cache == station_before, "측정소 캐시 오염"

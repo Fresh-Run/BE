@@ -480,9 +480,22 @@ def _parse_airkorea_value(raw, flag) -> float | None:
 _AIRKOREA_TIMEOUT = 3.0   # 전용 타임아웃 — 최악 지연 캡 = 3×2시도 = 6s
 
 
+def _key_forms() -> set[str]:
+    """serviceKey 등장 가능 3형 — 원문·디코드형·URL재인코드형(httpx가 URL에
+    다시 인코딩한 표기). 마스킹 단일 소스(_mask_key·프로브 공용). 빈 키 가드."""
+    raw = settings.airkorea_api_key
+    if not raw:
+        return set()
+    dec = _airkorea_key()
+    return {raw, dec, urllib.parse.quote(dec, safe="")}
+
+
 def _mask_key(text: str) -> str:
-    return (text.replace(settings.airkorea_api_key, "<key>")
-            .replace(_airkorea_key(), "<key>"))
+    """로그 경로 마스킹 — 3형 전수(2026-08-04 백포트: 구현이 원문·디코드형만
+    잡아 재인코드형 URL 표기가 새던 맹점 제거 — 재-ON 게이트 조건)."""
+    for k in _key_forms():
+        text = text.replace(k, "<key>")
+    return text
 
 
 def _airkorea_transport(url: str, params: dict) -> httpx.Response:
@@ -597,15 +610,10 @@ _PROBE_STATION = "종로구"   # 광화문 실채집(2026-08-03)과 동일 측�
 
 
 def _probe_mask(text: str) -> str:
-    """serviceKey 원문 노출 금지 — 원문·디코드형·URL인코드형 전부 ****+뒤4자."""
+    """serviceKey 원문 노출 금지 — 3형(_key_forms 단일 소스) 전부 ****+뒤4자."""
     raw = settings.airkorea_api_key
-    if not raw:
-        return text
-    forms = {raw, _airkorea_key(),
-             urllib.parse.quote(_airkorea_key(), safe="")}
-    for k in forms:
-        if k:
-            text = text.replace(k, "****" + raw[-4:])
+    for k in _key_forms():
+        text = text.replace(k, "****" + raw[-4:])
     return text
 
 
@@ -613,7 +621,8 @@ def _probe_mask(text: str) -> str:
 _PROBE_SENSITIVE_HEADERS = {"authorization", "proxy-authorization", "cookie"}
 
 
-def _probe_transport_observe(url: str, params: dict) -> dict:
+def _probe_transport_observe(url: str, params: dict,
+                             extra_headers: dict | None = None) -> dict:
     """_airkorea_transport와 동일 구성(새 httpx.Client(timeout=_AIRKOREA_TIMEOUT)
     + build_request→send) — 커넥션이 살아있는 컨텍스트 안에서 TLS·소켓 관측만 추가.
     재시도 0(원샷 관측). 테스트는 이 심을 패치.
@@ -622,7 +631,10 @@ def _probe_transport_observe(url: str, params: dict) -> dict:
     훅은 원본 send 내부(전송 직전)에서 실행되므로 Sentry send 래퍼가 주입하는
     sentry-trace/baggage가 있으면 여기 잡힌다 — 조립 단계 로그(_airkorea_transport)
     가 못 보는 주입을 관측(센트리 가설 결정 실험, 2026-08-04). 훅은 순수 관측 —
-    와이어 바이트 무접촉."""
+    와이어 바이트 무접촉.
+
+    extra_headers: 인과 증명용 수동 주입(--inject-headers) — Sentry 래퍼와 같은
+    위치(send 진입 전 요청 변조)에 정적 헤더를 얹는다. None(기본)이면 무접촉."""
     started = time.monotonic()
     sent_headers: dict[str, str] = {}
 
@@ -634,6 +646,8 @@ def _probe_transport_observe(url: str, params: dict) -> dict:
     with httpx.Client(timeout=_AIRKOREA_TIMEOUT,
                       event_hooks={"request": [_capture_sent]}) as c:
         req = c.build_request("GET", url, params=params)
+        for k, v in (extra_headers or {}).items():
+            req.headers[k] = v
         res = c.send(req)
         elapsed_ms = round((time.monotonic() - started) * 1000, 1)
         server_addr = client_addr = tls_version = tls_cipher = None
@@ -661,9 +675,10 @@ def _probe_transport_observe(url: str, params: dict) -> dict:
         }
 
 
-async def airkorea_probe() -> dict:
+async def airkorea_probe(extra_headers: dict | None = None) -> dict:
     """에어코리아에 실기능 동일 경로(동기 클라이언트 + to_thread)로 정확히 1회
-    요청하고 관측을 반환. 부수효과 0 — 측정소 캐시·응답 캐시 무접촉."""
+    요청하고 관측을 반환. 부수효과 0 — 측정소 캐시·응답 캐시 무접촉.
+    extra_headers는 셸 --inject-headers 전용(서빙 엔드포인트는 항상 None)."""
     if not settings.airkorea_api_key:
         return {"ok": False, "error": "NotConfigured",
                 "detail": "airkorea_api_key 미설정"}
@@ -672,7 +687,8 @@ async def airkorea_probe() -> dict:
               "numOfRows": 1, "returnType": "json", "ver": "1.3",
               "serviceKey": _airkorea_key()}
     try:
-        obs = await asyncio.to_thread(_probe_transport_observe, url, params)
+        obs = await asyncio.to_thread(_probe_transport_observe, url, params,
+                                      extra_headers)
     except Exception as exc:  # noqa: BLE001 — 관측 실패도 관측 결과다
         return {"ok": False, "error": type(exc).__name__,
                 "detail": _probe_mask(str(exc))}

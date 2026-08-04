@@ -31,7 +31,11 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 # Sentry — SENTRY_DSN이 설정된 경우에만 활성 (미설정 = no-op, 로컬 기본).
-if settings.sentry_dsn:
+def init_sentry() -> bool:
+    """DSN 게이트 sentry_sdk.init — 부팅 시 1회. 테스트가 동일 구성을 그대로
+    밟을 수 있게 함수로 분리(단일 소스). 활성 시 True."""
+    if not settings.sentry_dsn:
+        return False
     import sentry_sdk
 
     sentry_sdk.init(
@@ -44,8 +48,18 @@ if settings.sentry_dsn:
         # 스택 지역변수에 req 좌표·유저 이메일 노출 관찰(운영 관측 07-09) —
         # App Privacy "충돌 데이터 신원 미연결" 신고와 일치시키기 위해 차단
         include_local_variables=False,
+        # 외부 발신에 추적 헤더(sentry-trace/baggage) 전면 미주입 — 에어코리아
+        # 게이트웨이가 sentry 추적 헤더 실린 요청을 400(reason 10)으로 반려
+        # (2026-08-04 프로브 3면 비교 실측). traces_sample_rate=0이라 분산
+        # 추적 전파의 실익이 0 → 빈 리스트(전면 미전파)가 최단 안전. APM을
+        # 켜는 날 자사 오리진 한정으로 재설계.
+        trace_propagation_targets=[],
     )
     logging.getLogger(__name__).info("Sentry 활성화 (environment=%s)", settings.environment)
+    return True
+
+
+init_sentry()
 
 # IAP mock 모드 프로덕션 사고 방지 (안전장치 ① 부팅 거부 — ②③은 iap_service).
 if settings.iap_mode == "mock" and settings.environment == "production":
