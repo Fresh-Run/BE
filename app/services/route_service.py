@@ -195,6 +195,11 @@ _COMPLIANCE_CLAMP = (0.90, 1.10)
 # T-map 왕복(약 0.6s/leg×N)과 무효 후보 적재를 아낀다.
 _PRE_GATE_BAND = (0.75, 1.25)
 _PRE_GATE_REROLLS = 2  # (v2.7 배치 풀에서 미사용 — attempt 재추첨 개념 폐기)
+# 명백 언더슈트 선차단 θ(예산 2단계, 2026-08-05) — 예측 스냅(체인×est_ratio)이
+# target×θ 미만이면 스냅 전 폐기. 0.50 = 7월 재생 오폐기 0·전환 0의 최공격값
+# (0.55부터 오폐기 실존). 상향 검토 트리거: gen_meta.pregate_dropped 축적에서
+# 오폐기 0 유지 확인 시.
+_PRE_GATE_UNDERSHOOT = 0.50
 
 # v2.7 배치 풀 (§2 생성 전략, 오너 확정): attempt 루프 폐기 → 처음부터 N개
 # 체인 병렬 생성 → pre-gate 통과분 전부 병렬 스냅 → 밴드 최근접 서빙. 스냅 표본을
@@ -325,6 +330,29 @@ def _quota_dominant(snap_errs: dict, n_success: int) -> bool:
     quota = snap_errs.get("quota", 0)
     others = n_success + snap_errs.get("legnotroutable", 0) + snap_errs.get("other", 0)
     return quota > 0 and quota > others
+
+
+def _undershoot_pregate(passed: list, est_ratio: float, target_km: float,
+                        chain_aim_km: float) -> tuple[list, int]:
+    """명백 언더슈트 선차단(예산 2단계, 2026-08-05) — 예측 스냅(체인×est_ratio)이
+    target×θ(0.50) 미만이면 밴드 도달 불가로 보고 **스냅 전** 폐기(T-map 콜 0).
+
+    θ=0.50 근거 — 7월 213건 재생: 오폐기 0/9·성공→실패 전환 0건인 최공격값
+    (0.55부터 실측 ratio 극단 팽창 케이스가 오폐기 — f6362edf ratio 2.9 실존 표본).
+    보수 가드: 잔존 <3이면 최장 체인부터 복원 — 적응 재추첨의 실측 ratio 재료와
+    언더슈트 지배 판정(band_cap_zero)을 보존. passed 원소는 (route, chain_km, radius).
+    반환: (유지 목록 — aim 최근접 정렬 유지, 폐기 수)."""
+    flagged = [c for c in passed
+               if c[1] * est_ratio < _PRE_GATE_UNDERSHOOT * target_km]
+    if not flagged:
+        return passed, 0
+    keep = [c for c in passed if c not in flagged]
+    if len(keep) < 3:
+        flagged.sort(key=lambda c: c[1])            # 짧은 체인부터 폐기 유지
+        while flagged and len(keep) < 3:
+            keep.append(flagged.pop())              # 최장 체인 복원
+        keep.sort(key=lambda c: abs(c[1] - chain_aim_km))
+    return keep, len(passed) - len(keep)
 
 
 def _within_band(actual_km: float, target_km: float) -> bool:
@@ -1066,6 +1094,13 @@ async def create_running_route(
     passed = [c for c in gen_cands if lo <= c[1] <= hi] or gen_cands
     passed.sort(key=lambda c: abs(c[1] - chain_aim_km))
 
+    # 2b) 명백 언더슈트 선차단(예산 2단계, 2026-08-05 — 품질 무손실 절감층).
+    passed, pregate_dropped = _undershoot_pregate(
+        passed, est_ratio, target_km, chain_aim_km)
+    if pregate_dropped:
+        logger.info("언더슈트 선차단 — %d후보 스냅 전 폐기(예측<%.2f×target)",
+                    pregate_dropped, _PRE_GATE_UNDERSHOOT)
+
     # 3) T-map leg 상한(40) 내에서 스냅 대상 선정 — 무료 쿼터 백스톱(§4.1)
     to_snap: list[tuple[RouteResponse, float, float]] = []  # (route, chain, radius)
     leg_budget = 0
@@ -1231,6 +1266,8 @@ async def create_running_route(
     #    [쿼터 지배면 503] → AI추정 폴백 → 502
     _meta = {"pool_size": len(gen_cands), "snapped_count": len(scored),
              "tmap_legs": leg_budget, "snap_errors": snap_errs,
+             # 언더슈트 선차단 관측(예산 2단계) — 실측 절감·오폐기 감시 재료
+             "pregate_dropped": pregate_dropped,
              "anchor_n": anchor_n, "cand_quality": cand_quality,
              # 선호 관측(2026-07-31) — "그 요청에 선호가 실렸는가" 사후 판정 공백
              # 제거. 요청 raw(미전송=null 명시) + 실제 파이프 투입분(병합 결과·
