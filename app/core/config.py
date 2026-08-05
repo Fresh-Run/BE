@@ -93,6 +93,9 @@ class Settings(BaseSettings):
     tmap_budget_calls: int = 0
     tmap_leg_cache_ttl_s: float = 600.0
     tmap_daily_warn_calls: int = 300
+    # OpenWeather 일일 소프트 임계(2026-08-06, One Call cap 1,000의 80%) —
+    # 초과 시 WARNING만(차단 없음). 0=끔.
+    openweather_daily_warn_calls: int = 800
 
     # IAP (Apple 인앱 구독 검증)
     # 'apple' = 실검증 (App Store Server API 크리덴셜 필요 — 출시기 구현),

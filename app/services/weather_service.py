@@ -30,6 +30,44 @@ logger = logging.getLogger(__name__)
 
 _TIMEOUT = httpx.Timeout(10.0)
 
+# ── OpenWeather 일일 콜 카운터 (T-map 동형, 2026-08-06 — One Call 전환 대비) ──
+# KST 일 단위, 임계(기본 800 = cap 1,000의 80%) 초과 시 WARNING 1회+100콜마다.
+# 차단 없음(관측 additive). atexit에 프로세스 합계 1줄.
+_daily_ow = {"day": None, "n": 0, "warned_at": 0}
+_process_ow_total = {"n": 0}
+
+
+def ow_process_total() -> int:
+    return _process_ow_total["n"]
+
+
+def _ow_tick() -> None:
+    from datetime import datetime, timedelta, timezone as _tz
+    _process_ow_total["n"] += 1
+    day = datetime.now(_tz(timedelta(hours=9))).date().isoformat()
+    if _daily_ow["day"] != day:
+        _daily_ow.update(day=day, n=0, warned_at=0)
+    _daily_ow["n"] += 1
+    thr = settings.openweather_daily_warn_calls
+    if not thr or _daily_ow["n"] < thr:
+        return
+    if (_daily_ow["warned_at"] == 0
+            or _daily_ow["n"] - _daily_ow["warned_at"] >= 100):
+        _daily_ow["warned_at"] = _daily_ow["n"]
+        logger.warning("OpenWeather 일일 콜 %d — 소프트 임계 %d 초과(KST %s, "
+                       "One Call cap 1,000 대비). 차단 아님.",
+                       _daily_ow["n"], thr, day)
+
+
+def _log_ow_total() -> None:
+    if _process_ow_total["n"]:
+        logger.info("OpenWeather HTTP 시도 프로세스 합계: %d콜", _process_ow_total["n"])
+
+
+import atexit as _atexit
+
+_atexit.register(_log_ow_total)
+
 # ── errors ────────────────────────────────────────────────────────────────────
 
 
@@ -354,6 +392,7 @@ async def _fetch_current(
 ) -> dict:
     """Current weather; raises the friendly errors. Never leaks the key."""
     try:
+        _ow_tick()   # 벤더 콜 관측(2026-08-06)
         res = await client.get(
             f"{settings.openweather_base_url}/data/2.5/weather",
             params={"lat": lat, "lon": lng, "appid": key,
@@ -382,6 +421,7 @@ async def _fetch_uv(
     null이 되며(무해), 그때 One Call/Open-Meteo 전환 검토.
     """
     try:
+        _ow_tick()   # 벤더 콜 관측(2026-08-06)
         res = await client.get(
             f"{settings.openweather_base_url}/data/2.5/uvi",
             params={"lat": lat, "lon": lng, "appid": key},
@@ -399,6 +439,7 @@ async def _fetch_air(
 ) -> dict | None:
     """Air pollution components; best-effort — any failure returns None."""
     try:
+        _ow_tick()   # 벤더 콜 관측(2026-08-06)
         res = await client.get(
             f"{settings.openweather_base_url}/data/2.5/air_pollution",
             params={"lat": lat, "lon": lng, "appid": key},
