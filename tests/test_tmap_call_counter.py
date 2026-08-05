@@ -8,6 +8,8 @@ C-3 asyncio.gather 병렬 4 leg → 4 — ContextVar 가변 박스가 자식 태
     컨텍스트 복사에도 공유됨(카운트 유실 없음 — 이 설계의 존재 이유)
 C-4 실패 leg(500)도 +1 — 청구는 실패 응답도 셀 수 있어 시도 기준 상한
 C-5 새 begin으로 요청 간 격리(리셋)
+C-6 프로세스 합계(tmap_process_total) — begin 무관 무조건 집계(오프라인 캠페인
+    회계, 2026-08-05 청구 포렌식) + atexit 합계 로그 등록
 
 Run: python tests/test_tmap_call_counter.py
 """
@@ -82,6 +84,11 @@ async def scenario():
     ms.begin_tmap_count()
     assert ms.tmap_call_count() == 0
     ok("C-5 새 begin → 0 (요청 간 격리)")
+
+    # C-6: 프로세스 합계 — 이 시나리오의 시도 총합(성공 1+3+4+실패 1 = 9)이
+    # begin 여부와 무관하게 전부 집계됐어야 한다.
+    assert ms.tmap_process_total() == 9, ms.tmap_process_total()
+    ok("C-6 프로세스 합계 9 (begin 전 1건 포함 — 캠페인 회계 무조건 집계)")
 
 
 def run_tests():

@@ -121,6 +121,29 @@ def tmap_call_count() -> int | None:
     return box["n"] if box is not None else None
 
 
+# 프로세스 합계(오프라인 캠페인 회계, 2026-08-05 청구 포렌식) — 스크립트·E2E가
+# map_service를 경유하는 한 무조건 집계, 종료 시 합계 1줄. T-map 10원/콜(2026-08
+# 실측 — 244,000원/2.44만콜)이라 캠페인 예산 선계산의 자. 서버 프로세스도 종료 시
+# 1줄 남지만 무해(관측 로그).
+_process_tmap_total = {"n": 0}
+
+
+def tmap_process_total() -> int:
+    return _process_tmap_total["n"]
+
+
+def _log_tmap_total() -> None:
+    n = _process_tmap_total["n"]
+    if n:
+        logger.info("T-map HTTP 시도 프로세스 합계: %d콜 (≈%d원 — 10원/콜 2026-08 실측)",
+                    n, n * 10)
+
+
+import atexit as _atexit
+
+_atexit.register(_log_tmap_total)
+
+
 # --- Place search ------------------------------------------------------------
 
 
@@ -528,6 +551,7 @@ async def _tmap_walk_leg(
     _box = _tmap_counter.get()
     if _box is not None:            # 관측 additive — 청구 대조용 시도 카운트
         _box["n"] += 1
+    _process_tmap_total["n"] += 1   # 프로세스 합계(오프라인 캠페인 회계) — 무조건
     resp = await client.post(TMAP_PEDESTRIAN_URL, headers=headers, json=body)
     # T-map 무료 쿼터 소진은 429 QUOTA_EXCEEDED — 일반 HTTP 장애와 구분해 전용
     # 예외로 승격(상위가 nopath 폴백 금지·503 정직화). 다른 4xx/5xx는 그대로 전파.
