@@ -98,8 +98,10 @@ _TEMPLATES: dict[str, dict[str, str]] = {
                      "en": "{nickname} invited you to a crew"},
 }
 
-# run_commented 답글 세분(2026-08-04, Ivan) — payload.is_reply(부모 댓글 작성자
-# 수신 건에만 실림) 시 문구 분기. 신 type 아님 — 딥링크 표·카테고리(comments) 불변.
+# 댓글 답글 세분(2026-08-04 run · 2026-08-06 route 동형 확장, Ivan) —
+# payload.is_reply(부모 작성자·주인=부모 수신 건) 시 문구 분기. 신 type 아님 —
+# 딥링크 표·카테고리(comments) 불변. 문구는 run/route 공용(댓글 중심 카피).
+_COMMENT_REPLY_TYPES = ("run_commented", "route_commented")
 _RUN_COMMENT_REPLY: dict[str, str] = {
     "ko": "{nickname}님이 내 댓글에 답글을 남겼어요",
     "en": "{nickname} replied to your comment",
@@ -181,7 +183,7 @@ def _render_body(type: str, lang: str, payload: dict | None,
                 if len(rtypes) == 1 and rtypes[0] in _PB_MESSAGES
                 else template[lang])
     nick = nickname or _NICKNAME_FALLBACK[lang]
-    if type == "run_commented" and (payload or {}).get("is_reply"):
+    if type in _COMMENT_REPLY_TYPES and (payload or {}).get("is_reply"):
         return _RUN_COMMENT_REPLY[lang].format(nickname=nick)
     return template[lang].format(nickname=nick)
 

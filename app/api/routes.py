@@ -26,6 +26,7 @@ from app.models.schemas import (
     CoachScriptResponse,
     CommentCreate,
     CommentResponse,
+    RouteCommentCreate,
     RunCommentCreate,
     RunDetailResponse,
     RunCommentResponse,
@@ -1229,12 +1230,24 @@ async def unbookmark_route(
 )
 async def create_comment(
     route_id: str,
-    req: CommentCreate,
+    req: RouteCommentCreate,
     user: CurrentUser = Depends(get_current_user),
 ) -> CommentResponse:
-    """Add a comment (1–500 chars). Route must be public; 404 otherwise."""
+    """Add a comment (1–500 chars). Route must be public; 404 otherwise.
+    1-레벨 답글(2026-08-06, run 동형): parent_comment_id 동봉 — 부모 무효 422·
+    깊이 초과 422(에러 어휘 run과 공유)."""
     try:
-        return await route_service.create_comment(route_id, user_id=user.user_id, content=req.content)
+        return await route_service.create_comment(
+            route_id, user_id=user.user_id, content=req.content,
+            parent_comment_id=req.parent_comment_id)
+    except run_service.CommentParentInvalid:
+        raise HTTPException(status_code=422, detail={
+            "error": "comment_parent_invalid",
+            "message": "답글 대상 댓글을 찾을 수 없어요."})
+    except run_service.ReplyDepthExceeded:
+        raise HTTPException(status_code=422, detail={
+            "error": "reply_depth_exceeded",
+            "message": "답글에는 답글을 달 수 없어요."})
     except route_service.RouteNotFound:
         raise HTTPException(status_code=404, detail="Route not found or not public")
     except profile_service.FeedActionDisabled:

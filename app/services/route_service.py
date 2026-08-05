@@ -2239,11 +2239,21 @@ async def copy_route(route_id: str, user_id: str) -> StoredRoute:
     return StoredRoute(**out.data[0])
 
 
-async def create_comment(route_id: str, user_id: str, content: str) -> CommentResponse:
+async def create_comment(route_id: str, user_id: str, content: str,
+                         parent_comment_id: str | None = None) -> CommentResponse:
     """Add a comment to a public route.
 
     Raises RouteNotFound if the route doesn't exist or is not public.
+
+    1-레벨 답글(2026-08-06, Ivan 계약 — run 동형 이식): parent_comment_id 지정 시
+    부모 검증 3종(미존재/타 route 소속 CommentParentInvalid·부모가 이미 답글
+    ReplyDepthExceeded — 예외 클래스는 run_service 단일 소스 재사용). 부모
+    작성자에게 기존 route_commented 타입 그대로 알림 + payload is_reply·
+    parent_comment_id(런 (b) 일관성 — 주인=부모 작성자면 주인 경로 1건에 부착).
+    일반 댓글의 주인 알림은 종전 payload 없음 바이트 불변.
     """
+    from app.services.run_service import (  # 단일 소스(422 어휘 공유) — 순환 없음
+        CommentParentInvalid, ReplyDepthExceeded)
     supabase = get_supabase_admin()
     res = await asyncio.to_thread(
         lambda: supabase.table("routes")
@@ -2266,15 +2276,35 @@ async def create_comment(route_id: str, user_id: str, content: str) -> CommentRe
     ):
         raise profile_service.FeedActionDisabled("comments")
 
+    parent = None
+    if parent_comment_id is not None:
+        pres = await asyncio.to_thread(
+            lambda: supabase.table("route_comments")
+            .select("id, route_id, user_id, parent_comment_id")
+            .eq("id", parent_comment_id).limit(1).execute())
+        parent = pres.data[0] if pres.data else None
+        if parent is None or parent["route_id"] != route_id:
+            raise CommentParentInvalid()
+        if parent.get("parent_comment_id") is not None:
+            raise ReplyDepthExceeded()
+
+    record = {"route_id": route_id, "user_id": user_id, "content": content}
+    if parent_comment_id is not None:
+        # 미전송 시 키 생략 — SQL 선실행→배포 순서 보호(run 답글 전례)
+        record["parent_comment_id"] = parent_comment_id
     out = await asyncio.to_thread(
-        lambda: supabase.table("route_comments")
-        .insert({"route_id": route_id, "user_id": user_id, "content": content})
-        .execute()
+        lambda: supabase.table("route_comments").insert(record).execute()
     )
     row = out.data[0]
     nicknames = await profile_service.get_profile_briefs([user_id])
 
     if route_owner:
+        # 주인 알림 — 일반 댓글은 종전 payload 없음(바이트 불변). 주인=부모
+        # 작성자인 답글이면 payload 부착(런 엣지 (b) 일관성 — 오너 결정).
+        owner_payload = None
+        if parent is not None and parent["user_id"] == route_owner:
+            owner_payload = {"route_id": route_id, "is_reply": True,
+                             "parent_comment_id": parent_comment_id}
         try:
             await notification_service.create_notification(
                 recipient_id=route_owner,
@@ -2282,9 +2312,26 @@ async def create_comment(route_id: str, user_id: str, content: str) -> CommentRe
                 type="route_commented",
                 target_id=route_id,
                 target_type="route",
+                payload=owner_payload,
             )
         except Exception:
             logger.warning("route_commented 알림 생성 실패", exc_info=True)
+    # 부모 작성자 알림 — 기존 타입 재사용(딥링크 표 무변경). 자기 답글 미발송,
+    # 부모 작성자==주인이면 위에서 이미 1건(중복 방지). run 동형.
+    if (parent is not None and parent["user_id"] != user_id
+            and parent["user_id"] != route_owner):
+        try:
+            await notification_service.create_notification(
+                recipient_id=parent["user_id"],
+                actor_id=user_id,
+                type="route_commented",
+                target_id=route_id,
+                target_type="route",
+                payload={"route_id": route_id, "is_reply": True,
+                         "parent_comment_id": parent_comment_id},
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("route 답글 부모 작성자 알림 생성 실패", exc_info=True)
 
     brief = nicknames.get(user_id) or {}
     return CommentResponse(**row, nickname=brief.get("nickname"),

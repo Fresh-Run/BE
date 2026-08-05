@@ -998,7 +998,16 @@ class CommentCreate(BaseModel):
 
 
 class RunCommentCreate(CommentCreate):
-    """run 댓글 전용 — 1-레벨 답글(2026-08-01, Ivan 계약). route 댓글은 무접촉."""
+    """run 댓글 전용 — 1-레벨 답글(2026-08-01, Ivan 계약)."""
+
+    parent_comment_id: Optional[str] = Field(
+        None, description="답글 대상 댓글 id — null이면 일반 댓글. 1-레벨만"
+        "(답글의 답글은 422 reply_depth_exceeded).")
+
+
+class RouteCommentCreate(CommentCreate):
+    """route 댓글 — 1-레벨 답글(2026-08-06, Ivan 계약 — run 동형 이식).
+    구클라(parent 미전송)는 일반 댓글로 동작 불변(additive)."""
 
     parent_comment_id: Optional[str] = Field(
         None, description="답글 대상 댓글 id — null이면 일반 댓글. 1-레벨만"
@@ -1015,6 +1024,8 @@ class CommentResponse(BaseModel):
     )
     content: str
     created_at: str
+    # 1-레벨 답글(2026-08-06 additive — run 동형): 일반 댓글·구행 null.
+    parent_comment_id: Optional[str] = None
 
 
 class RunCommentResponse(BaseModel):
