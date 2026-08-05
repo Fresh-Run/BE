@@ -97,6 +97,29 @@ _TIMEOUT = httpx.Timeout(10.0)
 
 logger = logging.getLogger(__name__)
 
+# ── T-map 실 HTTP 콜 카운터 (관측 additive, 2026-08-05 청구 회계) ─────────────
+# 요청 스코프: create_running_route가 begin으로 가변 박스를 심고, _tmap_walk_leg가
+# POST **시도마다** +1(실패 leg도 청구될 수 있어 시도 기준 상한 집계). ContextVar에
+# 가변 dict를 담는 이유 — asyncio.gather 자식 태스크는 컨텍스트를 복사하지만 박스
+# 객체는 공유라 증가가 부모에 보인다. begin 없이 호출(스크립트 등)이면 no-op.
+import contextvars as _contextvars
+
+_tmap_counter: "_contextvars.ContextVar[dict | None]" = _contextvars.ContextVar(
+    "tmap_counter", default=None)
+
+
+def begin_tmap_count() -> dict:
+    """요청 시작 시 호출 — 새 카운터 박스를 심고 반환."""
+    box = {"n": 0}
+    _tmap_counter.set(box)
+    return box
+
+
+def tmap_call_count() -> int | None:
+    """현 요청의 T-map HTTP 시도 수. begin 전이면 None(비생성 문맥)."""
+    box = _tmap_counter.get()
+    return box["n"] if box is not None else None
+
 
 # --- Place search ------------------------------------------------------------
 
@@ -502,6 +525,9 @@ async def _tmap_walk_leg(
         "searchOption": "0",  # 0=recommended, 4=shortest distance
     }
 
+    _box = _tmap_counter.get()
+    if _box is not None:            # 관측 additive — 청구 대조용 시도 카운트
+        _box["n"] += 1
     resp = await client.post(TMAP_PEDESTRIAN_URL, headers=headers, json=body)
     # T-map 무료 쿼터 소진은 429 QUOTA_EXCEEDED — 일반 HTTP 장애와 구분해 전용
     # 예외로 승격(상위가 nopath 폴백 금지·503 정직화). 다른 4xx/5xx는 그대로 전파.

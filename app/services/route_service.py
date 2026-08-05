@@ -303,6 +303,8 @@ async def _record_gen_failure(
             "grid_lat": round(req.start.lat, 2), "grid_lng": round(req.start.lng, 2),
             "fail": fail, "pitstop": pitstop,
             "user_id": user_id,
+            # T-map 실콜(관측 additive, 2026-08-05) — 성공측 gen_meta.tmap_http와 대칭
+            "tmap_http": map_service.tmap_call_count(),
         }}
         supabase = get_supabase_admin()
         await asyncio.to_thread(
@@ -911,6 +913,10 @@ async def create_running_route(
     user_id (from a validated token) is stored on the saved route; None for
     anonymous requests.
     """
+    # T-map 실 HTTP 콜 카운터(관측 additive, 2026-08-05 청구 회계) — 요청 스코프
+    # 박스. 전 서빙 분기(캐노니컬·메인·재추첨·dedup 바닥·실패)의 실콜을 단일
+    # 지점(_save_route·_record_failure)에서 gen_meta.tmap_http로 병기.
+    map_service.begin_tmap_count()
     # Step 0: learning loop — gather what nearby runners disliked, so the
     # model can avoid it. Best-effort: returns [] on any failure. The user's
     # saved ai_course settings load concurrently (also best-effort).
@@ -1474,6 +1480,13 @@ async def _save_route(
     # Start coordinate (from the first waypoint) powers the location-based
     # learning loop; store it as top-level columns for fast proximity queries.
     start_coord = route.waypoints[0].coordinate if route.waypoints else None
+
+    # T-map 실콜 병기(관측 additive, 2026-08-05) — 전 서빙 분기가 이 함수를
+    # 지나므로 단일 지점 배선(§10 route_id 전례). 비생성 문맥(begin 없음)은 None.
+    if gen_meta is not None and "tmap_http" not in gen_meta:
+        _thc = map_service.tmap_call_count()
+        if _thc is not None:
+            gen_meta["tmap_http"] = _thc
 
     record = {
         # Owner (from a validated token; None when anonymous)
