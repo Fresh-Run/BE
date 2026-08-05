@@ -85,6 +85,14 @@ class Settings(BaseSettings):
     # T-map (SK Telecom) — sidewalk-accurate pedestrian routing.
     tmap_app_key: str = ""
     map_provider: Literal["kakao", "naver", "tmap"] = "kakao"
+    # T-map 콜 예산 1단계 (2026-08-05, 오너 확정 월 10만원=1만콜 하드 제약):
+    # ①프로세스 하드캡 — 0=무제한(서빙 기본). **오프라인 캠페인 스크립트는 설정
+    #   필수**(§C 콜 예산 선계산 — 초과 시 TmapBudgetExceeded로 중단).
+    # ②leg 캐시 TTL초 — 0=캐시 OFF. ③KST 일일 소프트 임계 — 초과 시 WARNING만
+    #   (차단 아님 — 차단 도입은 오너 별도 결정).
+    tmap_budget_calls: int = 0
+    tmap_leg_cache_ttl_s: float = 600.0
+    tmap_daily_warn_calls: int = 300
 
     # IAP (Apple 인앱 구독 검증)
     # 'apple' = 실검증 (App Store Server API 크리덴셜 필요 — 출시기 구현),

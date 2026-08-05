@@ -54,6 +54,13 @@ _GEOJSON_CTRL = (
 
 
 def run_tests():
+    # leg 캐시(2026-08-05 예산 1단계) 격리 — 이 스위트는 동일 좌표쌍에 서로 다른
+    # 응답을 주입하므로 캐시가 켜져 있으면 2케이스부터 첫 성공분이 재사용된다.
+    from app.core.config import settings
+    _orig_ttl = settings.tmap_leg_cache_ttl_s
+    settings.tmap_leg_cache_ttl_s = 0
+    map_service.clear_tmap_leg_cache()
+
     print("[1. 표준 json.loads는 이 응답에 실패(전제 확인)]")
     try:
         json.loads(_GEOJSON_CTRL)
@@ -99,6 +106,7 @@ def run_tests():
         pass
     ok("429 → TmapQuotaExceeded(쿼터 소진 정직화 경로 유지)")
 
+    settings.tmap_leg_cache_ttl_s = _orig_ttl
     print("\n" + "=" * 50 + "\n  ALL TESTS PASSED\n" + "=" * 50)
 
 

@@ -303,8 +303,9 @@ async def _record_gen_failure(
             "grid_lat": round(req.start.lat, 2), "grid_lng": round(req.start.lng, 2),
             "fail": fail, "pitstop": pitstop,
             "user_id": user_id,
-            # T-map 실콜(관측 additive, 2026-08-05) — 성공측 gen_meta.tmap_http와 대칭
+            # T-map 실콜·캐시 적중(관측 additive, 2026-08-05) — 성공측과 대칭
             "tmap_http": map_service.tmap_call_count(),
+            "tmap_cache_hit": map_service.tmap_cache_hits(),
         }}
         supabase = get_supabase_admin()
         await asyncio.to_thread(
@@ -1481,12 +1482,13 @@ async def _save_route(
     # learning loop; store it as top-level columns for fast proximity queries.
     start_coord = route.waypoints[0].coordinate if route.waypoints else None
 
-    # T-map 실콜 병기(관측 additive, 2026-08-05) — 전 서빙 분기가 이 함수를
-    # 지나므로 단일 지점 배선(§10 route_id 전례). 비생성 문맥(begin 없음)은 None.
+    # T-map 실콜·캐시 적중 병기(관측 additive, 2026-08-05) — 전 서빙 분기가 이
+    # 함수를 지나므로 단일 지점 배선(§10 route_id 전례). begin 없음(비생성)은 None.
     if gen_meta is not None and "tmap_http" not in gen_meta:
         _thc = map_service.tmap_call_count()
         if _thc is not None:
             gen_meta["tmap_http"] = _thc
+            gen_meta["tmap_cache_hit"] = map_service.tmap_cache_hits()
 
     record = {
         # Owner (from a validated token; None when anonymous)

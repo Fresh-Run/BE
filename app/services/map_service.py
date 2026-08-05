@@ -26,6 +26,7 @@ import asyncio
 import logging
 import math
 import re
+import time
 
 import httpx
 from pydantic import ValidationError
@@ -110,7 +111,7 @@ _tmap_counter: "_contextvars.ContextVar[dict | None]" = _contextvars.ContextVar(
 
 def begin_tmap_count() -> dict:
     """요청 시작 시 호출 — 새 카운터 박스를 심고 반환."""
-    box = {"n": 0}
+    box = {"n": 0, "hit": 0}
     _tmap_counter.set(box)
     return box
 
@@ -119,6 +120,12 @@ def tmap_call_count() -> int | None:
     """현 요청의 T-map HTTP 시도 수. begin 전이면 None(비생성 문맥)."""
     box = _tmap_counter.get()
     return box["n"] if box is not None else None
+
+
+def tmap_cache_hits() -> int | None:
+    """현 요청의 leg 캐시 적중 수(관측 — 절감 실측의 분자)."""
+    box = _tmap_counter.get()
+    return box.get("hit") if box is not None else None
 
 
 # 프로세스 합계(오프라인 캠페인 회계, 2026-08-05 청구 포렌식) — 스크립트·E2E가
@@ -132,16 +139,90 @@ def tmap_process_total() -> int:
     return _process_tmap_total["n"]
 
 
+class TmapBudgetExceeded(Exception):
+    """프로세스 콜 예산(TMAP_BUDGET_CALLS) 소진 — 오프라인 캠페인 하드캡.
+
+    서빙은 미설정(0)=무제한이라 발생하지 않는다. 캠페인 스크립트에서 발생 시
+    즉시 중단이 정답(예산 재승인 후 재개)."""
+
+
 def _log_tmap_total() -> None:
     n = _process_tmap_total["n"]
     if n:
-        logger.info("T-map HTTP 시도 프로세스 합계: %d콜 (≈%d원 — 10원/콜 2026-08 실측)",
-                    n, n * 10)
+        budget = settings.tmap_budget_calls
+        logger.info(
+            "T-map HTTP 시도 프로세스 합계: %d콜 (≈%d원 — 10원/콜 2026-08 실측)%s",
+            n, n * 10, f" | 예산 {budget}콜" if budget else "")
 
 
 import atexit as _atexit
 
 _atexit.register(_log_tmap_total)
+
+
+# ── leg 캐시 (예산 1단계 ②, 2026-08-05) — 좌표쌍 라운딩 키 + TTL 메모리 캐시 ──
+# 정밀도 5자리(≈1.1m): T-map이 어차피 시작·끝을 보행 네트워크에 스냅하는 반경
+# (수십 m)보다 두 자릿수 작아 경로 정확도 무영향 — 4자리(≈11m)는 길 건너편
+# 오스냅 가능성이 있어 기각. 단일 워커 상주 dict(무Redis — 오버엔지니어링 경계),
+# TTL 기본 600s(재생성 리트라이 창 커버·도로망 변화 무관 수준), 상한 초과 시
+# 만료분 청소 후 최고령 축출(weather _cache 관례).
+_LEG_CACHE_MAX = 2000
+_leg_cache: dict[tuple, tuple[float, object]] = {}   # key → (expires_at, result)
+
+
+def _leg_key(o: Coordinate, d: Coordinate) -> tuple:
+    return (round(o.lat, 5), round(o.lng, 5), round(d.lat, 5), round(d.lng, 5))
+
+
+def clear_tmap_leg_cache() -> None:
+    """테스트·캠페인 격리용."""
+    _leg_cache.clear()
+
+
+def _leg_cache_get(key: tuple):
+    hit = _leg_cache.get(key)
+    if hit is None:
+        return None
+    if hit[0] <= time.monotonic():
+        _leg_cache.pop(key, None)
+        return None
+    return hit[1]
+
+
+def _leg_cache_put(key: tuple, result) -> None:
+    ttl = settings.tmap_leg_cache_ttl_s
+    if ttl <= 0:
+        return
+    now = time.monotonic()
+    if len(_leg_cache) >= _LEG_CACHE_MAX:
+        for k in [k for k, (exp, _r) in _leg_cache.items() if exp <= now]:
+            _leg_cache.pop(k, None)
+        while len(_leg_cache) >= _LEG_CACHE_MAX:
+            _leg_cache.pop(next(iter(_leg_cache)))
+    _leg_cache[key] = (now + ttl, result)
+
+
+# ── 일일 소프트 임계 (예산 1단계 ③) — KST 일 콜 카운트, 초과 WARNING(차단 없음) ──
+_daily_tmap = {"day": None, "n": 0, "warned_at": 0}
+
+
+def _daily_tmap_tick() -> None:
+    from datetime import datetime, timedelta, timezone as _tz
+    day = datetime.now(_tz(timedelta(hours=9))).date().isoformat()
+    if _daily_tmap["day"] != day:
+        _daily_tmap.update(day=day, n=0, warned_at=0)
+    _daily_tmap["n"] += 1
+    thr = settings.tmap_daily_warn_calls
+    if not thr or _daily_tmap["n"] < thr:
+        return
+    # 첫 초과 시 1회 + 이후 100콜마다(로그 폭주 방지) — 차단은 하지 않는다
+    # (차단 도입 여부는 오너 별도 결정 사항).
+    if (_daily_tmap["warned_at"] == 0
+            or _daily_tmap["n"] - _daily_tmap["warned_at"] >= 100):
+        _daily_tmap["warned_at"] = _daily_tmap["n"]
+        logger.warning(
+            "T-map 일일 콜 %d — 소프트 임계 %d 초과(KST %s, ≈%d원). 차단 아님.",
+            _daily_tmap["n"], thr, day, _daily_tmap["n"] * 10)
 
 
 # --- Place search ------------------------------------------------------------
@@ -532,6 +613,23 @@ async def _tmap_walk_leg(
     T-map is a POST with a JSON body and returns a GeoJSON FeatureCollection.
     Coordinates are WGS84 lng/lat. Returns (distance_m, duration_s, path).
     """
+    # leg 캐시(예산 1단계 ②) — 적중이면 HTTP 0(카운터·예산·일일 임계 전부 무소모).
+    # 리스트는 얕은 복사로 반환 — 호출측 변형이 캐시 원본을 오염하지 않게.
+    _ck = _leg_key(origin, destination)
+    if settings.tmap_leg_cache_ttl_s > 0:
+        _cached = _leg_cache_get(_ck)
+        if _cached is not None:
+            _b = _tmap_counter.get()
+            if _b is not None:
+                _b["hit"] = _b.get("hit", 0) + 1
+            d, s, p, rs, cc = _cached
+            return d, s, list(p), list(rs), cc
+    # 하드캡(예산 1단계 ①) — 서빙은 미설정(0)=무제한. 캐시 미스의 실호출만 소모.
+    _budget = settings.tmap_budget_calls
+    if _budget and _process_tmap_total["n"] >= _budget:
+        raise TmapBudgetExceeded(
+            f"TMAP_BUDGET_CALLS={_budget} 소진(시도 {_process_tmap_total['n']}) — "
+            f"캠페인 중단, 예산 재승인 후 재개")
     headers = {
         "appKey": settings.tmap_app_key,
         "Content-Type": "application/json",
@@ -552,6 +650,7 @@ async def _tmap_walk_leg(
     if _box is not None:            # 관측 additive — 청구 대조용 시도 카운트
         _box["n"] += 1
     _process_tmap_total["n"] += 1   # 프로세스 합계(오프라인 캠페인 회계) — 무조건
+    _daily_tmap_tick()              # 일일 소프트 임계(예산 1단계 ③ — WARNING만)
     resp = await client.post(TMAP_PEDESTRIAN_URL, headers=headers, json=body)
     # T-map 무료 쿼터 소진은 429 QUOTA_EXCEEDED — 일반 HTTP 장애와 구분해 전용
     # 예외로 승격(상위가 nopath 폴백 금지·503 정직화). 다른 4xx/5xx는 그대로 전파.
@@ -589,5 +688,7 @@ async def _tmap_walk_leg(
     if not path or distance_m <= 0:
         raise LegNotRoutable()
 
-    return distance_m, duration_s, path, road_segments, _count_crossings(
-        data.get("features", []))
+    _cross = _count_crossings(data.get("features", []))
+    _leg_cache_put(_ck, (distance_m, duration_s, list(path), list(road_segments),
+                         _cross))
+    return distance_m, duration_s, path, road_segments, _cross
