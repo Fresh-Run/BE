@@ -4,10 +4,11 @@ Integration: run 댓글 1-레벨 답글 (2026-08-01, Ivan 계약)
 1. 일반 댓글 — parent null (컬럼 유무 무관: 미전송 키 생략)
    [게이트] run_comments.parent_comment_id 미적용이면 명시 대기 exit 1
 2. 답글 정상 — parent 실림 + 알림(런 주인 + 부모 작성자, 기존 run_commented 타입)
-2b. payload 구분(2026-08-04 additive) — 부모 작성자 건만 is_reply·parent_comment_id,
-    주인 건 키 셋 {run_id} 바이트 불변(is_reply:false 금지)
-2c. dedup 불변 — self-skip·주인=부모 작성자 1건(주인 경로)·자기 답글 부모 알림 0
-2d. 푸시 카피 분기 — _render_body ko/en 답글 세분, 주인·폴백·pb 문구 불변
+2b. payload 구분(2026-08-04 additive) — 부모 작성자 건 is_reply·parent_comment_id,
+    일반 댓글·타인 부모 답글의 주인 건은 키 셋 {run_id} 바이트 불변(is_reply:false 금지)
+2c. dedup 불변 + 엣지 (b)(2026-08-05 확정) — self-skip·자기 답글 부모 알림 0·
+    주인=부모 작성자 답글 1건(주인 경로)에도 is_reply 2종 부착
+2d. 푸시 카피 분기 — _render_body ko/en 답글 세분(주인 케이스 동일 분기), 폴백·pb 불변
 3. 깊이 2 → 422 reply_depth_exceeded / 4. 타 run 부모 → 422 comment_parent_invalid
 5. cascade — 부모 삭제 → 답글 DB 소멸 + comment_count 동기
 6. count 답글 포함(행 수 기반) / 7. 플랫 페치 shape 불변 + parent 참조
@@ -140,15 +141,17 @@ def run_tests():
             .eq("target_id", run2).eq("type", "run_commented").execute().data
 
     assert run2_notes() == [], "본인 댓글은 무알림(self-skip)"
-    # C가 주인(A)의 댓글에 답글 — 주인=부모 작성자 → 정확히 1건(주인 경로만)
+    # C가 주인(A)의 댓글에 답글 — 주인=부모 작성자 → 정확히 1건(주인 경로만).
+    # 엣지 (b) 확정(2026-08-05): 이 1건에도 is_reply·parent_comment_id 부착.
     r = api("POST", f"/runs/{run2}/comments", tok_c,
             json={"content": "주인 댓글에 답글", "parent_comment_id": a_parent["id"]})
     assert r.status_code == 200, r.text
     rows = run2_notes()
     assert len(rows) == 1 and rows[0]["user_id"] == a, rows
-    # 그 1건은 주인 경로 — 신필드 미부착 바이트 불변이 계약(판단 플래그로 보고)
-    assert rows[0]["payload"] == {"run_id": run2}, rows[0]["payload"]
-    # C 일반 댓글 → C 자기 답글: 부모 작성자==caller → 부모 알림 0, 주인 +1만
+    assert rows[0]["payload"] == {"run_id": run2, "is_reply": True,
+                                  "parent_comment_id": a_parent["id"]}, rows[0]["payload"]
+    # C 일반 댓글 → C 자기 답글: 부모 작성자==caller → 부모 알림 0, 주인 +1만.
+    # 자기 답글의 주인 발송은 부모 작성자(C)≠주인이라 종전 {run_id} 바이트 불변.
     r = api("POST", f"/runs/{run2}/comments", tok_c, json={"content": "c 댓글"})
     c_parent = r.json()
     r = api("POST", f"/runs/{run2}/comments", tok_c,
@@ -156,8 +159,10 @@ def run_tests():
     assert r.status_code == 200, r.text
     rows = run2_notes()
     assert len(rows) == 3 and all(n["user_id"] == a for n in rows), rows
-    assert all(n["payload"] == {"run_id": run2} for n in rows), "주인 수신 전수 불변"
-    ok("주인=부모 작성자 1건(주인 경로·신필드 무) ✓ 자기 답글 부모 알림 0 ✓ self-skip ✓")
+    plain = [n for n in rows if n["payload"] == {"run_id": run2}]
+    tagged = [n for n in rows if n["payload"].get("is_reply")]
+    assert len(plain) == 2 and len(tagged) == 1, rows
+    ok("주인=부모 작성자 답글 is_reply 부착(b) ✓ 일반 댓글·타인 부모 주인 행 {run_id} 불변 ✓ self-skip·자기 답글 부모 알림 0 ✓")
 
     print("\n[2d. 푸시 카피 분기 — _render_body 순수 함수(ko/en, 발송 무접촉)]")
     from app.services import push_service as ps
@@ -173,7 +178,15 @@ def run_tests():
     assert ps._render_body("pb_achieved", "ko",
                            {"record_types": ["best_5k"]}, None) \
         == "5km 최고 기록! 🏅", "pb 분기 회귀 불변"
-    ok("답글 ko/en 세분 ✓ 주인·폴백·pb 기존 문구 불변 ✓")
+    # 엣지 (b): 주인=부모 작성자 케이스 payload도 동일 is_reply 분기를 그대로 탐
+    # — _render_body 추가 변경 불요 확인(ko/en 답글 문구 적용).
+    pay_owner_case = {"run_id": run1, "is_reply": True,
+                      "parent_comment_id": a_parent["id"]}
+    assert ps._render_body("run_commented", "ko", pay_owner_case, "철수") \
+        == "철수님이 내 댓글에 답글을 남겼어요"
+    assert ps._render_body("run_commented", "en", pay_owner_case, "Sue") \
+        == "Sue replied to your comment"
+    ok("답글 ko/en 세분 ✓ 주인·폴백·pb 기존 문구 불변 ✓ (b) 주인 케이스 동일 분기 ✓")
 
     print("\n[3. 깊이 2 → 422 reply_depth_exceeded]")
     r = api("POST", f"/runs/{run1}/comments", tok_b,

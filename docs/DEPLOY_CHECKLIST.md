@@ -41,6 +41,7 @@
 
 ## E. 배포 후 운영 세팅
 
+- **배포 후 `git push origin main` 확인** — 푸시≠배포지만 배포≠푸시도 사고: 파트너 읽기 클론·계약 드리프트 체크·코드 백업이 원격 기준(2026-08-04 Ivan 클론 드리프트 실측).
 - [ ] git push 배포: GH Actions에 `fly deploy` 워크플로 (FLY_API_TOKEN secret) — 수동 `fly deploy`로 시작해도 무방
 - [ ] **DB 백업 크론**: GH Actions 주 1회 `supabase db dump` → 프라이빗 아티팩트/스토리지 (무료 티어는 자동 백업 없음!)
 - [ ] Sentry에 테스트 에러 1건 보내 수신 확인

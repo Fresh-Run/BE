@@ -1332,6 +1332,13 @@ async def create_run_comment(
     row = res.data[0]
 
     # run 주인에게 알림 (본인 댓글은 self-skip). payload에 run_id (딥링크).
+    # 엣지 (b) 확정(오너+Ivan 2026-08-05): 주인이 부모 댓글 작성자인 답글이면
+    # 주인 경로에도 is_reply·parent_comment_id — 답글은 소유 무관하게 답글(문구
+    # 정확성). 일반 댓글·타인 부모 답글의 주인 발송은 종전 바이트 불변({run_id}).
+    owner_payload: dict = {"run_id": run_id}
+    if parent is not None and parent["user_id"] == owner_id:
+        owner_payload.update({"is_reply": True,
+                              "parent_comment_id": parent_comment_id})
     from app.services import notification_service  # local to avoid circular risk
     try:
         await notification_service.create_notification(
@@ -1340,7 +1347,7 @@ async def create_run_comment(
             type="run_commented",
             target_id=run_id,
             target_type="run",
-            payload={"run_id": run_id},
+            payload=owner_payload,
         )
     except Exception:  # noqa: BLE001 - 알림 실패가 댓글 작성을 막지 않음
         logger.warning("run_commented 알림 생성 실패", exc_info=True)
