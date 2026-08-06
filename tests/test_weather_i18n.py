@@ -91,7 +91,8 @@ def run_label_grade():
     r.pm25 = PmReading(value=80.0, grade="나쁨")
     r.pm10 = PmReading(value=30.0, grade="좋음")
     out = ws.localize_weather(r, "en")
-    assert out.running_index.label == "Excellent", out.running_index.label
+    # 2026-08-06 en 3종 축약(Ivan 칩 오버플로우 — §C 동일 커밋 갱신): 최고→Great
+    assert out.running_index.label == "Great", out.running_index.label
     assert out.pm25.grade == "나쁨" and out.pm10.grade == "좋음", \
         "grade는 와이어 값(클라 색상 키) — 번역 금지(Ivan 계약)"
     ok(f'label "{out.running_index.label}" ↔ grade "{out.pm25.grade}/{out.pm10.grade}" 유지')
@@ -100,6 +101,13 @@ def run_label_grade():
     missing = [x for x in labels if x not in ws._LABEL_EN]
     assert not missing, missing
     ok(f"label 5종({sorted(labels)}) 전부 en 페어 보유")
+    # 2026-08-06 축약 3종 고정 + 무변경 2종 + ko 와이어·판정 임계 불변
+    assert (ws._LABEL_EN["최고"], ws._LABEL_EN["주의"], ws._LABEL_EN["비추천"]) \
+        == ("Great", "Risky", "Avoid"), ws._LABEL_EN
+    assert ws._LABEL_EN["좋음"] == "Good" and ws._LABEL_EN["보통"] == "Fair"
+    assert [ws._label(s) for s in (90, 70, 50, 30, 29)] \
+        == ["최고", "좋음", "보통", "주의", "비추천"], "임계·ko 라벨 무변경"
+    ok("축약 3종(Great/Risky/Avoid) ✓ Good/Fair 불변 ✓ ko·임계 경계 불변 ✓")
     # ko 회귀 — 동일 객체
     assert ws.localize_weather(r, "ko") is r
     ok("ko 동일 객체 회귀 유지")

@@ -306,8 +306,11 @@ def _condition_en(code: int) -> str:
 
 
 _LABEL_EN: dict[str, str] = {   # 러닝지수 등급 라벨 5종 (_label 전수, 2026-07-29 Ivan)
-    "최고": "Excellent", "좋음": "Good", "보통": "Fair",
-    "주의": "Caution", "비추천": "Not recommended",
+    # 2026-08-06 en 3종 축약(Ivan — 375pt 칩 오버플로우): Excellent→Great,
+    # Caution→Risky, Not recommended→Avoid. 표시 전용 문자열(클라 분기 키는
+    # grade — 라벨 분기 금지 계약)·ko 와이어 값·판정 임계 무변경.
+    "최고": "Great", "좋음": "Good", "보통": "Fair",
+    "주의": "Risky", "비추천": "Avoid",
 }
 
 
