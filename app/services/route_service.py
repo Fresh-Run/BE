@@ -1031,7 +1031,12 @@ async def create_running_route(
     #    Gemini 순간 RPM 피크를 평탄화(429 스로틀 완화, 2026-07-22). 재시도는 SDK 층.
     # 혼합 풀(§9 부활): ANCHOR_POOL_N만큼 v87 롤을 앵커 롤로 대체(Gemini 0콜). v87 롤이
     # 거리 보장 하방, 앵커 롤이 park·spur로 tiebreak 경쟁. v87 최소 3 보장(하방 안전).
-    anchor_n = max(0, min(settings.anchor_pool_n, _POOL_SIZE - 3))
+    # one-way 게이트(2026-08-08, P2 a8905a40 실증): 앵커 롤은 루프 전용 — 편도
+    # 요청(req.end 지정)에선 제외. 평시엔 v87이 편도를 이겨 잠복했지만 Gemini
+    # 전멸(크레딧 소진 8/6) 시 앵커 루프가 "편도" 제목으로 서빙됐다. 이 게이트로
+    # 전멸+one-way는 gen_cands 0 → 기존 503 정직 경로 자연 발동(502 위장 소멸).
+    anchor_n = (0 if req.end is not None
+                else max(0, min(settings.anchor_pool_n, _POOL_SIZE - 3)))
     v87_n = _POOL_SIZE - anchor_n
     radii = _pool_radii(target_km, start_end_km, v87_n)
 
