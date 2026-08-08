@@ -515,7 +515,10 @@ class PublicProfileResponse(BaseModel):
     visibility: str = Field("public", description="계정 공개범위 (잠금 화면 판단용).")
     locked: bool = Field(
         False, description="True면 비공개 계정을 볼 권한 없음 — 🔒 화면. "
-        "이때 follower/following/run count·bio는 0/null(미노출), 닉네임·아바타만."
+        "**카운트(follower/following/public_run)는 진실값**(2026-07-13 계약 개정 "
+        "35811c6 — 인스타 비대칭: 숫자는 열되 명단·콘텐츠·bio는 잠금). bio는 "
+        "null, followers_run_count는 미전달(0). (구 v1 '카운트 0/null' 문구는 "
+        "스테일이었음 — 2026-08-08 오너 재확정으로 정정.)"
     )
     # 피드 설정 렌더 힌트 (2026-07-13 additive) — 소유자 설정값 그대로. **잠금
     # 응답(locked=true)엔 null**(affordance 자체가 없어 무의미). false면 프론트가

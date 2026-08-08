@@ -491,6 +491,14 @@ async def list_browse_crews(
 
 async def get_crew(crew_id: str, user_id: str) -> CrewResponse | None:
     """Return a crew if public or the user is a member; otherwise None (404)."""
+    import uuid as _uuid
+    try:
+        _uuid.UUID(crew_id)
+    except ValueError:
+        # 비uuid path param = 존재 불가 id → 404 은닉(2026-08-08 실관측: FE가
+        # /crews/my 오호출 → 패턴 경로 {crew_id}="my" → PostgREST 22P02 →
+        # 502 노출. route delete 교정 2026-08-04와 동형 — 재발 2호).
+        return None
     supabase = get_supabase_admin()
     res = await asyncio.to_thread(
         lambda: supabase.table("crews").select("*").eq("id", crew_id).limit(1).execute()
