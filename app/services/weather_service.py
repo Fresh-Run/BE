@@ -415,25 +415,29 @@ async def _fetch_current(
 async def _fetch_uv(
     client: httpx.AsyncClient, lat: float, lng: float, key: str
 ) -> float | None:
-    """UV index — 오늘 최고(solar-noon 최대, /2.5/uvi 시맨틱 — '현재' 아님).
+    """UV index — **현재 UV**(One Call 4.0 current, 2026-08-18 전환).
 
     Best-effort — any failure returns None (타일 숨김).
 
-    /data/2.5/uvi는 공식 deprecated지만 무료 키로 동작 확인(2026-07-09 실검증).
-    One Call 3.0(uvi 포함)은 별도 구독이라 보류 — 이 엔드포인트가 끊기면
-    null이 되며(무해), 그때 One Call/Open-Meteo 전환 검토.
+    구 /data/2.5/uvi(일 최고값 시맨틱)가 러닝 골든타임(아침·저녁) 판단을
+    왜곡하던 것 교정(2026-08-05 파이프 추적 — 파이프 무왜곡·시맨틱 갭 확정).
+    4.0 응답 shape는 3.0(current.uvi)과 다름: top에 data 배열 — **data[0].uvi**
+    (2026-08-18 실검증·담당자 확인. 3.0 경로는 별도 구독이라 401). 계정 cap
+    1,000/일 = 무료 한도 잠금(청구 0 구조), 카운터 임계 800 감시.
     """
     try:
-        _ow_tick()   # 벤더 콜 관측(2026-08-06)
+        _ow_tick()   # 벤더 콜 관측(2026-08-06) — 4.0 전환에도 배선 유지
         res = await client.get(
-            f"{settings.openweather_base_url}/data/2.5/uvi",
+            f"{settings.openweather_base_url}/data/4.0/onecall/current",
             params={"lat": lat, "lon": lng, "appid": key},
         )
         if res.status_code != 200:
             return None
-        return float(res.json()["value"])
+        data = res.json().get("data") or []
+        uvi = data[0].get("uvi") if data else None   # 구조 이상 방어 — None 폴백
+        return float(uvi) if uvi is not None else None
     except Exception:  # noqa: BLE001 — partial failure must not break weather
-        logger.warning("OpenWeather uvi 호출 실패 (자외선 없이 응답)")
+        logger.warning("OpenWeather uvi(4.0 current) 호출 실패 (자외선 없이 응답)")
         return None
 
 
@@ -460,8 +464,10 @@ def _uv_at_response_time(
 ) -> WeatherResponse:
     """UV 야간 0 처리(AIR_QUALITY_SOURCE_DESIGN §3 ⓐ, 오너 승인 2026-07-31).
 
-    daily-max UV(/2.5/uvi)가 밤에도 노출되던 것(실측: 20:53 KST "매우높음 9.3")
-    교정 — 일몰~일출엔 value 0·"낮음", 주간은 현행(오늘 최고) 유지.
+    daily-max UV(구 /2.5/uvi)가 밤에도 노출되던 것(실측: 20:53 KST "매우높음 9.3")
+    교정. 2026-08-18 4.0 current(실시간) 전환 후에도 유지 — 실시간 UV는 밤에
+    자연히 ~0이지만, 캐시 TTL 10분 경계(일몰 직전 적재값이 직후 히트)를 이
+    응답 시점 가드가 계속 막는다(무수정 호환).
     판정은 **응답 시점**(캐시 적재 시점 아님): 낮에 적재된 캐시가 일몰 직후
     히트돼도 밤엔 0 — lang 응답 시점 조립 함정과 동형. 비교는 epoch(UTC) 초라
     KST 경계 계산 불요. sun 결손 시 적재 시점 is_day 폴백(best-effort).

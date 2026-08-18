@@ -404,8 +404,9 @@ class WeatherResponse(BaseModel):
     pm25: Optional[PmReading] = Field(None, description="미세먼지 API 실패 시 null.")
     pm10: Optional[PmReading] = None
     uv: Optional[UvReading] = Field(
-        None, description="오늘 최고 자외선(solar-noon 최대 — /2.5/uvi 시맨틱, "
-        "'현재'가 아님). API 실패 시 null (타일 숨김)."
+        None, description="**현재 자외선**(One Call 4.0 current — 2026-08-18 전환. "
+        "구 '오늘 최고' 시맨틱 아님 — 타일 라벨도 '현재 자외선'으로). "
+        "API 실패 시 null (타일 숨김)."
     )
     is_day: bool = Field(
         True, description="일출~일몰 사이 여부 — 프론트 자체 아이콘 셋의 주/야 "

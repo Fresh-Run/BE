@@ -145,7 +145,8 @@ WEATHER_JSON = {
 NIGHT_JSON = {**WEATHER_JSON,
               "weather": [{"id": 800, "main": "Clear", "description": "맑음", "icon": "01n"}]}
 AIR_JSON = {"list": [{"components": {"pm2_5": 12.0, "pm10": 28.0}}]}
-UVI_JSON = {"value": 6.23}
+# 4.0 onecall/current shape(2026-08-18 전환) — top data 배열, data[0].uvi
+UVI_JSON = {"data": [{"uvi": 6.23, "dt": 1787027342}]}
 
 
 class MockOW(BaseHTTPRequestHandler):
@@ -176,7 +177,7 @@ class MockOW(BaseHTTPRequestHandler):
                 self._send(500, {"error": "boom"})
             else:
                 self._send(200, AIR_JSON)
-        elif parsed.path == "/data/2.5/uvi":
+        elif parsed.path == "/data/4.0/onecall/current":
             MockOW.counts["uv"] += 1
             if lat == 13.0:
                 self._send(500, {"error": "boom"})
@@ -304,13 +305,13 @@ def phase3(c, tok):
         assert isinstance(d["temp_c"], (int, float))
         assert 0 <= d["running_index"]["score"] <= 100
         assert d["running_index"]["comment"]
-        # UV: deprecated 엔드포인트 실확인 — 끊기면 null(무해)이라 warn만
+        # UV: 4.0 current 실확인(2026-08-18 전환) — 끊기면 null(무해)이라 warn만
         if d.get("uv") is not None:
             assert d["uv"]["value"] >= 0 and d["uv"]["grade"] in (
                 "낮음", "보통", "높음", "매우높음", "위험")
             uv_txt = f"UV {d['uv']['value']} [{d['uv']['grade']}]"
         else:
-            warn("실호출 uv=null — /2.5/uvi 서비스 종료 가능성, 전환 검토 신호")
+            warn("실호출 uv=null — 4.0 구독/키 상태 확인 신호")
             uv_txt = "UV null"
         ok(f"실호출 200 ✓ {d.get('area')}: {d['temp_c']}°C, {uv_txt}, "
            f"지수 {d['running_index']['score']}점 [{d['running_index']['label']}]")
