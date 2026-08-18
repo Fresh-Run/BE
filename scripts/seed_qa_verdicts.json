@@ -68,6 +68,14 @@
       "reason": "왕복 회랑 420m 내재(엑스포 해안 왕복 팔) — 커넥터 무관·§8.19 ① 위반, 폐합 완화(555m 재량 통과)와 별개(오너 판정 2026-08-18). 팽성 파이프 재구성(꼬리 절단 포함)에도 회랑 잔존 — 2.1km 재구성 기준 이중주행 ~40%. 여수(만덕동·엑스포권) 신영토는 시드 요청 DM 경로로 별도 추적.",
       "date": "2026-08-18",
       "type": "run"
+    },
+    {
+      "type": "graph_course",
+      "candidate_id": "cheongna_factory_top3",
+      "source": "graph_factory",
+      "verdict": "adopted",
+      "reason": "그래프 공장 1호 채택(오너 육안 ③⑤ 통과·후보 #3 확정 2026-08-19) — osmnx round-trip 청라 파일럿(2f2853f) 산출 4.64km 순환. §8.19 기계 전항 클린(이중 1%·회랑 67m·motorway/trunk 0). 실주 트랙 아님(원 GPS 소유자 부재 — source 구분은 추후 성과 대조용). 시드: db/2026-08-19_seed_cheongna_graphfactory1_draft.sql (코스명 오너 확정 대기 — '심곡천' 수계 실명은 Kakao 미실증이라 보류).",
+      "date": "2026-08-19"
     }
   ]
 }
