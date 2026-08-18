@@ -1,0 +1,4 @@
+# 코스 팩토리 전용 의존성(2026-08-19 청라 파일럿) — 프로젝트 requirements.txt에 추가 금지
+# .venv에 수동 설치: .venv/bin/pip install -r requirements-factory.txt
+osmnx==2.1.1
+scikit-learn
