@@ -35,3 +35,4 @@ design/
 
 # v2.7 E2E 자동 러너 런타임 산출물
 _e2e_v27_verdict.json
+cache/
