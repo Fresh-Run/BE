@@ -100,6 +100,22 @@
    "verdict": "adopted",
    "reason": "[단거리] 일산호수공원 노래하는분수대 순환 3.97km — 폐합0·자기교차0·이중2%·둘레비0.94·motorway/trunk0. 회랑 183m spur는 오너 육안 통과(형상 self_cross0이 게이트). 진입점 노래하는분수대 실 POI 27m. 그래프 공장 3호 지역 채택(오너 육안 통과 2026-08-25) — osmnx round-trip 일산 배치(bd44c3e). 일산호수공원 태깅 코어 1.32(경계)이나 배치 클린율 89%(52/58·광교 58% 능가 — 대형 보행순환로라 태깅비<코스품질). 형상 self_intersections 0(단일 폐곡선). 실주 트랙 아님(원 GPS 소유자 부재). NEW territory 일산 캐노니컬 0. 시드: db/2026-08-25_seed_ilsan_graphfactory.sql",
    "date": "2026-08-25"
+  },
+  {
+   "type": "graph_course",
+   "candidate_id": "daejeon_factory_eorini_4.51",
+   "source": "graph_factory",
+   "verdict": "adopted",
+   "reason": "대전 그래프 공장 핀포인트 등재 채택(오너 육안 통과 2026-08-25) — osmnx round-trip 대전 배치(bd44c3e), 한밭수목원 어린이정원 순환 4.51km. 폐합0·자기교차0(단일 폐곡선)·회랑45m·이중1%·둘레비1.11·motorway/trunk0. 진입점 한밭수목원 어린이정원 실 POI(AT4) 34m. 태깅 코어 1.28(경계)·배치 클린율 25%(15/58 — 광교58%·일산89% 대비 부분적격). **핀포인트 등재(코어 한정)**: self_cross0 클린 후보 3개 전부 이 진입점 발 — 단거리 1개만 등재(장거리 7.06/9.14km 동일 루프 확장 중복 제외). 갑천 수변·엑스포 간선물림 73% 배제 — 갑천 실주 시드 대기. 실주 트랙 아님(원 GPS 소유자 부재). NEW territory 대전 캐노니컬 0. 시드: db/2026-08-25_seed_daejeon_graphfactory.sql",
+   "date": "2026-08-25"
+  },
+  {
+   "type": "graph_course",
+   "candidate_id": "gwanggyo_reselect_woncheon_3.27",
+   "source": "graph_factory",
+   "verdict": "adopted",
+   "reason": "광교 재등재 채택(오너 배경지도 육안 통과 2026-08-25) — 롤백된 광교호수공원 원천습지(3.66km·self_cross2·street-grid)의 대체. osmnx round-trip 광교 배치(4800ad7) 재선별 best#1, 원천호수 순환 3.27km. 같은 진입점(원천습지 실 POI)이나 target 3.27km로 원천호수 수변 실순환(배경지도 contextily OSM 확인). 폐합0·이중0%·둘레비0.84·motorway/trunk0·회랑62m. **self_intersections=1(하단 62m 경미 spur, 십자 관통 아님)** — 일산 self_cross0 표준의 **배경지도 육안 완화 사례**(지표 self_cross≤1이나 수변 실추종 시각 확인으로 오너 수용). 진입점 광교호수공원 원천습지 실 POI 82m. 코스명 광교 원천호수 순환(수변 실명). 시드: db/2026-08-25_seed_gwanggyo_reselect.sql",
+   "date": "2026-08-25"
   }
  ]
 }
