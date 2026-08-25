@@ -14,6 +14,7 @@ from openai import RateLimitError as GeminiRateLimited
 from fastapi.responses import JSONResponse
 
 from app.core.auth import get_current_user, require_admin
+from app.core.validation import validate_uuid_path_params
 from app.models.schemas import (
     ActivityFeedItem,
     AnnouncementCreate,
@@ -115,7 +116,10 @@ from app.services import (
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api", tags=["routes"])
+# 전역 uuid path param 가드 — 비uuid({crew_id}="my" 등) → PostgREST 22P02 → 502
+# 노출을 쿼리 이전에 404 은닉으로 차단(§C '비uuid 22P02' 근절, 단일 소스).
+router = APIRouter(prefix="/api", tags=["routes"],
+                   dependencies=[Depends(validate_uuid_path_params)])
 
 
 def _bad_gateway(context: str, exc: Exception) -> HTTPException:

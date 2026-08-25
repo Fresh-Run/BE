@@ -119,9 +119,14 @@
 - **외부 API 유료 전환은 cap 선설정 → 구독 순서**(T-map 교훈). 무료 티어의
   상용 가능 여부를 실확인하라 — Open-Meteo 무료는 **비상용 전용**(함정),
   OpenWeather One Call은 계정 일일 cap 설정 가능.
-- 【제안】 **비uuid path param은 PostgREST uuid 필터에서 22P02 → 일반 예외 →
-  502 노출** — uuid 사전 검증으로 404 은닉(DELETE /routes 교정 2026-08-04,
-  타 uuid 엔드포인트 잠재·재발 시 공용 헬퍼로 전수 교정).
+- **비uuid path param은 PostgREST uuid 필터에서 22P02 → 일반 예외 → 502 노출**
+  (재발 2호: route DELETE 2026-08-04·crews/{id}="my" 2026-08-08) — **근절 완료**:
+  `app/core/validation.py`의 라우터 dependency `validate_uuid_path_params`가 전
+  `id`/`*_id` path param(전부 uuid 리소스)을 쿼리 이전에 검증해 비uuid면 404 은닉
+  (DB 무접촉). `router = APIRouter(..., dependencies=[...])` 단일 배선이라 신규 uuid
+  엔드포인트도 자동 커버. 개별 핸들러 검증 추가 불요(전수 교정 2026-08-25, at-risk
+  47건 일괄). 신규 path param을 uuid 아닌 값(slug·code)으로 쓸 땐 이름을 `_id`로
+  짓지 말 것(가드가 404 처리함).
 - 【제안】 **Sentry 추적 헤더 주입은 수신 요청 트랜잭션 문맥에서만 발동** —
   로컬 재현·테스트는 단독 스팬으론 주입 0, `continue_trace`+`start_transaction`
   필요(2026-08-05 실측 — 양성 대조 없는 미주입 검증은 무의미).
