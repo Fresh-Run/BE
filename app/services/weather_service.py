@@ -160,13 +160,13 @@ def _pm_grade(value: float, bounds: tuple[float, float, float]) -> str:
 def _temp_deduction(feels_like_c: float) -> tuple[int, str]:
     f = feels_like_c
     if f > 32:
-        return 60, "무더위예요 — 오늘은 실내 러닝을 추천해요"
+        return 35, "무더위예요 — 오늘은 실내 러닝을 추천해요"
     if f > 28:
-        return 40, "많이 더워요 — 한낮을 피해 아침·저녁에 뛰세요"
+        return 20, "많이 더워요 — 한낮을 피해 아침·저녁에 뛰세요"
     if f > 24:
-        return 25, "더위 주의 — 페이스를 늦추고 수분을 챙기세요"
+        return 10, "더위 주의 — 페이스를 늦추고 수분을 챙기세요"
     if f > 22:
-        return 10, "살짝 더울 수 있어요 — 가볍게 뛰기 좋아요"
+        return 5, "살짝 더울 수 있어요 — 가볍게 뛰기 좋아요"
     if f >= 5:
         return 0, ""  # 이상적 구간 (5~22°C)
     if f >= 0:
@@ -208,11 +208,11 @@ def _dust_deduction(pm25: float | None, pm10: float | None) -> tuple[int, str]:
         return 0, ""
     worst = max(grades, key=_GRADE_ORDER.index)
     if worst == "매우나쁨":
-        return 50, "미세먼지 매우 나쁨 — 야외 러닝은 피하세요"
+        return 35, "미세먼지 매우 나쁨 — 야외 러닝은 피하세요"
     if worst == "나쁨":
-        return 25, "미세먼지가 나빠요 — 실내 러닝을 추천해요"
+        return 15, "미세먼지가 나빠요 — 실내 러닝을 추천해요"
     if worst == "보통":
-        return 5, "미세먼지 보통 — 민감하다면 마스크를 챙기세요"
+        return 0, "미세먼지 보통 — 민감하다면 마스크를 챙기세요"
     return 0, ""
 
 
@@ -371,7 +371,7 @@ def personalize_index(
         comment = (
             f"Above your heat threshold ({ws.heat_temp_c}°C) — "
             "try a morning or evening run" if en else
-            f"설정하신 더위 기준({ws.heat_temp_c}°C)을 넘었어요 — "
+            f"권장 기준({ws.heat_temp_c}°C)을 넘었어요 — "
             "아침·저녁 러닝을 추천해요"
         )
     elif ws.avoid_rain and _is_raining(response):

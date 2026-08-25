@@ -68,30 +68,30 @@ def phase1():
     good = ws._running_index(18.0, 800, 2.0, 10.0, 25.0, 50)
     assert (good.score, good.label) == (100, "최고"), (good.score, good.label)
     assert good.comment == "뛰기 딱 좋은 날씨예요!"
-    # 이상 구간 확장 확인: 22°C → 0 감점, 23°C → -10
+    # 이상 구간 확장 확인: 22°C → 0 감점, 23°C → -5 (2026-08 완화: -10→-5)
     assert ws._running_index(22.0, 800, 2.0, 10.0, 25.0, 50).score == 100
-    assert ws._running_index(23.0, 800, 2.0, 10.0, 25.0, 50).score == 90
-    # 더운 날: 체감 30°C → -40
+    assert ws._running_index(23.0, 800, 2.0, 10.0, 25.0, 50).score == 95
+    # 더운 날: 체감 30°C → -20 (2026-08 완화: -40→-20)
     hot = ws._running_index(30.0, 800, 2.0, 10.0, 25.0, 60)
-    assert (hot.score, hot.label) == (60, "보통"), (hot.score, hot.label)
+    assert (hot.score, hot.label) == (80, "좋음"), (hot.score, hot.label)
     assert "더워요" in hot.comment
-    # 미세먼지 나쁨: PM2.5 60 → -25
+    # 미세먼지 나쁨: PM2.5 60 → -15 (2026-08 완화: -25→-15)
     dust = ws._running_index(18.0, 800, 2.0, 60.0, 25.0, 50)
-    assert (dust.score, dust.label) == (75, "좋음")
+    assert (dust.score, dust.label) == (85, "좋음")
     assert "미세먼지" in dust.comment
-    # 매우나쁨 PM10 200 → -50
+    # 매우나쁨 PM10 200 → -35 (2026-08 완화: -50→-35)
     dust2 = ws._running_index(18.0, 800, 2.0, 10.0, 200.0, 50)
-    assert dust2.score == 50 and "매우 나쁨" in dust2.comment
-    # 비(501) -35 + 강풍(9) -15 → 50, 코멘트는 최대 감점(비)
+    assert dust2.score == 65 and "매우 나쁨" in dust2.comment
+    # 비(501) -35 + 강풍(9) -15 → 50, 코멘트는 최대 감점(비) — condition·wind 무변경
     rainy = ws._running_index(18.0, 501, 9.0, 10.0, 25.0, 50)
     assert rainy.score == 50 and "비가 와요" in rainy.comment
-    # 클램프: 뇌우 -60 + 무더위 33°C -60 + 매우나쁨 -50 → 0 비추천
+    # 클램프: 뇌우 -60 + 무더위 33°C -35 + 매우나쁨 -35 → 0 비추천 (완화해도 여전히 클램프)
     worst = ws._running_index(33.0, 211, 2.0, 80.0, 25.0, 50)
     assert (worst.score, worst.label) == (0, "비추천")
-    # 습도 90% -10, 이슬비(300) -20
+    # 습도 90% -10, 이슬비(300) -20 — 무변경 축
     assert ws._running_index(18.0, 800, 2.0, 10.0, 25.0, 90).score == 90
     assert ws._running_index(18.0, 300, 2.0, 10.0, 25.0, 50).score == 80
-    ok("좋은날 100 ✓ 22°C 확장 ✓ 더위 60 ✓ 먼지 75/50 ✓ 비+바람 50 ✓ 클램프 0 ✓")
+    ok("좋은날 100 ✓ 22°C 확장 ✓ 더위 80 ✓ 먼지 85/65 ✓ 비+바람 50 ✓ 클램프 0 ✓")
 
     step("1-2. PM 등급 (환경부 기준)")
     assert ws._pm_grade(15.0, ws._PM25_BOUNDS) == "좋음"

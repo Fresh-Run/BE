@@ -208,7 +208,7 @@ def phase1():
     out = ws.personalize_index(
         mk_weather(temp=35.0, pm10=30.0, code=501),
         WeatherSettings(dust_level_pm10=50, heat_temp_c=25, avoid_rain=True))
-    assert "더위 기준" in out.running_index.comment
+    assert "권장 기준" in out.running_index.comment  # 2026-08 오보 정정: "설정하신 더위"→"권장"
     # 토글 꺼짐 / 기준 미달 / pm10 없음 → 원본 그대로 (같은 객체)
     w = mk_weather(temp=35.0, pm10=100.0, code=501)
     assert ws.personalize_index(
