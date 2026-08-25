@@ -376,6 +376,30 @@ def _waypoint_chain_km(route: RouteResponse) -> float:
     return total
 
 
+def _apply_pitstop_name(route: RouteResponse, pick) -> None:
+    """최종 서빙 route의 is_pitstop 웨이포인트에 해석된 pitstop 실명·설명을 적용.
+
+    §3 축B(2026-07-22) 이후 웨이포인트 표시명은 서버가 중립 라벨("지점 N")로 부여하고
+    pitstop만 Kakao 실해석 이름으로 덮는다. 메인 스냅 직전 writeback은 to_snap 후보에만
+    적용돼, _spur_rescue·_adaptive_redraw로 to_snap 밖에서 생성된 서빙 best(verdict=
+    hit_redraw)는 중립 라벨이 잔존했다(0c7b0f66 실측). 최종 best 확정 후 이 함수를
+    단일 지점에서 호출해 전 서빙 경로(hit·redraw·rescue)를 커버한다.
+
+    - pick=None(키워드 없음·해석 실패)이면 무동작 → 중립 라벨 유지(이름 원칙: v87
+      발명 좌표는 중립, 실 POI만 실명).
+    - 좌표는 미변경: 비-redraw는 pre-snap이 이미 실좌표로 스냅했고, redraw는 폴리라인
+      정합(마커가 그려진 경로 위)을 보존 — 표시 이름·설명만 실명화.
+    - 첫 is_pitstop 웨이포인트 1개만(pre-snap과 동형). 이미 실명이면 동일값 재적용(멱등).
+    """
+    if pick is None:
+        return
+    for wp in route.waypoints:
+        if wp.is_pitstop:
+            wp.name = pick.name
+            wp.description = pick.address
+            return
+
+
 def _dist_km(a: Coordinate, b: Coordinate) -> float:
     """두 좌표 간 haversine 거리(km) — end-aware 반경·중점 계산용."""
     p1, p2 = math.radians(a.lat), math.radians(b.lat)
@@ -1124,6 +1148,7 @@ async def create_running_route(
     # gen_meta(성공)·gen_failures(실패) 양쪽에 기록해 "pitstop이 실패에 관여했나"를
     # 데이터로 즉답. 키워드 없으면 None(키 미기록).
     pitstop_obs: dict | None = None
+    pitstop_pick = None  # 해석된 pitstop Place — 최종 best 실명 단일 적용용(재추첨 커버)
     if req.pitstop_keyword and to_snap:
         try:
             # 검색 반경·정렬을 target·의도 연동으로(2026-07-22 (b)): 위치 밴드 상한이
@@ -1160,6 +1185,7 @@ async def create_running_route(
                 "acc_rank": acc_rank,  # Kakao accuracy 순위(대표성, 0=최상위)
             }
             if pick is not None:
+                pitstop_pick = pick  # 최종 best에 실명 재적용(재추첨/구제 경로 커버)
                 for r, _ck, _rad in to_snap:
                     for wp in r.waypoints:
                         if wp.is_pitstop:
@@ -1478,6 +1504,12 @@ async def create_running_route(
     # 중립 템플릿으로 override. generate_route가 넣은 추정거리 기반 제목을 최종값으로 갱신.
     best.summary = openai_service._neutral_summary(
         best.total_distance_km, best.is_one_way, lang)
+
+    # pitstop 실명 — 최종 best 확정 후 단일 지점 적용(0c7b0f66 실측 버그: _spur_rescue·
+    # _adaptive_redraw로 서빙된 best가 pre-snap writeback을 못 받아 중립 '지점 N' 잔존).
+    # _save_route(아래)·응답 반환 이전이라 DB·응답 양쪽 커버. 이미 해석된 pitstop_pick
+    # 재사용 — Gemini·Kakao 추가 콜 0. 비-redraw는 동일 이름 재적용(멱등).
+    _apply_pitstop_name(best, pitstop_pick)
 
     # 계측 요약 — 병목 분포 관측 (v2.7 배치 풀: pool·snapped·tmap_legs)
     _total = time.perf_counter() - _t0
