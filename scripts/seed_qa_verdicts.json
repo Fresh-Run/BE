@@ -116,6 +116,24 @@
    "verdict": "adopted",
    "reason": "광교 재등재 채택(오너 배경지도 육안 통과 2026-08-25) — 롤백된 광교호수공원 원천습지(3.66km·self_cross2·street-grid)의 대체. osmnx round-trip 광교 배치(4800ad7) 재선별 best#1, 원천호수 순환 3.27km. 같은 진입점(원천습지 실 POI)이나 target 3.27km로 원천호수 수변 실순환(배경지도 contextily OSM 확인). 폐합0·이중0%·둘레비0.84·motorway/trunk0·회랑62m. **self_intersections=1(하단 62m 경미 spur, 십자 관통 아님)** — 일산 self_cross0 표준의 **배경지도 육안 완화 사례**(지표 self_cross≤1이나 수변 실추종 시각 확인으로 오너 수용). 진입점 광교호수공원 원천습지 실 POI 82m. 코스명 광교 원천호수 순환(수변 실명). 시드: db/2026-08-25_seed_gwanggyo_reselect.sql",
    "date": "2026-08-25"
+  },
+  {
+   "type": "grid",
+   "region": "대전",
+   "candidate_id": "daejeon_hanbat_arboretum",
+   "source": "graph_factory",
+   "verdict": "deferred_realrun",
+   "reason": "대전 그래프 공장 부적합 확정(2026-08-25) — 실주 시드 대기. 클린율 25%(15/58)·순수 self_cross0 수목원 루프 0. 재탐색(144시도, 광교식 target 2.5~5.0 조정)에도 순수 sc0 내부 루프 미생성. 최선 후보 원형잔디광장 3.48km(sc1)도 배경지도상 하단 절반이 둔산대로 도로변 — 광교 원천호수 수변 명확 순환 기준 미충족(오너 배경지도 육안 게이트 미수용). 근본: 한밭수목원은 일산호수공원 같은 대형 보행전용 폐곡선 부재 → round-trip이 도로 물림. 등재 없음 — 실주 트랙 시드 대기.",
+   "date": "2026-08-25"
+  },
+  {
+   "type": "grid",
+   "region": "대전",
+   "candidate_id": "daejeon_gapcheon_expo",
+   "source": "graph_factory",
+   "verdict": "rejected",
+   "reason": "갑천 수변·엑스포시민광장 시작점은 인접 간선(trunk/motorway) 물림 73%(비코어 23후보 중 17) — 도로 노출로 부적격. 갑천 수변축은 실주 트랙 시드가 정석(도로 회피 실경로).",
+   "date": "2026-08-25"
   }
  ]
 }
