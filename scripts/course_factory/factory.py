@@ -31,6 +31,19 @@ REGIONS = {
     "daejeon":  ("대전 엑스포/갑천", (36.3720, 127.3880)),
 }
 
+# 큐레이션 시작점 — 실 공원 POI(Kakao 실검색 2026-08-25, 상업 상호차용 배제). 이름
+# 원칙 정합(진입점이 실 POI). 자동 링(build_starts) 대신 우선 사용. 자동 링과 비교하려면
+# CURATED_STARTS를 비우고 재실행(둘 다 Overpass 그래프 필요 — 쿨다운 후).
+CURATED_STARTS = {
+    "gwanggyo": {
+        "수변산책로": (37.28473, 127.06352),      # 원천호수 동측 수변
+        "원천습지": (37.28546, 127.06267),        # 원천호수 습지 데크
+        "원천호수": (37.28061, 127.06250),        # 원천호수 남측(AT4 관광명소)
+        "어반레비(신대)": (37.27897, 127.06083),  # 신대호수 북측 랜드마크
+        "마당극장(신대)": (37.27504, 127.06308),  # 신대호수 남측
+    },
+}
+
 
 def offset(lat, lng, bearing_deg, dist_m):
     R = 6371000.0
@@ -70,7 +83,7 @@ def run(slug, name, center):
     def nearest(lat, lng):
         return ox.distance.nearest_nodes(G, lng, lat)
 
-    starts = build_starts(center)
+    starts = CURATED_STARTS.get(slug) or build_starts(center)  # 실 POI 우선, 없으면 자동 링
     results, attempts, reject_hist = [], 0, {}
     for sname, (slat, slng) in starts.items():
         try:
