@@ -203,7 +203,7 @@ def phase1():
     all_bad = mk_weather(temp=35.0, pm10=100.0, code=501)
     out = ws.personalize_index(
         all_bad, WeatherSettings(dust_level_pm10=50, heat_temp_c=25, avoid_rain=True))
-    assert "미세먼지" in out.running_index.comment
+    assert "PM10 50" in out.running_index.comment  # 먼지 코멘트 채택(더위였다면 "25°C")
     # 먼지 미트리거 시 더위 > 비
     out = ws.personalize_index(
         mk_weather(temp=35.0, pm10=30.0, code=501),

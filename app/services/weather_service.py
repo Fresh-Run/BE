@@ -362,14 +362,14 @@ def personalize_index(
         and response.pm10.value >= ws.dust_level_pm10
     ):
         comment = (
-            f"Above your dust threshold (PM10 {ws.dust_level_pm10}) — "
+            f"Above the recommended threshold (PM10 {ws.dust_level_pm10}) — "
             "indoor running recommended" if en else
-            f"설정하신 미세먼지 기준(PM10 {ws.dust_level_pm10})을 넘었어요 — "
+            f"권장 기준(PM10 {ws.dust_level_pm10})을 넘었어요 — "
             "실내 러닝을 추천해요"
         )
     elif ws.avoid_heat and response.temp_c >= ws.heat_temp_c:
         comment = (
-            f"Above your heat threshold ({ws.heat_temp_c}°C) — "
+            f"Above the recommended threshold ({ws.heat_temp_c}°C) — "
             "try a morning or evening run" if en else
             f"권장 기준({ws.heat_temp_c}°C)을 넘었어요 — "
             "아침·저녁 러닝을 추천해요"

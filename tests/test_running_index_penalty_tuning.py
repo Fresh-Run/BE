@@ -86,6 +86,33 @@ def main():
     assert "28°C" in out.running_index.comment, "임계 숫자 유지"
     ok(f'"{out.running_index.comment}"')
 
+    print("\n[7. 문구 일관성 — en 더위·미세먼지 ko/en '설정/your'→'권장/recommended']")
+    # en 더위: "your heat threshold" → "recommended threshold"
+    out_en = ws.personalize_index(
+        resp, WeatherSettings(avoid_heat=True, heat_temp_c=28), lang="en")
+    assert "recommended threshold" in out_en.running_index.comment, out_en.running_index.comment
+    assert "your" not in out_en.running_index.comment, "설정 함의('your') 잔존"
+    assert "28°C" in out_en.running_index.comment
+    ok(f'en 더위: "{out_en.running_index.comment}"')
+
+    # 미세먼지 ko/en: "설정하신 미세먼지 기준"/"your dust threshold" → "권장 기준"/"recommended"
+    dust_resp = WeatherResponse(
+        area="성수동", temp_c=20.0, feels_like_c=20.0, condition="맑음",
+        condition_code=800, humidity_pct=50, wind_ms=2.0, rain_1h_mm=None,
+        pm25=None, pm10=PmReading(value=70.0, grade="나쁨"),
+        running_index=RunningIndex(score=80, label="좋음", comment="기본"),
+        fetched_at="2026-08-25T00:00:00Z")
+    dset = WeatherSettings(avoid_dust=True, dust_level_pm10=50)
+    dko = ws.personalize_index(dust_resp, dset, lang="ko")
+    assert "권장 기준" in dko.running_index.comment
+    assert "설정하신 미세먼지" not in dko.running_index.comment, "오보 문구 잔존(ko)"
+    assert "PM10 50" in dko.running_index.comment  # 임계 숫자 유지
+    den = ws.personalize_index(dust_resp, dset, lang="en")
+    assert "recommended threshold" in den.running_index.comment
+    assert "your" not in den.running_index.comment, "설정 함의('your') 잔존(en)"
+    assert "PM10 50" in den.running_index.comment
+    ok(f'미세먼지 ko:"{dko.running_index.comment}" / en:"{den.running_index.comment}"')
+
 
 if __name__ == "__main__":
     main()
