@@ -3,3 +3,4 @@
 osmnx==2.1.1
 scikit-learn
 matplotlib==3.11.1  # 공장 후보 PNG 렌더(render.py)
+contextily==1.7.1   # 배경지도(OSM 타일) 오버레이 렌더(render.py map 모드) — pyproj 동반
