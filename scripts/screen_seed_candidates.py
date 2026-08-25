@@ -73,6 +73,51 @@ def bbox_ratio(pts):
     return total / max(1.0, 2 * (w + h))
 
 
+def _proper_cross(a, b, c, d):
+    """선분 ab·cd의 **정상 교차**(X자) 여부. lat·lng을 국소 평면좌표로 취급(수 km
+    척도 유효). 공선(겹침=재밟기)은 orientation 0이라 교차 아님(회랑과 구분)."""
+    def o(p, q, r):
+        val = (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+        return 0 if abs(val) < 1e-12 else (1 if val > 0 else 2)
+    o1, o2, o3, o4 = o(a, b, c), o(a, b, d), o(c, d, a), o(c, d, b)
+    return o1 != o2 and o3 != o4 and o1 and o2 and o3 and o4
+
+
+def _node_revisits(pts):
+    """비인접 정점 재방문 수 — 그래프 순환로는 공유 노드에서 자기교차(십자 관통)하므로
+    선분 교차 테스트가 못 잡는다(2026-08-25 일산 top1 실증: 선분교차 0인데 육안 십자).
+    폐합 쌍(첫=끝)·연속 중복(0길이)은 제외. 재방문 1+ = 비단순 폐곡선."""
+    seen = {}
+    cnt = 0
+    for idx, p in enumerate(pts[:-1]):   # 마지막(=첫, 폐합) 제외
+        k = (round(p[0], 6), round(p[1], 6))
+        if k in seen:
+            if idx - seen[k] > 1:        # 비연속 재방문만(연속 중복은 0길이 세그)
+                cnt += 1
+            seen[k] = idx
+        else:
+            seen[k] = idx
+    return cnt
+
+
+def self_intersections(pts):
+    """폴리라인 자기교차 횟수(§8.19 보조 — 형상 지표, 2026-08-25 일산 top1 십자관통
+    실증). **0 = 단일 폐곡선(이상)**. 두 성분 합: ① 선분 정상 교차(mid-segment X —
+    실 GPS 트랙용) ② 공유 노드 재방문(그래프 순환로 X — round-trip 산출용). 왕복
+    재밟기(공선)는 longest_retrace_m가 담당, 이건 X자 관통 전용."""
+    n = len(pts) - 1
+    if n < 4:
+        return _node_revisits(pts)
+    cross = 0
+    for i in range(n):
+        for j in range(i + 2, n):
+            if i == 0 and j == n - 1:   # 폐합 루프: 첫·끝 선분은 시작점 공유
+                continue
+            if _proper_cross(pts[i], pts[i + 1], pts[j], pts[j + 1]):
+                cross += 1
+    return cross + _node_revisits(pts)
+
+
 def screen_track(pts):
     """트랙 1건 판정 — dict(탈락 사유 or 후보 지표)."""
     if len(pts) < 10:
@@ -97,7 +142,10 @@ def screen_track(pts):
            "tier": "clean" if closure <= CLEAN_CLOSURE_M else "connector",
            "dbl_pct": round(dr * 100), "bbox_ratio": round(br, 2),
            "longest_retrace_m": spur["longest_retrace_m"],
+           "self_cross": self_intersections(pts),   # 자기교차(형상) — 0 이상
            "motorway_m": round(hard), "trunk_m": round(trunk)}
+    if out["self_cross"] > 0:
+        out.setdefault("flag", f"자기교차 {out['self_cross']}회 — 형상 비단순(십자 관통)")
     if spur["longest_retrace_m"] >= RETRACE_CORRIDOR_SUSPECT_M:
         out["flag"] = f"왕복 회랑 {spur['longest_retrace_m']}m — §8.19 ① 의심(여수 전례)"
     if hard >= 100:
