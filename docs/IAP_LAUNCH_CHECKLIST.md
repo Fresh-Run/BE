@@ -42,6 +42,25 @@ mock 모드, lazy 만료 강등). 아래는 **출시 준비기(12월 전)에 남
 - [ ] production에서 `IAP_MODE=mock`이면 **부팅 자체가 거부**되는지 확인 (main.py 가드)
 - [ ] `iap_notifications_raw` 테이블 용량 모니터링 (처리 구현 후 정리 정책)
 
+## 6. 보안 감사 미비 (2026-08-24 출시 전 보안 감사 20항목 파생 — 심각도·수정범위)
+
+- [ ] **#2 git 히스토리 시크릿 스크럽** — [선택·위생] 노출 service_role은 2026-07-08
+  회전 완료로 **무효**(긴급 아님). 잔존 텍스트 제거는 방어심화. **수정범위**: 문서
+  절차(`docs/SECRET_SCRUB.md`) 실행 — filter-repo + Ivan 재클론 공지 + GitHub 캐시
+  purge. **오너 승인 필수**(히스토리 재작성).
+- [ ] **#5 PII/민감 컬럼 암호화 검토** — [권장] 신체정보 4종(birth_year·weight·
+  height·gender)·GPS 트랙·이메일 저장. 앱레벨 암호화 없음(Supabase 저장시 암호화+TLS
+  의존). **수정범위**: App Privacy 신고와 정합성 검토 후 필요시 컬럼 암호화(마이그레이션+
+  read/write 경로) — 러닝앱 표준상 미적용도 수용 가능, 판단 필요.
+- [ ] **#11 로그인/엔드포인트 rate limit** — [권장] 앱레벨 rate limit 없음(로그인
+  브루트포스는 Supabase Auth 방어, 자사 엔드포인트는 JWT 게이트+생성쿼터만). **수정범위**:
+  slowapi 미들웨어 or Fly 엣지 룰(main.py 1곳).
+- [ ] **#18 보안 헤더 + `/docs` 프로덕션 차단** — [권장] HSTS·CSP·X-Frame 미들웨어
+  전무, CORS `allow_origins=["*"]`, Swagger `/docs` 브라우저 도달. **수정범위**: HSTS
+  미들웨어 추가 + 프로덕션 `/docs` 비활성 + 출시 시 CORS 도메인 화이트리스트(main.py).
+- [ ] **#20 의존성 취약점 스캔** — [권장] `requirements.txt` `>=` 하한만(핀·lockfile·
+  자동스캔 없음). **수정범위**: pip-audit/dependabot 도입 + 버전 핀(CI 설정+requirements).
+
 ## 참고 (방식 선택 근거, 2026-07 조사)
 
 - verifyReceipt(구식 영수증)는 deprecated — 신규 구현 금지

@@ -54,3 +54,28 @@ description: FreshRun 백엔드를 감사·보안 점검·버그 사냥할 때 �
 스윕 완료 후 심각도·주제로 묶어 **배치 커밋**(실사례: 배치1 sanity, 배치2 입력
 검증, 배치3 소품, 배치4 L-소품, 배치5 레이스 묶음). 각 배치는 완료의 정의
 (테스트+회귀+SQL 페어+보고)를 따른다 — `../../CLAUDE.md`.
+
+## 히스토리 시크릿 스캔 (정기·출시 전 필수)
+
+**왜 별도인가**: CLAUDE.md §A5의 pre-commit 검사는 `git grep --cached`라 **스테이지만**
+본다 — 이미 커밋된 히스토리에 잠복한 시크릿은 절대 못 잡는다. 실사례: service_role 키가
+초기 커밋(`e9161a7` 테스트 파일)에 하드코딩됐다가 후속 커밋에서 제거됐으나 **히스토리에
+잔존**, 7월 노출을 pre-commit 검사가 놓치고 8월 보안 감사에서야 발견(회전은 2026-07-08
+선행 완료라 무피해로 마감).
+
+**전수 스캔 커맨드**(값 노출 금지 — 마스킹 필수):
+```
+git log --all -p \
+  | grep -E "sb_(secret|publishable)_|eyJ[A-Za-z0-9_-]{30,}|service_role|sk-[A-Za-z0-9]{16,}|AIza" \
+  | sed -E 's/(.{40}).*/\1.../'
+```
+- 패턴: `sb_secret_`·`sb_publishable_`(Supabase 신규 키) · `eyJ`(JWT — 레거시 anon/
+  service_role) · `service_role` · `sk-`(OpenAI) · `AIza`(Google).
+- **매치 위치 특정**: `git log --all --oneline -S "<리터럴>"` 로 유입 커밋 추적.
+- `.env.example` placeholder(`your-...`·`sk-...` 주석)는 오탐 — 실값 형태만 조사.
+
+**발견 시 순서**: ① 노출 키 **생존 판정**(Supabase/제공자 콘솔에서 회전 이력 확인 —
+살아있으면 **즉시 회전**, 죽었으면 위생 문제로 강등) ② **회전이 실 remediation**(히스토리·
+클론·GitHub 캐시에 이미 퍼졌을 수 있어 영구 침해 간주) ③ 히스토리 스크럽은 방어심화 —
+`docs/SECRET_SCRUB.md` 절차(filter-repo, 클론 재동기화, 캐시 purge). **filter-repo 실행은
+히스토리 재작성이라 오너 명시 승인 필수**(되돌리기 어려움).

@@ -25,8 +25,15 @@
 4. `docs/API_GUIDE.md` 갱신 — 프론트가 소비하는 데이터면 **소비 규칙 표**까지
    (어느 필드로 무엇을 하는지).
 5. 커밋 전 키 패턴 검사 clean:
-   `git grep --cached -E "sk-[A-Za-z0-9]{16,}|eyJ[A-Za-z0-9_-]{30,}|AIza|sb_(secret|publishable)_"`
+   `git grep --cached -E "sk-[A-Za-z0-9]{16,}|eyJ[A-Za-z0-9_-]{30,}|AIza|sb_(secret|publishable)_|service_role"`
    (【제안】 `sb_*`는 Supabase 새 키 형식 — 구패턴이 못 잡은 실누출 1건에서 추가)
+   **⚠️ `--cached`는 스테이지만 본다 — 이미 커밋된 히스토리는 못 잡는다**(2026-07
+   service_role 노출이 초기 커밋에 잠복하다 8월 감사에서야 발견된 근본 원인).
+   위 검사는 신규 유입 차단용. **히스토리 전수 스캔은 별도 감사 커맨드**(정기·출시 전):
+   `git log --all -p | grep -E "sb_(secret|publishable)_|eyJ[A-Za-z0-9_-]{30,}|service_role|sk-[A-Za-z0-9]{16,}|AIza"`
+   (매치 시 값 화면 출력 금지 — `| sed -E 's/(.{40}).*/\1.../'`로 마스킹. 발견 →
+   즉시 회전 + `docs/SECRET_SCRUB.md` 절차. 상세는 `freshrun-audit` 스킬 "히스토리
+   시크릿 스캔" 절.)
 6. 임시 테스트 데이터 정리, **키·초대코드 값 화면 출력 0**.
 7. 스테이징 영향 시: `fly deploy --app freshrun-api` + `/health` + 해당 기능
    스모크 1사이클(→ `freshrun-deploy` 스킬).
