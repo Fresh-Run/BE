@@ -1,4 +1,9 @@
 """
+🛑 SUPERSEDED 2026-08-25 — 대상 시드(청라 백조자리공원)가 롤백됨(self_cross=2·
+street-grid). 청라 그래프 공장 부적합 판정, 대체 재등재 없음. 이 테스트는 파일
+geometry 검증이라 여전히 통과하나 코스는 비라이브 — 이력 보존용(신규 등재 기준 아님).
+배경: CLAUDE.md "그래프 공장 원칙".
+
 Integration: 청라 그래프 공장 1호 시드 초안 — 기하·게이트 검증 (2026-08-19)
 
 db/2026-08-19_seed_cheongna_graphfactory1_draft.sql 산출물 검증(봉담 동형 —

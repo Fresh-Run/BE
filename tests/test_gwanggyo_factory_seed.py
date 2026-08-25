@@ -1,4 +1,9 @@
 """
+🛑 SUPERSEDED 2026-08-25 — 대상 시드(광교 원천습지)가 롤백됨(self_cross=2·street-grid).
+대체 재등재: "광교 원천호수 순환" 3.27km(test_gwanggyo_reselect_seed.py). 이 테스트는
+파일 geometry 검증이라 여전히 통과하나 코스는 비라이브 — 이력 보존용(신규 등재 기준
+아님). 배경: CLAUDE.md "그래프 공장 원칙".
+
 Integration: 광교 그래프 공장 2호 지역 시드 — 기하·게이트 검증 (2026-08-25)
 
 db/2026-08-25_seed_gwanggyo_graphfactory1_draft.sql 산출물 검증(청라 1호 동형 —

@@ -1,3 +1,9 @@
+-- 🛑 SUPERSEDED 2026-08-25 — 롤백됨(라이브 삭제). self_cross=2 + 실제 경로 street-grid
+--   (원천호수 서측 도로격자, 수변 접점 최소). 롤백 SQL: db/2026-08-25_rollback_cheongna_
+--   gwanggyo_lowquality.sql. **대체 재등재: "광교 원천호수 순환" 3.27km**(같은 진입점,
+--   target 3.27로 수변 실순환) — db/2026-08-25_seed_gwanggyo_reselect.sql. **이 파일은
+--   이력 보존용, 재실행 금지.**
+--
 -- 캐노니컬 광교 — 그래프 공장 2호 지역 "광교호수공원 원천습지 순환" (2026-08-25). 멱등.
 -- ⚠️ 오너 실행 대기 — Supabase SQL Editor 실행. 실행 여부: 미실행.
 --
