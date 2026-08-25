@@ -84,6 +84,22 @@
    "verdict": "adopted",
    "reason": "그래프 공장 2호 지역 채택(오너 육안 통과·후보 #1 확정 2026-08-25) — osmnx round-trip 광교 배치(4800ad7) 산출 3.66km 순환. §8.19 기계 전항 클린(이중 0%·둘레비 0.91·회랑 11m·motorway/trunk 0, rs._road_hit_m 광교 커버 확인). 실주 트랙 아님(원 GPS 소유자 부재). 진입점=광교호수공원 원천습지 실 POI 82m 근접(이름원칙). 태깅 코어 1.62(PASS 기준)/생성반경 0.54 이중표기. NEW territory 광교 캐노니컬 0. 시드: db/2026-08-25_seed_gwanggyo_graphfactory1_draft.sql (코스명 오너 확정 대기).",
    "date": "2026-08-25"
+  },
+  {
+   "type": "graph_course",
+   "candidate_id": "ilsan_factory_jujegwangjang_8.62",
+   "source": "graph_factory",
+   "verdict": "adopted",
+   "reason": "[장거리] 일산호수공원 주제광장 순환 8.62km — 폐합0·자기교차0·회랑30m(우수)·이중0%·둘레비0.86·motorway/trunk0. 진입점 주제광장 실 POI 26m. 그래프 공장 3호 지역 채택(오너 육안 통과 2026-08-25) — osmnx round-trip 일산 배치(bd44c3e). 일산호수공원 태깅 코어 1.32(경계)이나 배치 클린율 89%(52/58·광교 58% 능가 — 대형 보행순환로라 태깅비<코스품질). 형상 self_intersections 0(단일 폐곡선). 실주 트랙 아님(원 GPS 소유자 부재). NEW territory 일산 캐노니컬 0. 시드: db/2026-08-25_seed_ilsan_graphfactory.sql",
+   "date": "2026-08-25"
+  },
+  {
+   "type": "graph_course",
+   "candidate_id": "ilsan_factory_bunsudae_3.97",
+   "source": "graph_factory",
+   "verdict": "adopted",
+   "reason": "[단거리] 일산호수공원 노래하는분수대 순환 3.97km — 폐합0·자기교차0·이중2%·둘레비0.94·motorway/trunk0. 회랑 183m spur는 오너 육안 통과(형상 self_cross0이 게이트). 진입점 노래하는분수대 실 POI 27m. 그래프 공장 3호 지역 채택(오너 육안 통과 2026-08-25) — osmnx round-trip 일산 배치(bd44c3e). 일산호수공원 태깅 코어 1.32(경계)이나 배치 클린율 89%(52/58·광교 58% 능가 — 대형 보행순환로라 태깅비<코스품질). 형상 self_intersections 0(단일 폐곡선). 실주 트랙 아님(원 GPS 소유자 부재). NEW territory 일산 캐노니컬 0. 시드: db/2026-08-25_seed_ilsan_graphfactory.sql",
+   "date": "2026-08-25"
   }
  ]
 }
