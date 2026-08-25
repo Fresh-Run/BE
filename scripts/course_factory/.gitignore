@@ -1,2 +1,3 @@
-cheongna_walk.graphml
-out/*.png
+# 대용량 OSM 그래프(다운로드 재생성 가능) — 커밋 제외. osmnx Overpass 캐시(cache/)는
+# 루트 .gitignore가 처리. out/ 산출물(JSON·PNG)은 추적한다.
+*.graphml
