@@ -377,6 +377,14 @@ def _waypoint_chain_km(route: RouteResponse) -> float:
     return total
 
 
+def _has_pitstop_intent(req: RouteRequest) -> bool:
+    """유저가 경유지를 원했는가 — pitstop_place 지정 or pitstop_keyword non-empty(공백 제외).
+    있으면 canonical(경유지 없는 고정 코스) 우선 서빙을 **스킵**하고 생성 경로로 가서
+    pitstop을 주입(P2 교정, 오너 결정 a·2026-08-26). 없으면 canonical 우선(현행)."""
+    return bool(req.pitstop_place
+                or (req.pitstop_keyword and req.pitstop_keyword.strip()))
+
+
 def _pitstop_prompt_kw(req: RouteRequest) -> str | None:
     """Gemini 프롬프트용 경유지 키워드 — pitstop_place가 있고 keyword가 없어도 place.name을
     키워드로 넘겨 is_pitstop 슬롯을 예약(A-2). keyword 우선(라벨 폴백), 없으면 place.name."""
@@ -745,15 +753,22 @@ def _road_hit_m(polyline: list, bucket: str = "hard",
 async def _canonical_dedup_last_resort(req: RouteRequest, target_km: float, lang: str,
                                        user_id: str | None, canon_skipped: int):
     """바닥 규칙(오너 확정): 생성이 502로 끝나기 직전, 이번 요청에서 캐노니컬을
-    dedup으로 스킵했었다면 exclude 없이 재매치해 그 코스를 서빙 — 같은 코스 재서빙이
-    502보다 낫다(§8.11 서빙률 우선의 연장). 정상 경로 비용 0(실패 경로에서만 재매치)."""
-    if not canon_skipped:
+    dedup으로 스킵했었다면(또는 **pitstop 의도로 스킵**했다면 — P2, 2026-08-26) exclude
+    없이 재매치해 그 코스를 서빙 — 같은 코스 재서빙이 502보다 낫다(§8.11 서빙률 우선의
+    연장, 오너 권고 a). 정상 경로 비용 0(실패 경로에서만 재매치). pitstop 폴백은 경유지가
+    빠진 코스이므로 gen_meta에 신호(pitstop_dropped_fallback)."""
+    _pit = _has_pitstop_intent(req)
+    if not canon_skipped and not _pit:
         return None
     _canon = await canonical_service.match_and_build(req.start, target_km, lang=lang)
     if _canon is None:
         return None
     route, meta = _canon
     meta = {**meta, "dedup_exhausted": True, "one_way": False}
+    if _pit:
+        # 경유지 요청이었으나 생성 전멸 → canonical(경유지 없음) 폴백. 클라 표시용
+        # 신호(관측 additive). 클라-facing 필드화는 계약 결정(오너/이반) 대기.
+        meta["pitstop_dropped_fallback"] = True
     logger.info("dedup 바닥 발동 — 생성 실패, 소유 캐노니컬 재서빙 course=%s",
                 meta.get("course_name"))
     await _save_route(req, route, user_id, target_distance_km=target_km, gen_meta=meta)
@@ -1041,7 +1056,12 @@ async def create_running_route(
 
     # 캐노니컬 코스 레이어(오너 통찰) — loop 요청서 아는 실코스가 진입권·거리 밴드 내면
     # 생성보다 우선 서빙(Gemini 0콜). 미스/장애면 None → 현행 생성 폴백(무변경).
-    if req.end is None:
+    # ⚠️ pitstop 의도(경유지 요청)가 있으면 스킵(P2, 2026-08-26): canonical은 경유지
+    # 없는 고정 코스라, 유저가 "카페 들르는 코스"를 원하면 생성 경로로 가서 pitstop을
+    # 주입해야 한다(canonical 서빙 시 pitstop 무시→"0곳" 불일치 교정). 생성 전멸 시엔
+    # 하단 _canonical_dedup_last_resort가 canonical로 폴백(빈손 502 금지 — 경유지는 없지만
+    # 코스는 서빙, 오너 권고 a).
+    if req.end is None and not _has_pitstop_intent(req):
         _canon = await canonical_service.match_and_build(
             req.start, target_km, lang=lang,
             exclude_course_ids=owned_course_ids, dedup_obs=_dedup_obs)
