@@ -61,8 +61,23 @@ mock 모드, lazy 만료 강등). 아래는 **출시 준비기(12월 전)에 남
   X-Content-Type-Options:nosniff·X-Frame-Options:DENY 미들웨어(순수 JSON API라 CSP
   생략). production에서 `/docs`·`/redoc`·`/openapi.json` 404(docs_url=None 조건부),
   스테이징·로컬 유지. **CORS 도메인 화이트리스트는 웹 클라 생길 때 별도**(현 네이티브만).
-- [ ] **#20 의존성 취약점 스캔** — [권장] `requirements.txt` `>=` 하한만(핀·lockfile·
-  자동스캔 없음). **수정범위**: pip-audit/dependabot 도입 + 버전 핀(CI 설정+requirements).
+- [x] **#20 의존성 취약점 스캔** — ✅ 처리(2026-08-26, pip-audit).
+  - **실스캔 결과(3건, 전부 전이 의존)**: cryptography 49.0.0(PYSEC-2026-3552, PKCS#7
+    Bleichenbacher/타이밍 오라클) · h2 4.3.0(PYSEC-2026-3628, HTTP/2 서버 요청 스머글링) ·
+    pip 26.1.2(PYSEC-2026-3721, 악성 인덱스 경로탈출). **레포지토리 즉시 조치 불요** —
+    ① **컨텍스트상 미해당**: PKCS#7/S-MIME 복호 안 함 · 우리는 h2 **서버** 아님(h2는
+    httpx **클라** 경유, supabase 클라는 HTTP/1.1 강제) · pip는 빌드 툴(신뢰 인덱스만).
+    ② **fresh 빌드가 자동 수정**: `>=` 범위가 최신 해석 → h2 **4.4.1**·cryptography
+    **50.0.1**(둘 다 fixed)를 받음(취약분은 로컬 .venv 잔재뿐). **재배포(fly deploy
+    rebuild)로 반영.** pip는 빌드 이미지 `pip install --upgrade pip`로(백로그).
+  - **자동화**: `.github/workflows/dep-audit.yml` — pip-audit 주 1회(화 03:00 KST) +
+    requirements 변경 PR + 수동. requirements.txt는 `--strict`(CVE 시 실패), factory는
+    관찰만. **dependabot 대비 GH Actions 선택**: 이미 백업 워크플로 있어 정합·설정 단순·
+    PR 노이즈 적음(주1회 요약). ⚠️ GH Actions 60일 무활동 비활성(§C).
+  - **핀/lockfile 권고(미채택·백로그)**: 현 `>=`는 재현성 약점(배포 버전=빌드 시점
+    최신). **전면 핀은 지금 지양**(테스트 커버 안 된 버전 고정 리스크) — 권고 =
+    출시 안정화 후 `pip-compile`(pip-tools)로 `requirements.lock` 생성(정확 버전 +
+    해시), Dockerfile이 lock 설치. 그때까지 pip-audit CI가 신규 CVE 감시.
 
 ## 참고 (방식 선택 근거, 2026-07 조사)
 

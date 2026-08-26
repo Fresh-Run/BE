@@ -1,0 +1,35 @@
+# 의존성 취약점 스캔 (보안 감사 #20, 2026-08-26) — pip-audit로 requirements.txt
+# 의존 트리(전이 포함)의 알려진 CVE 감지. GH Actions 백업(주 1회)이 이미 있어 정합 —
+# dependabot 대안 대비 선택 근거는 docs/IAP_LAUNCH_CHECKLIST #20 참조.
+#
+# ⚠️ GH Actions schedule은 repo 60일 무활동 시 비활성(§C) — db-backup과 동일 제약.
+name: Dependency Audit
+
+on:
+  schedule:
+    - cron: "0 18 * * 1"     # 매주 월 18:00 UTC = 화 03:00 KST (저트래픽대·backup과 하루 오프셋)
+  pull_request:
+    paths:
+      - "requirements.txt"
+      - "requirements-factory.txt"
+  workflow_dispatch: {}       # 수동 실행(첫 검증·임시 스캔)
+
+concurrency: dep-audit
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install pip-audit
+      # 런타임 의존(배포분) — CVE 있으면 실패(strict). requirements.txt의 >= 범위를
+      # 최신으로 해석 = 실제 fly deploy 빌드가 받는 버전과 동일 상태를 감사.
+      - name: Audit runtime deps (requirements.txt)
+        run: pip-audit -r requirements.txt --strict --desc
+      # 공장 전용 dev 툴(osmnx·matplotlib 등, 미배포) — 관찰만(실패 없음).
+      - name: Audit factory dev deps (requirements-factory.txt, non-blocking)
+        continue-on-error: true
+        run: pip-audit -r requirements-factory.txt --desc || true
