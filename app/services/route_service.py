@@ -601,11 +601,12 @@ def _anchor_sig_from_row(waypoints_json: list) -> str | None:
         return None
 
 
-async def _fetch_owned_fingerprints(user_id: str) -> tuple[set, set]:
+async def _fetch_owned_fingerprints(user_id: str) -> tuple[set, set, list]:
     """유저 본인 routes 최근 N행에서 지문 수집(1쿼리, best-effort — 실패가 생성을
     막지 않는다). 캐노니컬: gen_meta.course_id(슬라이스1부터 전 행 기록). 앵커:
     gen_meta.anchor_sig 또는 waypoints 즉석 계산. 삭제된 코스는 행이 없어 자동으로
-    재서빙 허용(오너 확정 — 삭제 = '안 가짐' 신호)."""
+    재서빙 허용(오너 확정 — 삭제 = '안 가짐' 신호). 3번째 반환값 recent_pitstops는
+    최근 채택 pitstop명(최신 우선) — P3 로테이션 salt(같은 카페 연속 회피, 2026-08-26)."""
     try:
         supabase = get_supabase_admin()
         resp = await asyncio.to_thread(
@@ -617,6 +618,7 @@ async def _fetch_owned_fingerprints(user_id: str) -> tuple[set, set]:
             .execute())
         course_ids: set = set()
         sigs: set = set()
+        recent_pitstops: list = []  # 최신 우선(created_at desc 순회) — 로테이션 salt
         for row in resp.data or []:
             gm = row.get("gen_meta") or {}
             eng = gm.get("engine")
@@ -626,10 +628,13 @@ async def _fetch_owned_fingerprints(user_id: str) -> tuple[set, set]:
                 sig = gm.get("anchor_sig") or _anchor_sig_from_row(row.get("waypoints") or [])
                 if sig:
                     sigs.add(sig)
-        return course_ids, sigs
+            pit_name = (gm.get("pitstop") or {}).get("name")
+            if pit_name:
+                recent_pitstops.append(pit_name)
+        return course_ids, sigs, recent_pitstops
     except Exception:  # noqa: BLE001 — dedup은 부가 레이어, 조회 실패 시 회피 없이 진행
         logger.warning("dedup 지문 조회 실패 — 회피 없이 진행", exc_info=True)
-        return set(), set()
+        return set(), set(), []
 
 
 def _split_in_band_dedup(in_band: list, owned_sigs: set, engine_of: dict):
@@ -1050,8 +1055,10 @@ async def create_running_route(
     # 회피. loop 전용(캐노니컬·앵커 롤이 loop 전용). 첫 서빙은 지문이 없어 현행 동일.
     owned_course_ids: set = set()
     owned_anchor_sigs: set = set()
+    owned_pitstop_names: list = []  # P3 로테이션 salt(최근 채택 pitstop명, 최신 우선)
     if req.end is None and user_id:
-        owned_course_ids, owned_anchor_sigs = await _fetch_owned_fingerprints(user_id)
+        owned_course_ids, owned_anchor_sigs, owned_pitstop_names = \
+            await _fetch_owned_fingerprints(user_id)
     _dedup_obs: dict = {}
 
     # 캐노니컬 코스 레이어(오너 통찰) — loop 요청서 아는 실코스가 진입권·거리 밴드 내면
@@ -1208,7 +1215,8 @@ async def create_running_route(
                     req.pitstop_keyword, near=req.start, radius_m=_radius_m, limit=15, sort=_sort)
                 # 상업 카테고리 제외·적합도·위치밴드 랭킹. 통과 0이면 무필터 최근접 폴백.
                 ranked = map_service.rank_places_for_keyword(
-                    req.pitstop_keyword, pitstop_places, start=req.start, target_km=target_km)
+                    req.pitstop_keyword, pitstop_places, start=req.start, target_km=target_km,
+                    recent_pitstops=owned_pitstop_names)  # P3: 밴드 내 상위 K 연속 동일 회피
                 pick = None
                 if ranked:
                     pick = ranked[0]

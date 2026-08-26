@@ -86,7 +86,7 @@ async def _search(query, *a, **k):
     return []   # 공원(park coverage) 등
 
 
-def _rank(keyword, places, start=None, target_km=None):
+def _rank(keyword, places, start=None, target_km=None, recent_pitstops=None):
     _rank_calls.append(keyword)
     return list(places)
 

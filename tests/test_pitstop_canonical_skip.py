@@ -79,7 +79,7 @@ async def _search(query, *a, **k):
     return [CAFE] if query == "카페" else []
 
 
-def _rank(keyword, places, start=None, target_km=None):
+def _rank(keyword, places, start=None, target_km=None, recent_pitstops=None):
     return list(places)
 
 

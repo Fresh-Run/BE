@@ -118,7 +118,7 @@ async def _search_mock(query, *a, **k):
     return [CAFE] if query == (getattr(_search_mock, "kw", None) or "카페") else []
 
 
-def _rank_mock(keyword, places, start=None, target_km=None):
+def _rank_mock(keyword, places, start=None, target_km=None, recent_pitstops=None):
     return list(places)
 
 

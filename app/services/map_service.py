@@ -355,18 +355,54 @@ def _in_position_band(start: Coordinate, place: Place, target_km: float) -> bool
     return _POS_BAND_LO_M <= d_m <= target_km * _POS_BAND_HI_FACTOR * 1000.0
 
 
+_ROTATE_TOP_K = 5  # pitstop 로테이션 창(P3, 2026-08-26) — 밴드 내 상위 K 안에서만 회전
+
+
+def _rotate_pitstop(ordered: list[Place], recent: list[str] | None,
+                    top_k: int = _ROTATE_TOP_K) -> list[Place]:
+    """P3 로테이션(2026-08-26 오너 1차) — "항상 스타벅스" 해소. 밴드/거리로 이미
+    정렬된 pitstop 후보에서, **상위 top_k 안에서만** 최근 채택(recent)에 안 든 최선을
+    맨 앞으로 올린다. 품질 보존: top_k 밖 후보는 절대 승격 안 함(먼 카페로 안 튐).
+
+    - recent: 유저 최근 채택 pitstop명(최신 우선). avoid는 그중 서로 다른
+      top_k-1개까지만 — ≥K개 서로 다른 후보가 있으면 항상 fresh 하나가 남아
+      rank[0] 고착(무한 스타벅스)이 풀린다.
+    - 결정론: 같은 (ordered, recent) → 같은 결과(랜덤 아님, 재현성 유지).
+    - recent 없음/후보<2/상위 K 전부 최근이면 → 종전 순서(rank[0]) 무교란(하위호환)."""
+    if not recent or len(ordered) < 2:
+        return ordered
+    seen: set = set()
+    avoid: set = set()
+    for nm in recent:  # 최신순 — 서로 다른 top_k-1개만 회피 집합에
+        if nm and nm not in seen:
+            seen.add(nm)
+            avoid.add(nm)
+            if len(avoid) >= top_k - 1:
+                break
+    head = ordered[:top_k]
+    for i, p in enumerate(head):
+        if p.name not in avoid:
+            if i == 0:
+                return ordered  # rank[0] 이미 fresh — 바이트 무교란
+            return [head[i], *head[:i], *head[i + 1:], *ordered[top_k:]]
+    return ordered  # 상위 K 전부 최근 채택 → 종전(rank[0], 회피 불가)
+
+
 def rank_places_for_keyword(
     keyword: str, places: list[Place],
     start: Coordinate | None = None, target_km: float | None = None,
+    recent_pitstops: list[str] | None = None,
 ) -> list[Place]:
     """pitstop 의도 존중 재랭킹/필터. 통과 후보 리스트(빈 리스트면 상위가 폴백).
 
     - unknown 의도: 원본(거리순) 그대로 — 현행 동작 보존.
-    - commercial 의도: 그 카테고리 코드만 남김(거리순 유지).
+    - commercial 의도: 그 카테고리 코드만 남김(거리순 유지) + **밴드 내 상위 K
+      로테이션**(P3, recent_pitstops로 연속 동일 회피 — 품질 보존, 먼 후보 승격 없음).
     - landmark 의도: 상업 카테고리 제외 후 [적합도 desc, **위치밴드 desc**, **대표성**,
       시작거리 asc] 안정 정렬. **대표성 = Kakao accuracy 순위**(places는 accuracy 정렬로
       들어옴 → 원 인덱스가 순위, 작을수록 대표). ★밴드 내에서만 대표성 tiebreak(오너 C) —
       밴드 밖은 기존 거리순. 청라 실측: accuracy가 청라호수공원을 밴드 내 #1로 올림.
+      (로테이션 미적용 — 랜드마크는 대표성=최적 공원 선택이 의도라 회전 시 품질 강등.)
     """
     intent, param = _keyword_intent(keyword)
     if intent == "unknown":
@@ -379,9 +415,14 @@ def rank_places_for_keyword(
         cat = [p for p in places if p.category_code == param]
         if start is None or target_km is None:
             return cat  # 밴드 정보 없으면 현행(거리순 원본 — 하위호환)
-        return sorted(cat, key=lambda p: (
-            -int(_in_position_band(start, p, target_km)),
-            _haversine_m(start.lat, start.lng, p.coordinate.lat, p.coordinate.lng)))
+
+        def _d(p):
+            return _haversine_m(start.lat, start.lng, p.coordinate.lat, p.coordinate.lng)
+        # P3: **밴드 내에서만** 상위 K 회전(먼 카페 승격 금지 — 품질 보존). 밴드 밖은
+        # 종전대로 뒤에 거리순(밴드 내 0이면 out_band 최근접이 자연 폴백).
+        in_band = sorted([p for p in cat if _in_position_band(start, p, target_km)], key=_d)
+        out_band = sorted([p for p in cat if not _in_position_band(start, p, target_km)], key=_d)
+        return _rotate_pitstop(in_band, recent_pitstops) + out_band
     kept = [p for p in places if p.category_code not in _COMMERCIAL_CODES]
     if not kept:
         return []
