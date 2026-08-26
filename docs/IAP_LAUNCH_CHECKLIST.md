@@ -52,12 +52,15 @@ mock 모드, lazy 만료 강등). 아래는 **출시 준비기(12월 전)에 남
   height·gender)·GPS 트랙·이메일 저장. 앱레벨 암호화 없음(Supabase 저장시 암호화+TLS
   의존). **수정범위**: App Privacy 신고와 정합성 검토 후 필요시 컬럼 암호화(마이그레이션+
   read/write 경로) — 러닝앱 표준상 미적용도 수용 가능, 판단 필요.
-- [ ] **#11 로그인/엔드포인트 rate limit** — [권장] 앱레벨 rate limit 없음(로그인
-  브루트포스는 Supabase Auth 방어, 자사 엔드포인트는 JWT 게이트+생성쿼터만). **수정범위**:
-  slowapi 미들웨어 or Fly 엣지 룰(main.py 1곳).
-- [ ] **#18 보안 헤더 + `/docs` 프로덕션 차단** — [권장] HSTS·CSP·X-Frame 미들웨어
-  전무, CORS `allow_origins=["*"]`, Swagger `/docs` 브라우저 도달. **수정범위**: HSTS
-  미들웨어 추가 + 프로덕션 `/docs` 비활성 + 출시 시 CORS 도메인 화이트리스트(main.py).
+- [x] **#11 엔드포인트 rate limit** — ✅ 처리(2026-08-26, main.py). 우리 API엔 login/
+  signup 엔드포인트 없음(Supabase Auth 측)이라 **전역 per-IP 베이스라인**(프록시 IP
+  인지 — fly-client-ip/X-Forwarded-For)으로 적용. 기본 240/분(`RATE_LIMIT_PER_MIN`,
+  0=끔), 초과 429 `rate_limited`+Retry-After. /health·/.well-known exempt. 단일 머신
+  in-memory(예산 1대). ⚠️ 다중 머신 확장 시 공유 저장(redis) 필요.
+- [x] **#18 보안 헤더 + `/docs` 프로덕션 차단** — ✅ 처리(2026-08-26, main.py). HSTS·
+  X-Content-Type-Options:nosniff·X-Frame-Options:DENY 미들웨어(순수 JSON API라 CSP
+  생략). production에서 `/docs`·`/redoc`·`/openapi.json` 404(docs_url=None 조건부),
+  스테이징·로컬 유지. **CORS 도메인 화이트리스트는 웹 클라 생길 때 별도**(현 네이티브만).
 - [ ] **#20 의존성 취약점 스캔** — [권장] `requirements.txt` `>=` 하한만(핀·lockfile·
   자동스캔 없음). **수정범위**: pip-audit/dependabot 도입 + 버전 핀(CI 설정+requirements).
 

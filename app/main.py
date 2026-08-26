@@ -68,10 +68,17 @@ if settings.iap_mode == "mock" and settings.environment == "production":
         "ENVIRONMENT 또는 IAP_MODE 설정을 확인하세요."
     )
 
+# #18(보안 감사): production에선 /docs·/redoc·/openapi.json 비활성(브라우저 은닉).
+# 스테이징·로컬(environment != production)은 유지 — 개발 편의. 하위호환(앱은 스키마
+# 미사용, native Bearer라 docs 불요).
+_is_prod = settings.environment == "production"
 app = FastAPI(
     title=settings.app_name,
     description="South Korea-based running route AI generator.",
     version="0.1.0",
+    docs_url=None if _is_prod else "/docs",
+    redoc_url=None if _is_prod else "/redoc",
+    openapi_url=None if _is_prod else "/openapi.json",
 )
 
 # CORS — 네이티브(Expo) 앱은 CORS 무관. '*'는 개발 중 브라우저(Swagger 등)
@@ -85,6 +92,60 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ── #11 per-IP rate limit + #18 보안 헤더 (보안 감사, 2026-08-26) ──────────────
+# @app.middleware는 정의 역순으로 감싸므로: rate_limit 먼저 정의(안쪽) → security
+# 나중 정의(바깥) → 429 응답도 보안 헤더를 받는다.
+import time as _time  # noqa: E402
+
+_rl_buckets: dict = {}  # ip -> (window_min, count) · 단일 머신 in-memory 고정창(60s)
+_RL_EXEMPT = ("/health", "/.well-known")  # Fly 헬스체크·Apple crawl은 무제한
+
+
+def _client_ip(request: Request) -> str:
+    """프록시(Fly/Cloudflare) 뒤 실 클라 IP — 헤더 우선(안 그러면 전원이 프록시 IP
+    하나로 묶여 오탐 차단)."""
+    return (request.headers.get("fly-client-ip")
+            or (request.headers.get("x-forwarded-for", "").split(",")[0].strip())
+            or (request.client.host if request.client else "unknown"))
+
+
+@app.middleware("http")
+async def _rate_limit(request: Request, call_next):
+    limit = settings.rate_limit_per_min
+    path = request.url.path
+    if (limit <= 0 or request.method == "OPTIONS"
+            or any(path.startswith(p) for p in _RL_EXEMPT)):
+        return await call_next(request)
+    now_min = int(_time.time()) // 60
+    ip = _client_ip(request)
+    ws, cnt = _rl_buckets.get(ip, (now_min, 0))
+    if ws != now_min:
+        ws, cnt = now_min, 0
+    cnt += 1
+    _rl_buckets[ip] = (ws, cnt)
+    if len(_rl_buckets) > 10000:  # 언바운드 방지 — 만료창 엔트리 청소
+        for k in [k for k, (w, _c) in _rl_buckets.items() if w != now_min]:
+            _rl_buckets.pop(k, None)
+    if cnt > limit:
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.",
+                     "error_code": "rate_limited"},
+            headers={"Retry-After": "60"})
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    """HSTS·nosniff·frame-DENY — 순수 JSON API라 CSP는 저가치라 생략. AASA 등 공개
+    라우트도 동일(무영향 — 헤더 추가만, 본문·Content-Type 불변)."""
+    resp = await call_next(request)
+    resp.headers.setdefault("Strict-Transport-Security",
+                            "max-age=31536000; includeSubDomains")
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("X-Frame-Options", "DENY")
+    return resp
 
 app.include_router(api_router)
 

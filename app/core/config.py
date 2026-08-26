@@ -103,6 +103,12 @@ class Settings(BaseSettings):
     # 기본값 apple: 미설정 환경에서는 verify가 503으로 안전하게 닫혀 있다.
     iap_mode: Literal["apple", "mock"] = "apple"
 
+    # per-IP rate limit (보안 감사 #11, 2026-08-26) — 자사 레이어 브루트포스/남용
+    # 방어. 우리 API엔 login/signup 엔드포인트가 없어(Supabase Auth 측) 전역 IP
+    # 베이스라인으로 적용. 정상 모바일 사용(피크 수십/분) 대비 넉넉한 기본값 —
+    # 초과 시 429. 0=끔. 단일 머신 in-memory(예산 1대) — 다중 머신은 공유 저장 필요.
+    rate_limit_per_min: int = 240
+
     # 운영진 화이트리스트 (docs/REPORT_DESIGN.md §4) — 콤마구분 UUID 문자열.
     # Fly secret ADMIN_USER_IDS로 주입. 미설정(빈 값)이면 admin 엔드포인트가
     # 전원 404 = fail-safe(의도된 안전 기본값). 값은 로그·화면에 출력 금지.
