@@ -1,8 +1,8 @@
-# BATTLE_SPEC.md — 배틀 피처 서버 스펙 초안 (설계, 미구현)
+# BATTLE_SPEC.md — 배틀 피처 서버 스펙 (확정·구현 대기)
 
-> **구현 순서**: IAP 실연동 · 소셜 로그인 **다음**. 이 문서는 **스펙/설계만** —
-> SQL 실행·서버 구현 없음. 이반 API 계약(.md)·점수식(FE `lib/battle-score.ts`)과
-> 정합을 목표로 한다.
+> **상태(2026-08-26): 확정 — 구현 대기.** 오픈 이슈 6건 + 3룰링 이반/오너 확정치
+> 반영(§6). **구현 순서**: IAP 실연동 · 소셜 로그인 **다음**. SQL 실행·서버 구현
+> 아직 없음. 이반 API 계약(.md)·점수식(FE `lib/battle-score.ts`)과 정합.
 >
 > **오너 3룰링 확정(2026-08-25)**: ① **윈도 앵커 = 수락 시점**(생성 시점 아님)
 > ② **eligibility = 차단/비공개 유저 제외** ③ **동시 배틀 소수 제한은 앱 로직,
@@ -25,7 +25,7 @@
   (`insight_service` 로직 단일 소스화) 후 배틀·인사이트 공유. anti-cheat "실시간
   streak"도 이 계산(과거 run 백필로 streak 조작 방지 = ran_at 기준 + verified만).
 
-## 2. 스키마 설계 (초안 — SQL 미실행)
+## 2. 스키마 설계 (확정 — SQL 미실행)
 
 > 신규 테이블은 전부 **`enable row level security`**(정책 없이 — deny-by-default,
 > 앱은 service_role 접근. §C 표준). 참가자 수 제한 CHECK 없음(**N 허용**, 룰링 ③).
@@ -36,7 +36,7 @@
 | id | uuid PK | |
 | format | text | `points` \| `pure`(순수 거리) — CHECK |
 | metric | text | `distance_km`(기본) 등 — 확장 여지 |
-| status | text | `pending`\|`active`\|`ended`\|`cancelled` — CHECK |
+| status | text | `pending`\|`active`\|`ended`\|`cancelled`\|`forfeited` — CHECK |
 | starts_at | timestamptz | **수락 시점**(룰링 ①) — 활성화 시 세팅. null=pending |
 | ends_at | timestamptz | `starts_at + duration_days` |
 | duration_days | int | **CHECK 1..30**(≤30) |
@@ -51,7 +51,7 @@
 | battle_id | uuid FK→battles | |
 | user_id | uuid | PK(battle_id, user_id) |
 | team | int null | 팀전 팀 번호(개인전 null) |
-| status | text | `invited`\|`accepted`\|`declined` — CHECK |
+| status | text | `invited`\|`accepted`\|`declined`\|`forfeited` — CHECK (forfeited=중도 기권→즉시 패배) |
 | accepted_at | timestamptz null | 이 값들의 앵커가 battle.starts_at |
 | **milestone_5k_run_id** | uuid null | anti-cheat 메모리 — 5k 최초 달성 run(**배틀당 1회**) |
 | **milestone_10k_run_id** | uuid null | anti-cheat 메모리 — 10k 최초 달성 run(배틀당 1회) |
@@ -87,10 +87,10 @@
 per-run 점수(1.5km 하한 미만 = 0):
   if distance_km < 1.5 or is_flagged or verification != 'verified': 0
   base        = distance_km * 10
-  completion  = +20 (완주 조건 — 이반 계약 정의 준수)
+  completion  = +20 (완주 = distance_km >= 1.5 AND 정상 저장 완료. 중도 포기 0)
   pace_bonus  = f(avg_pace) (이반 lib 상수 1:1)
   milestone   = +5k보너스(배틀 첫 5k run) + 10k보너스(배틀 첫 10k run)   # 메모리 컬럼
-  early_bird  = +보너스(이른 시간대 run — 이반 정의)
+  early_bird  = +보너스(run 시작 시각 < 07:00 KST — 06:59 포함/07:00 미포함, 클라 엔진 동일)
   run_score   = (base + completion + pace_bonus + milestone + early_bird)
 
 참가자 배율:
@@ -143,13 +143,25 @@ per-run 점수(1.5km 하한 미만 = 0):
   수락(=starts_at 앵커) · 목록/상세(점수·순위) · 취소/포기 · (관리) 정산 재실행.
   **경로 순서**: 고정 경로 먼저(§ 일반 규칙). uuid path param은 `validate_uuid_path_params`
   가드 자동 커버(비uuid 404).
-- **오픈 이슈(오너/이반 확정 필요)**:
-  ① 완주(completion +20) 정의 — target 대비 몇 %? 이반 계약 문구 확정.
-  ② early_bird 시간대 경계(KST 몇 시 이전?).
-  ③ 팀전 참가자 불균형(팀 인원 수 다를 때) 점수 정규화 여부.
-  ④ 배틀 중 참가자 포기 시 점수·순위 처리(0 고정 vs 제외).
-  ⑤ duration_days 상한 30 확정 · 최소값(1?).
-  ⑥ 동시 배틀 소수 제한값(앱 로직 — 유저당 N개?) — 오너 확정.
-- **anti-cheat 서버 필수 2건 재확인**: (a) milestone memory = 배틀당 1회 지급
-  (milestone_*_run_id 컬럼) (b) 실시간 streak = ran_at 기준 verified 계산(과거 백필
-  조작 차단). 둘 다 **서버 정산 단계**에서만 판정(클라 신뢰 0).
+- **오픈 이슈 — 전부 확정(2026-08-26 이반/오너)**:
+  ① **완주(completion +20) = 1.5km 이상 + 정상 저장 완료** run. 중도 포기(강종 등)는
+     보너스 없음(§3 completion 조건 = distance_km ≥ 1.5 AND 저장 완료).
+  ② **early_bird 경계 = 시작 시각 < 07:00 KST**(06:59 포함, 07:00 미포함). 클라
+     `battle-score.ts` 엔진과 동일 경계.
+  ③ **팀 불균형 정규화 = v1 스킵**(1v1 전용). 그룹(N players/M teams) 모드 시 별도
+     논의 → **파킹**(아래).
+  ④ **중도 포기/기권 = 즉시 패배**. 포기자 점수는 그 시점 고정, **상대 점수는 그대로
+     유지**(감점·재계산 없음). status→`forfeited`, 승패 즉시 확정.
+  ⑤ **duration_days = 최소 1 · 최대 30**(CHECK 1..30 — §2 스키마 반영).
+  ⑥ **동시 배틀 캡 = 3개**. 스키마는 N 허용(룰링 ③), **앱 로직에서 유저당 active
+     배틀 3개 강제**(4번째 생성/수락 시 거부).
+- **파킹(그룹 모드 시)**: 팀전 참가자 수 불균형 점수 정규화 — v1(1v1)은 스킵.
+  **트리거: 그룹 배틀(M<N·팀 인원 상이) 착수 시** 정규화 규칙(팀 평균 vs 합) 재논의.
+- **스트릭 정산(백필 치팅 차단, 확정)**: current streak은 **KST 자정 daily 배치에서
+  `runs.ran_at` 기준 재계산**(§1·§4). 과거 날짜로 run을 백필해도 정산이 ran_at 날짜
+  버킷 + verified만 세므로 조작 무효. `streak_multiplier`는 정산일 streak로 산입.
+- **3룰링 재확인(확정)**: ① 윈도 앵커 = 수락 시점(starts_at) ② eligibility = 차단/
+  비공개 유저 **404 은닉** ③ 동시 배틀 스키마 N 허용(제한은 앱 3개).
+- **anti-cheat 서버 필수 2건(확정)**: (a) milestone memory = 배틀당 1회 지급
+  (milestone_*_run_id 컬럼) (b) streak = ran_at 기준 verified 계산(백필 조작 차단).
+  둘 다 **서버 정산 단계에서만** 판정(클라 신뢰 0).
