@@ -49,14 +49,22 @@ _ACCESS_LANDMARK = re.compile(r"공원|광장|프라자|다리|둘레길|호수|
 
 
 async def _access_name(coord: Coordinate) -> str | None:
-    """진입점 인근 실 POI명(발명 금지 — 실재 랜드마크만). best-effort → 없으면 None(중립)."""
+    """진입점 인근 실 POI명(발명 금지 — 실재 랜드마크만). best-effort → 없으면 None(중립).
+
+    ⚠️ 랜드마크-borrow 배제(2026-08-26, P1 치킨마루 실사용 버그): 이름이 랜드마크
+    정규식에 맞아도 **상업 카테고리(FD6 음식점·CE7 카페 등)면 무효** — "치킨마루
+    청라5단지호수공원점"(FD6, 상호에 '호수공원' 차용)이 진입점명으로 채택돼 라이브
+    오표시. pitstop 경로의 상업 제외(_COMMERCIAL_CODES)를 canonical access-naming에도
+    적용(§C 함정). 상업이면 다음 후보 → 없으면 None(중립 진입점).
+    """
     try:
         ps = await map_service.search_places("공원", near=coord, sort="distance",
                                              radius_m=120, limit=4)
     except Exception:  # noqa: BLE001 — 실명은 부가, 실패 시 중립
         return None
     for p in ps:
-        if _hav_m(coord, p.coordinate) <= 90 and _ACCESS_LANDMARK.search(p.name):
+        if (_hav_m(coord, p.coordinate) <= 90 and _ACCESS_LANDMARK.search(p.name)
+                and p.category_code not in map_service._COMMERCIAL_CODES):
             return p.name
     return None
 
