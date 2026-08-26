@@ -559,6 +559,19 @@ class FollowDecisionRequest(BaseModel):
     approve: bool = Field(..., description="True=승인(follows 생성) / False=거절.")
 
 
+class PitstopPlace(BaseModel):
+    """유저가 앱에서 직접 지정한 경유지 POI(A-2 계약, 2026-08-26). 있으면 서버가
+    Kakao 재검색을 스킵하고 이 좌표·이름을 그대로 경유지로 쓴다(유저가 탭한 그 장소
+    유실 방지). name은 이름 원칙상 실 POI 실명 그대로. place_id는 계약서 omit(클라
+    좌표 신뢰·refetch 없음)."""
+
+    name: str = Field(..., min_length=1, max_length=100, description="실 POI 표시명(실명).")
+    coordinate: KoreaCoordinate = Field(..., description="유저 지정 좌표(한국 밖 422).")
+    category_code: Optional[str] = Field(
+        None, description="Kakao category_group_code(선택·관측용, FD6/CE7 등)."
+    )
+
+
 class RouteRequest(BaseModel):
     """Input from the client to generate a running route."""
 
@@ -588,7 +601,14 @@ class RouteRequest(BaseModel):
     pitstop_keyword: Optional[str] = Field(
         None,
         max_length=50,  # LLM 프롬프트 유입 — 보수적
-        description="Optional waypoint keyword, e.g. '편의점' (convenience store), '공원', 'cafe'.",
+        description="Optional waypoint keyword, e.g. '편의점' (convenience store), '공원', 'cafe'. "
+        "pitstop_place가 있으면 라우팅은 place 우선, keyword는 라벨/프롬프트 폴백용.",
+    )
+    pitstop_place: Optional[PitstopPlace] = Field(
+        None,
+        description="유저가 직접 지정한 경유지 POI(A-2, additive). 있으면 Kakao 재검색 "
+        "우회 — 이 좌표·이름을 경유지로 직접 사용(place 우선). 없으면 pitstop_keyword "
+        "재검색(종전 동작).",
     )
     notes: Optional[str] = Field(
         None,

@@ -28,6 +28,7 @@ from app.models.schemas import (
     AiCourseSettings,
     CommentResponse,
     Coordinate,
+    Place,
     PublicRouteResponse,
     RouteRequest,
     RouteResponse,
@@ -374,6 +375,16 @@ def _waypoint_chain_km(route: RouteResponse) -> float:
         x = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
         total += 2 * 6371.0 * math.asin(math.sqrt(x))
     return total
+
+
+def _pitstop_prompt_kw(req: RouteRequest) -> str | None:
+    """Gemini 프롬프트용 경유지 키워드 — pitstop_place가 있고 keyword가 없어도 place.name을
+    키워드로 넘겨 is_pitstop 슬롯을 예약(A-2). keyword 우선(라벨 폴백), 없으면 place.name."""
+    if req.pitstop_keyword:
+        return req.pitstop_keyword
+    if req.pitstop_place:
+        return req.pitstop_place.name
+    return None
 
 
 def _apply_pitstop_name(route: RouteResponse, pick) -> None:
@@ -834,7 +845,7 @@ async def _adaptive_redraw(req, target_km, measured_ratio, avoid_tags, prefs, la
             await asyncio.sleep(j * _POOL_STAGGER_S)
         return await openai_service.generate_route(
             target_distance_km=target_km, start=req.start, end=req.end,
-            pitstop_keyword=req.pitstop_keyword, notes=req.notes,
+            pitstop_keyword=_pitstop_prompt_kw(req), notes=req.notes,
             avoid_tags=avoid_tags, prefs=prefs, radius_km=radii[j], lang=lang,
             chain_target_km=aim, radius_center=radius_center)
 
@@ -1069,7 +1080,7 @@ async def create_running_route(
             await asyncio.sleep(j * _POOL_STAGGER_S)
         return await openai_service.generate_route(
             target_distance_km=target_km, start=req.start, end=req.end,
-            pitstop_keyword=req.pitstop_keyword, notes=req.notes,
+            pitstop_keyword=_pitstop_prompt_kw(req), notes=req.notes,
             avoid_tags=avoid_tags, prefs=prefs, radius_km=radii[j], lang=lang,
             chain_target_km=chain_aim_km, radius_center=radius_center,
         )
@@ -1149,43 +1160,56 @@ async def create_running_route(
     # 데이터로 즉답. 키워드 없으면 None(키 미기록).
     pitstop_obs: dict | None = None
     pitstop_pick = None  # 해석된 pitstop Place — 최종 best 실명 단일 적용용(재추첨 커버)
-    if req.pitstop_keyword and to_snap:
+    if (req.pitstop_place or req.pitstop_keyword) and to_snap:
         try:
-            # 검색 반경·정렬을 target·의도 연동으로(2026-07-22 (b)): 위치 밴드 상한이
-            # target×0.5라 반경이 그만큼 커야 자연 지점 후보를 덮는다. ⚠️ **핵심**: 랜드마크형은
-            # sort='accuracy' — distance 정렬은 근접 상호가 실제 공원을 묻어 밴드 내 공원 0이지만
-            # accuracy는 청라호수공원(986m) 등 실제 공원을 상위로(청라 실측). limit 15.
-            _intent, _ = map_service._keyword_intent(req.pitstop_keyword)
-            _radius_m = max(2000, round(target_km * map_service._POS_BAND_HI_FACTOR * 1000))
-            _sort = "accuracy" if _intent == "landmark" else "distance"
-            pitstop_places = await map_service.search_places(
-                req.pitstop_keyword, near=req.start, radius_m=_radius_m, limit=15, sort=_sort)
-            # 의도 존중(백로그 (b)): 상업 카테고리 제외·적합도·**위치밴드** 랭킹 통과
-            # 후보 채택. 통과 0이면 무필터 최근접 폴백(가용성 우선 — 502 안 냄). 위치밴드
-            # 우대로 시작 코앞(84m) pitstop이 루프 핀치→overshoot 유발하던 것 교정.
-            ranked = map_service.rank_places_for_keyword(
-                req.pitstop_keyword, pitstop_places, start=req.start, target_km=target_km)
-            pick = None
-            if ranked:
-                pick = ranked[0]
-            elif pitstop_places:
-                pick = pitstop_places[0]
-                logger.info("pitstop 적합후보 0 — 무필터 최근접 폴백: %r (kw=%r)",
-                            pick.name, req.pitstop_keyword)
-            in_band = bool(pick and map_service._in_position_band(req.start, pick, target_km))
-            # 채택 pitstop의 Kakao accuracy 순위(대표성 tiebreak 효과 자동 검증, 오너 E).
-            acc_rank = pitstop_places.index(pick) if pick in pitstop_places else None
-            pitstop_obs = {
-                "kw": req.pitstop_keyword,
-                "name": pick.name if pick else None,
-                "cat": pick.category_code if pick else None,
-                "raw_n": len(pitstop_places), "ranked_n": len(ranked),
-                "fallback": bool(pick and not ranked),  # 무필터 최근접 폴백 여부
-                "in_band": in_band,  # 위치 밴드(루프 자연 지점) 내 채택 여부
-                "acc_rank": acc_rank,  # Kakao accuracy 순위(대표성, 0=최상위)
-            }
+            if req.pitstop_place is not None:
+                # A-2(2026-08-26): 유저 지정 POI 직접 사용 — Kakao 재검색·랭킹·상업
+                # 카테고리 필터 **전면 스킵**(유저가 명시 선택했으므로 의도 존중).
+                # place 우선(keyword가 함께 와도 라우팅은 place). 좌표는 KoreaCoordinate
+                # 검증분(422 백스탑). address는 미제공(계약서 place_id omit).
+                pp = req.pitstop_place
+                pick = Place(name=pp.name, coordinate=pp.coordinate,
+                             category_code=pp.category_code, address=None)
+                in_band = map_service._in_position_band(req.start, pick, target_km)
+                pitstop_obs = {"source": "user_place", "kw": req.pitstop_keyword,
+                               "name": pick.name, "cat": pick.category_code,
+                               "in_band": in_band,
+                               # far-POI(ⓓ): 밴드 밖이어도 best-effort 편입 — 지정 좌표를
+                               # via로 스냅. 경로가 길어지면 target_missed는 서빙 선택이
+                               # overshoot 처리에서 자동 세팅(422 아님).
+                               "far": (not in_band)}
+            else:
+                # 종전 keyword 재검색 경로(무변경). 검색 반경·정렬 target·의도 연동
+                # (2026-07-22 (b)): 랜드마크형은 sort='accuracy', 상업형은 'distance'.
+                _intent, _ = map_service._keyword_intent(req.pitstop_keyword)
+                _radius_m = max(2000, round(target_km * map_service._POS_BAND_HI_FACTOR * 1000))
+                _sort = "accuracy" if _intent == "landmark" else "distance"
+                pitstop_places = await map_service.search_places(
+                    req.pitstop_keyword, near=req.start, radius_m=_radius_m, limit=15, sort=_sort)
+                # 상업 카테고리 제외·적합도·위치밴드 랭킹. 통과 0이면 무필터 최근접 폴백.
+                ranked = map_service.rank_places_for_keyword(
+                    req.pitstop_keyword, pitstop_places, start=req.start, target_km=target_km)
+                pick = None
+                if ranked:
+                    pick = ranked[0]
+                elif pitstop_places:
+                    pick = pitstop_places[0]
+                    logger.info("pitstop 적합후보 0 — 무필터 최근접 폴백: %r (kw=%r)",
+                                pick.name, req.pitstop_keyword)
+                in_band = bool(pick and map_service._in_position_band(req.start, pick, target_km))
+                acc_rank = pitstop_places.index(pick) if pick in pitstop_places else None
+                pitstop_obs = {
+                    "source": "keyword_search",
+                    "kw": req.pitstop_keyword,
+                    "name": pick.name if pick else None,
+                    "cat": pick.category_code if pick else None,
+                    "raw_n": len(pitstop_places), "ranked_n": len(ranked),
+                    "fallback": bool(pick and not ranked),  # 무필터 최근접 폴백 여부
+                    "in_band": in_band,  # 위치 밴드(루프 자연 지점) 내 채택 여부
+                    "acc_rank": acc_rank,  # Kakao accuracy 순위(대표성, 0=최상위)
+                }
             if pick is not None:
-                pitstop_pick = pick  # 최종 best에 실명 재적용(재추첨/구제 경로 커버)
+                pitstop_pick = pick  # 최종 best에 실명 재적용(재추첨/구제 경로 커버 — A축)
                 for r, _ck, _rad in to_snap:
                     for wp in r.waypoints:
                         if wp.is_pitstop:
@@ -1193,8 +1217,8 @@ async def create_running_route(
                                 pick.name, pick.coordinate, pick.address)
                             break
         except Exception:  # noqa: BLE001 — best-effort
-            logger.warning("Pitstop lookup failed for %r; keeping AI suggestion.",
-                           req.pitstop_keyword, exc_info=True)
+            logger.warning("Pitstop resolution failed (place=%s, kw=%r); keeping AI suggestion.",
+                           bool(req.pitstop_place), req.pitstop_keyword, exc_info=True)
             pitstop_obs = {"kw": req.pitstop_keyword, "error": True}
 
     # 4) 통과분 전부 병렬 스냅 (T-map). LegNotRoutable(강 위)→폐기, 장애→스킵.
