@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -177,3 +177,26 @@ async def health() -> dict[str, str]:
 async def root() -> dict[str, str]:
     """Welcome endpoint."""
     return {"app": settings.app_name, "docs": "/docs"}
+
+
+# ── Apple Universal Links — AASA 정적 서빙 (2026-08-26) ───────────────────────
+# https://freshrun.run/.well-known/apple-app-site-association 를 Apple이 크롤 —
+# **Content-Type application/json·리다이렉트 없이·직접 200**이어야 함(Apple 엄격).
+# 인증 불요(공개). /api 라우터 밖이라 uuid path guard·auth dependency 자동 우회.
+# ⚠️ 파일 내용(Team ID·appID)은 app/static/aasa.json에서 교체 — 이반 Team ID 도착 시
+# "TEAMID.com.freshrun.app"만 실값으로. 파일은 부팅 시 1회 로드(교체 후 재배포 필요).
+import json as _json
+import os as _os
+
+_AASA_PATH = _os.path.join(_os.path.dirname(__file__), "static", "aasa.json")
+with open(_AASA_PATH, "rb") as _f:
+    _AASA_BYTES = _f.read()
+_json.loads(_AASA_BYTES)  # 부팅 시 JSON 유효성 검증(깨진 AASA 배포 차단)
+
+
+@app.api_route("/.well-known/apple-app-site-association", methods=["GET", "HEAD"],
+               include_in_schema=False)
+async def apple_app_site_association() -> Response:
+    """AASA — application/json 직접 서빙(리다이렉트·charset 없음). Apple crawl(GET)용.
+    HEAD 허용은 `curl -I` 검증 대응(HEAD는 Starlette가 본문 스트립·헤더 유지)."""
+    return Response(content=_AASA_BYTES, media_type="application/json")

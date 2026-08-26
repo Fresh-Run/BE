@@ -14,6 +14,12 @@ React Native + Expo + Supabase JS SDK 기준. 전체 엔드포인트의 요청/�
 [앱] ──(그 외 전부, Bearer 토큰)──→ FastAPI ──(service_role)──→ Supabase DB
 ```
 
+**공개 메타 라우트(인증·`/api` prefix 없음)**: `GET /health`(liveness) · `GET /`(welcome) ·
+**`GET /.well-known/apple-app-site-association`**(2026-08-26 — Apple Universal Links AASA.
+`application/json`(정확·charset 없음)·리다이렉트 없이 직접 200·인증 불요. 내용은
+`app/static/aasa.json`, Team ID 교체 후 재배포. `GET`/`HEAD` 허용(`curl -I` 대응).
+`freshrun.run` 도메인 Cloudflare CNAME→`freshrun-api.fly.dev`, Apple이 이 경로를 크롤).
+
 이유:
 - **비즈니스 로직이 API에 있습니다** — AI 코스 생성 쿼터(free 주 3회), 크루 권한(크루장 전용 작업), RSVP 마감 판정, 팔로우 카운트/맞팔 계산, 알림 발송 등. 앱이 DB를 직접 읽으면 이 규칙들이 전부 우회됩니다.
 - DB 테이블들은 **RLS로 잠겨 있어서** anon 키로 직접 읽으면 빈 결과가 나옵니다. 이건 의도된 동작입니다.

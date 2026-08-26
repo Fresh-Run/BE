@@ -1,0 +1,10 @@
+{
+  "applinks": {
+    "details": [
+      {
+        "appID": "TEAMID.com.freshrun.app",
+        "paths": ["*"]
+      }
+    ]
+  }
+}
