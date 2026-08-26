@@ -88,6 +88,13 @@
   (`canonical_service._access_name`)에도 필요** — pitstop만 고쳤다가 canonical 진입점명이
   치킨마루로 라이브 오표시된 실사례(P1, 2026-08-26). 실 POI 이름을 뽑는 **모든 경로**에
   카테고리 배제를 적용할 것.
+- **`self_intersections`(형상 지표)는 factory graph 폴리라인 전용 — canonical T-map
+  실경로엔 부적합** — 그래프 순환로의 노드 재방문(십자 관통)을 잡는 지표라, T-map
+  스냅 실보행로엔 **호수 다리·만곡부·좁은 산책로에서 경로가 촘촘히 겹쳐 정상 X자가
+  아닌데도 과다 카운트**(청라호수공원 순환 self_cross=9지만 배경지도상 깨끗한 호수
+  둘레 순환, 2026-08-26). **canonical 코스 QA·롤백 판정은 self_cross가 아니라 배경지도
+  육안(`render.py <slug> K map`)이 유일 기준.** 롤백 3원칙(도구 진화 시 기채택분 재검)에서
+  canonical엔 배경지도를, factory 후보엔 self_cross+배경지도를 적용.
 - **신규 테이블은 반드시 `enable row level security`**(정책 없이 — deny-by-default
   백스톱, 전 테이블 표준. 앱은 service_role로만 접근).
 - **백업/임시 테이블도 생성 즉시 RLS enable 또는 작업 완료 시 즉시 DROP** — 전례:
