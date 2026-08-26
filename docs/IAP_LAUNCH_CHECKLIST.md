@@ -4,6 +4,47 @@
 mock 모드, lazy 만료 강등). 아래는 **출시 준비기(12월 전)에 남은 실연동 작업**.
 코드상 구현 지점은 `app/services/iap_service.py`의 `[출시기 TODO]` 주석 2곳.
 
+## 착수 계획 (2026-08-26 조사) — 배틀·소셜 구현의 선행(출시 필수)
+
+**핵심 진단**: 엔타이틀먼트 **배선은 완성**(verify_purchase→`subscriptions` upsert[PK
+original_transaction_id]→`profiles.tier='premium'`, 만료는 `quota_service.get_tier`
+lazy 강등). **비어 있는 건 JWS "검증"뿐** — `iap_service._verify`(apple)가
+`IapNotConfigured`(→503 safe-closed), `store_notification`이 raw만 저장.
+
+**Track A(오너 · App Store Connect) — 리드타임 순서**:
+1. **유료 앱 계약·세금·뱅킹**(Paid Apps Agreement) — 승인 리드타임 최대, **최우선**.
+2. 구독 상품 등록(product_id·가격·심사 메타) — 심사 리드타임.
+3. App Store Server API 키(Issuer ID+Key ID+`.p8`) — 로컬 검증엔 불요(오프라인)이나
+   상태 재조회·notification 재처리엔 유용(MVP 선택).
+4. Server Notifications V2 URL 등록(sandbox/production 각각):
+   `https://freshrun.run/api/iap/notifications`(AASA 도메인 배포 선행).
+5. Sandbox 테스터 계정. → `.env`: `APPSTORE_ISSUER_ID·KEY_ID·PRIVATE_KEY_PATH·BUNDLE_ID`.
+
+**Track B(서버 구현 · Track A와 병렬)** — 5단계:
+1. `app-store-server-library` 의존성(`pip install app-store-server-library`).
+2. `_verify` apple: `SignedDataVerifier`(root CA 라이브러리 동봉·env·bundle_id·
+   app_apple_id[prod]) → `verify_and_decode_signed_transaction(jws)` → VerifiedTransaction
+   매핑. **순수 로컬 오프라인 검증(API 콜 0)**. bundle_id 상수만 있으면 A와 무관하게 선행.
+3. `store_notification`: `verify_and_decode_notification()` + 타입별 처리.
+4. `iap_notifications_raw` 재처리 스크립트(processed=false 잔여 1회).
+5. 테스트(Sandbox JWS 픽스처 — 실 검증은 A의 Sandbox 완료 후).
+
+**최소 스코프(출시 필수)**: ① `_verify` apple(구매→premium) ② 웹훅 4타입 —
+DID_RENEW(연장)·EXPIRED(lazy 강등)·REFUND/REVOKE(즉시 강등) ③ Sandbox 1사이클
+(구매·갱신·만료·환불·재구독·409) ④ **BETA_DEFAULT_PREMIUM OFF**(출시 직전, IAP 실동작
+검증 후 — fly secret 제거+재배포 + `grant_beta_premium.py --revoke --apply`, IAP
+구매자는 subscriptions 행으로 자동 보호) ⑤ production `IAP_MODE=mock` 부팅거부 확인.
+**나중(post-launch)**: GRACE_PERIOD/Billing Retry 정교화 · Server API 주기 재조회 ·
+가족 공유 · restore UX.
+
+**정책 미확정 3건(오너 결정 — 발명 금지)**: ① product_id·가격·구독 주기 ② GRACE_PERIOD
+동안 프리미엄 유지 여부(Apple 권장=유지, `GRACE_PERIOD_EXPIRED` 알림 처리) ③ 가족 공유 허용.
+
+**리스크**: ① **환경 미스매치**(sandbox JWS를 prod verifier로 실패 → prod 시도→sandbox
+폴백 분기 필요) ② **웹훅 유실 → 상태 동기화**(DID_RENEW 유실 시 오만료 — **백스탑 = lazy
+강등 `get_tier` + restore 멱등 재검증**[구현됨], post는 Server API 주기 재조회) ③ 환불/
+만료(REFUND/REVOKE 즉시·EXPIRED lazy). 웹 근거: apple/app-store-server-library-python.
+
 ## 1. App Store Connect 설정
 
 - [ ] 구독 그룹 생성 + 구독 상품 등록 — `product_id` 확정 (예: `freshrun.premium.monthly`, `freshrun.premium.yearly`), 가격, 심사용 메타데이터
