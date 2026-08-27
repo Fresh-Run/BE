@@ -19,7 +19,7 @@ import httpx  # noqa: E402
 
 from app.core.config import settings  # noqa: E402
 from app.core.supabase_client import get_supabase_admin  # noqa: E402
-from app.models.schemas import Coordinate, PedestrianRoute, RouteRequest, RouteResponse, Waypoint  # noqa: E402
+from app.models.schemas import Coordinate, KoreaCoordinate, PedestrianRoute, RouteRequest, RouteResponse, Waypoint  # noqa: E402
 from app.services import map_service, openai_service, route_service  # noqa: E402
 
 TS = int(time.time())
@@ -56,19 +56,19 @@ async def main():
     sb = get_supabase_admin()
 
     print("[1. 캐노니컬 훅 분기 — 청라]")
-    req_c = RouteRequest(start=Coordinate(lat=37.528678, lng=126.635812),
+    req_c = RouteRequest(start=KoreaCoordinate(lat=37.528678, lng=126.635812),
                          target_distance_km=4.5)
     r1 = await route_service.create_running_route(req_c, user_id=_uid)
     id1 = await _assert_id(r1, "canonical")
 
     print("\n[2. on_course 분기 — 아시아드 플라자]")
     r2 = await route_service.create_running_route(
-        RouteRequest(start=Coordinate(lat=37.544532, lng=126.66425),
+        RouteRequest(start=KoreaCoordinate(lat=37.544532, lng=126.66425),
                      target_distance_km=2.0), user_id=_uid)
     await _assert_id(r2, "on_course")
 
     print("\n[3. v87 메인 분기 — mock 파이프라인]")
-    START = Coordinate(lat=37.60, lng=127.20)   # 캐노니컬 미커버 좌표
+    START = KoreaCoordinate(lat=37.60, lng=127.20)   # 캐노니컬 미커버 좌표(입력 전용)
 
     def _cand(start):
         a = Coordinate(lat=start.lat + 0.011, lng=start.lng)

@@ -113,7 +113,14 @@
   커밋에서 갱신한다** — 위반 3전례: v122 좌표(Coordinate→KoreaCoordinate)·
   037470c theme('system' 허용)·v120 자기 kudos(본인 400→204). 전부 main에
   잠복하다 후속 작업(2026-07-31)에서야 발견 — 스테일 테스트는 "회귀 그린"
-  신호를 거짓으로 만든다.
+  신호를 거짓으로 만든다. **잔여분 완결(2026-08-28)**: `grep -rn "start=Coordinate"
+  tests/` 전수 스윕으로 `test_route_id_integration`이 구 `Coordinate` 인스턴스를
+  `RouteRequest.start`(KoreaCoordinate)에 넣어 ValidationError로 즉사하던 잔여
+  드리프트 발견·갱신(start만 KoreaCoordinate, 웨이포인트·polyline 응답 좌표는
+  Coordinate 유지 — KoreaCoordinate는 입력 전용, 응답에 쓰면 뉴욕 502 재발).
+  타 테스트(road_gate·spur_rescue는 `KoreaCoordinate(...)` 래핑, dynamic_radius·
+  neutral_labels·settings_apply는 `_build_prompt`/`generate_route`가 Coordinate
+  수용)는 무드리프트 확인. 실 API는 JSON dict 파싱이라 무영향(테스트만).
 - **관제 도구(Sentry 등)는 발신 요청을 전송 직전에 변조한다** — 외부 API 4xx
   미스터리는 조립 단계 로그가 아니라 **와이어 직전 헤더**(request 이벤트 훅)로
   판정(에어코리아 400 = Sentry baggage 헤더, 2026-08-04 실측). 포털 게이트웨이는
