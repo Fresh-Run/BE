@@ -5,7 +5,7 @@ Uses pydantic-settings so values can be supplied via a `.env` file
 """
 
 from functools import lru_cache
-from typing import Literal
+from typing import Literal, Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -102,6 +102,15 @@ class Settings(BaseSettings):
     # 'mock'  = 개발/테스트 전용 (서명 검증 스킵, 페이로드 구조 검증만).
     # 기본값 apple: 미설정 환경에서는 verify가 503으로 안전하게 닫혀 있다.
     iap_mode: Literal["apple", "mock"] = "apple"
+
+    # Apple IAP 오프라인 JWS 검증(SignedDataVerifier, API 콜 0) 파라미터.
+    # bundle_id는 AASA로 확정(지금). app_apple_id는 App Store Connect의 앱 Apple ID
+    # (숫자) — **production 환경 검증에 필수**(Track A 발급 후). None이면 sandbox 검증만
+    # 가능(sandbox는 app_apple_id 불요) → 출시 전 Sandbox 1사이클은 지금 가능.
+    # issuer/key/.p8는 App Store Server *API*(온라인 조회)용이라 이 오프라인 검증엔
+    # 불요 — 후속(환불 조회·구독상태 API 붙일 때).
+    appstore_bundle_id: str = "com.freshrun.app"
+    appstore_app_apple_id: Optional[int] = None
 
     # per-IP rate limit (보안 감사 #11, 2026-08-26) — 자사 레이어 브루트포스/남용
     # 방어. 우리 API엔 login/signup 엔드포인트가 없어(Supabase Auth 측) 전역 IP

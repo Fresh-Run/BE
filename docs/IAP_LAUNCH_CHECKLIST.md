@@ -20,14 +20,18 @@ lazy 강등). **비어 있는 건 JWS "검증"뿐** — `iap_service._verify`(ap
    `https://freshrun.run/api/iap/notifications`(AASA 도메인 배포 선행).
 5. Sandbox 테스터 계정. → `.env`: `APPSTORE_ISSUER_ID·KEY_ID·PRIVATE_KEY_PATH·BUNDLE_ID`.
 
-**Track B(서버 구현 · Track A와 병렬)** — 5단계:
-1. `app-store-server-library` 의존성(`pip install app-store-server-library`).
-2. `_verify` apple: `SignedDataVerifier`(root CA 라이브러리 동봉·env·bundle_id·
-   app_apple_id[prod]) → `verify_and_decode_signed_transaction(jws)` → VerifiedTransaction
-   매핑. **순수 로컬 오프라인 검증(API 콜 0)**. bundle_id 상수만 있으면 A와 무관하게 선행.
-3. `store_notification`: `verify_and_decode_notification()` + 타입별 처리.
-4. `iap_notifications_raw` 재처리 스크립트(processed=false 잔여 1회).
-5. 테스트(Sandbox JWS 픽스처 — 실 검증은 A의 Sandbox 완료 후).
+**Track B(서버 구현 · Track A와 병렬)** — ✅ **구현 완료(2026-08-27)**:
+1. ✅ `app-store-server-library` 의존성(requirements.txt). Apple Root CA(G3/G2/Inc)
+   `app/data/apple_root_ca/` 번들(라이브러리 미동봉이라 호출자 공급).
+2. ✅ `_verify` apple: `SignedDataVerifier`(번들 root CA·env·`appstore_bundle_id`·
+   `appstore_app_apple_id`[prod]) → `verify_and_decode_signed_transaction` → 매핑.
+   **순수 오프라인(API 콜 0)**·prod→sandbox 폴백. sandbox는 bundle_id만으로 동작.
+3. ✅ `store_notification`: `verify_and_decode_notification` + 타입별(DID_RENEW/EXPIRED/
+   REFUND/REVOKE) 처리 + raw processed 갱신.
+4. ✅ `iap_service.reprocess_unprocessed()`(processed=false 재처리, 멱등).
+5. ✅ 테스트 `tests/test_iap_apple_verify.py`(fake decode 주입 12 assert — 매핑·웹훅
+   4타입·재처리 멱등·구성 가드). **실 Sandbox JWS 검증은 Track A(app_apple_id·테스터) 후.**
+   config: `.env` `APPSTORE_BUNDLE_ID`(기본 com.freshrun.app)·`APPSTORE_APP_APPLE_ID`(Track A).
 
 **최소 스코프(출시 필수)**: ① `_verify` apple(구매→premium) ② 웹훅 4타입 —
 DID_RENEW(연장)·EXPIRED(lazy 강등)·REFUND/REVOKE(즉시 강등) ③ Sandbox 1사이클
