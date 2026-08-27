@@ -1137,6 +1137,10 @@ class RunRequest(BaseModel):
     avg_pace_sec_per_km: Optional[int] = Field(
         None, gt=0, description="Average pace in seconds per km (optional)."
     )
+    avg_cadence_spm: Optional[int] = Field(
+        None, gt=0, description="Average cadence in steps per minute (optional). "
+        "avg_pace_sec_per_km와 동일 문법 — additive, 없어도 저장(하위호환)."
+    )
     # 저장 화면의 '메모' = notes (개인 메모 — 피드·크루·공개 프로필에 절대 미노출)
     notes: Optional[str] = Field(None, max_length=2000, description="개인 메모 (본인만).")
     area: Optional[str] = Field(
@@ -1240,6 +1244,10 @@ class RunResponse(BaseModel):
         "run만 채워짐, 없으면 null. duration_sec(경과, 정지 포함)과 짝. 과거 run은 null."
     )
     avg_pace_sec_per_km: Optional[int] = None
+    avg_cadence_spm: Optional[int] = Field(
+        None, description="평균 케이던스(steps/min). GPS·센서 있는 run만 채워짐, 없으면 "
+        "null (avg_pace_sec_per_km와 동형 additive). 과거 run은 null."
+    )
     notes: Optional[str] = None
     title: Optional[str] = None
     area: Optional[str] = Field(

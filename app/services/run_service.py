@@ -197,6 +197,10 @@ async def create_run(req: RunRequest, user_id: str | None = None) -> RunResponse
     # null). SQL 선실행→배포 순서가 역전돼도(컬럼 미적용 DB) 기존 경로 무해.
     if req.app_version is not None:
         record["app_version"] = req.app_version
+    # 케이던스(2026-08-27 additive, 이반) — 미전송 시 키 생략(app_version 전례): 컬럼
+    # 미적용 DB에서도 무cadence 저장 무해, cadence 전송분만 컬럼 의존(SQL 선실행 보호).
+    if req.avg_cadence_spm is not None:
+        record["avg_cadence_spm"] = req.avg_cadence_spm
     # K1 크루 배너 초이스 — 미전송 키 생략(컬럼 default 위임 — 2026-08-02부터 OFF)
     if req.show_crew is not None:
         record["show_crew"] = req.show_crew
