@@ -2,10 +2,22 @@
 
 두 모드:
   grid  — 맨 격자 위 폴리라인(형상 판정 — 자기교차·둘레비). out/<slug>_top<i>.png
-  map   — 실제 OSM 타일 배경 위 폴리라인(보행 환경 판정 — 수변/공원 산책로 vs
+  map   — 실제 타일 배경 위 폴리라인(보행 환경 판정 — 수변/공원 산책로 vs
           차도 옆). 위경도→웹메르카토르(EPSG:3857) 정합. out/<slug>_top<i>_map.png
-          타일: CartoDB Positron(© OpenStreetMap contributors © CARTO — ODbL/CC-BY,
-          저작자표시 프레임 내 명기). 네트워크 필요(타일 다운로드).
+          네트워크 필요(타일 다운로드).
+
+배경 타일 프로바이더(§C — **타일 소스는 변동적**, 2026-08-28 교체):
+  기존 CartoDB Positron이 API키 요구→"API KEY REQUIRED" 워터마크로 판정 무효화,
+  OSM Mapnik은 usage-policy 403 차단. 배경지도 육안이 canonical 등재/롤백 판정의
+  핵심이라 **무키·무워터마크·usage-policy 허용** 소스로 교체 + 폴백 체인.
+  - 1차 **Esri WorldImagery(위성)** — 한국 커버·무키·무워터마크·ArcGIS Online
+    저작자표시 사용 허용. 위성은 녹지(수목 캐노피)·수면·도로/건물 대비가 명확해
+    공원/수변 추종 vs street-grid 판정에 충분(일산 호수공원 재렌더 검증).
+  - 폴백 Esri.WorldStreetMap → WorldTopoMap(무워터마크. 단 한국은 벡터 결측
+    'Map data not yet available' 가능 — 위성 서버 장애 시 최후 안전판).
+  - **CartoDB·OSM Mapnik 제외**(워터마크·403). 새 소스가 또 죽으면 아래
+    _MAP_PROVIDER_CHAIN 한 곳만 교체.
+  저작자표시는 채택된 provider의 attribution을 프레임 내 명기(라이선스 준수).
 
 Run: .venv/bin/python scripts/course_factory/render.py <slug> [K] [grid|map|both]
 """
@@ -17,6 +29,36 @@ import matplotlib.pyplot as plt  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "out")
+
+# 배경 타일 폴백 체인 — 무키·무워터마크·usage-policy 허용만(§C). dotted 이름으로
+# 두어 provider 죽을 때 이 리스트만 교체. 순서 = 신뢰도(위성 1차, 벡터 폴백).
+_MAP_PROVIDER_CHAIN = [
+    "Esri.WorldImagery",     # 위성 — 한국 커버·무키·무워터마크(2026-08-28 확인)
+    "Esri.WorldStreetMap",   # 폴백(무워터마크 — 한국 벡터 결측 가능)
+    "Esri.WorldTopoMap",     # 폴백2
+]
+
+
+def _resolve_provider(dotted):
+    """'Esri.WorldImagery' → cx.providers.Esri.WorldImagery(TileProvider)."""
+    import contextily as cx
+    node = cx.providers
+    for part in dotted.split("."):
+        node = node[part]
+    return node
+
+
+def _add_basemap_with_fallback(ax):
+    """체인을 순회해 첫 성공 provider로 basemap 추가. 반환 (이름, attribution)|(None,None)."""
+    import contextily as cx
+    for dotted in _MAP_PROVIDER_CHAIN:
+        try:
+            prov = _resolve_provider(dotted)
+            cx.add_basemap(ax, source=prov, crs="EPSG:3857")
+            return dotted, str(prov.get("attribution", ""))
+        except Exception as e:  # noqa: BLE001 — 다음 provider 시도
+            print(f"  ⚠ 타일 provider {dotted} 실패({type(e).__name__}) — 폴백 시도")
+    return None, None
 
 
 def render(slug, k=3):
@@ -58,15 +100,19 @@ def render_map(slug, k=3):
         pad = max(max(xs) - min(xs), max(ys) - min(ys)) * 0.15 + 50
         ax.set_xlim(min(xs) - pad, max(xs) + pad)
         ax.set_ylim(min(ys) - pad, max(ys) + pad)
-        try:
-            cx.add_basemap(ax, source=cx.providers.CartoDB.Positron, crs="EPSG:3857",
-                           attribution="© OpenStreetMap contributors © CARTO")
-        except Exception as e:   # 타일 네트워크 실패 시 맨 배경으로라도 저장
+        used, attrib = _add_basemap_with_fallback(ax)
+        if used is None:   # 전 provider 실패 시 맨 배경으로라도 저장
             ax.set_facecolor("#f0f0f0")
-            print(f"  ⚠ {slug} top{i}: 타일 실패({type(e).__name__}) — 무배경 저장")
+            print(f"  ⚠ {slug} top{i}: 전 타일 provider 실패 — 무배경 저장")
+        else:
+            # 라이선스 준수 — 채택 provider 저작자표시 프레임 내 명기(ASCII 축약)
+            ax.text(0.01, 0.01, f"Tiles: {used} | {attrib[:60]}", transform=ax.transAxes,
+                    fontsize=6, va="bottom", ha="left", color="#333",
+                    bbox=dict(boxstyle="round", fc="white", ec="none", alpha=0.6))
         # 제목은 ASCII(matplotlib 기본 폰트 한글 미지원) — 지도 라벨은 타일에 한글 baked
         ax.set_title(f"[{r['tier']}] {slug} #{i} - {r['km']}km  "
-                     f"self_cross={r.get('self_cross','?')} retrace={r['longest_retrace_m']}m",
+                     f"self_cross={r.get('self_cross','?')} retrace={r['longest_retrace_m']}m "
+                     f"[{used or 'NO-TILE'}]",
                      fontsize=9)
         ax.set_xticks([]); ax.set_yticks([]); ax.legend(fontsize=8, loc="upper right")
         p = os.path.join(OUT, f"{slug}_top{i}_map.png")

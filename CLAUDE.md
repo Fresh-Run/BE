@@ -95,6 +95,17 @@
   둘레 순환, 2026-08-26). **canonical 코스 QA·롤백 판정은 self_cross가 아니라 배경지도
   육안(`render.py <slug> K map`)이 유일 기준.** 롤백 3원칙(도구 진화 시 기채택분 재검)에서
   canonical엔 배경지도를, factory 후보엔 self_cross+배경지도를 적용.
+- **배경지도 타일 프로바이더는 변동적 — 무키 소스 우선·폴백 체인 유지**(2026-08-28
+  실측). 배경지도 육안이 등재/롤백 판정의 핵심인데 타일 소스가 조용히 죽으면 게이트가
+  무력화된다: **CartoDB Positron이 API키 요구→"API KEY REQUIRED" 워터마크**(판정 무효),
+  **OSM Mapnik은 usage-policy 403 차단**. `render.py`는 `_MAP_PROVIDER_CHAIN`으로
+  **Esri WorldImagery(위성) 1차**(한국 커버·무키·무워터마크·ArcGIS 저작자표시 허용) +
+  Esri 벡터 폴백. **위성이 공원/수변(녹지·수면) vs street-grid(도로·아파트) 판정에
+  충분**(일산 호수공원 재렌더 검증 — 호수 둘레 추종 명확 / 봉담 상리는 아파트 단지 도로
+  순환으로 판별). ⚠️ **워터마크·no-data 타일은 200으로 와 예외를 안 던진다** → 자동
+  감지 불가, **체인 순서(신뢰 소스 1차)로 방어**. 새 소스가 또 죽으면 `_MAP_PROVIDER_CHAIN`
+  한 곳만 교체(그리드 형상 PNG는 무네트워크라 최후 폴백). 저작자표시는 채택 provider의
+  attribution을 PNG 프레임 내 명기(라이선스 준수).
 - **신규 테이블은 반드시 `enable row level security`**(정책 없이 — deny-by-default
   백스톱, 전 테이블 표준. 앱은 service_role로만 접근).
 - **백업/임시 테이블도 생성 즉시 RLS enable 또는 작업 완료 시 즉시 DROP** — 전례:
