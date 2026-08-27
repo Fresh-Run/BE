@@ -395,7 +395,29 @@ def _pitstop_prompt_kw(req: RouteRequest) -> str | None:
     return None
 
 
-def _apply_pitstop_name(route: RouteResponse, pick) -> None:
+_MARKER_ON_LINE_M = 40.0  # 마커-폴리라인 근접 허용(이반 관측 32m ≤ 40 = 이미 선 위)
+
+
+def _ensure_polyline_through(polyline: list, coord: Coordinate) -> None:
+    """마커 좌표가 폴리라인에서 _MARKER_ON_LINE_M 밖이면(선 밖으로 뜸) 최근접 정점
+    뒤에 coord를 삽입해 그려진 경로가 마커를 지나게 한다(마커 부유 방지). 이미 근접이면
+    무동작(이반 케이스 32m — 삽입 없이 선 위). in-place 수정."""
+    if not polyline:
+        return
+    di = min(range(len(polyline)), key=lambda i: _dist_km(polyline[i], coord))
+    if _dist_km(polyline[di], coord) * 1000 <= _MARKER_ON_LINE_M:
+        return  # 이미 선 위(근접) — 삽입 불요
+    # 최근접 정점의 앞/뒤 이웃 중 coord에 가까운 세그먼트 쪽에 삽입(스파이크 최소화)
+    ins = di + 1
+    if 0 < di < len(polyline) - 1 and \
+            _dist_km(polyline[di - 1], coord) < _dist_km(polyline[di + 1], coord):
+        ins = di
+    elif di == 0:
+        ins = 1
+    polyline.insert(ins, coord)
+
+
+def _apply_pitstop_name(route: RouteResponse, pick, overwrite_coord: bool = False) -> None:
     """최종 서빙 route의 is_pitstop 웨이포인트에 해석된 pitstop 실명·설명을 적용.
 
     §3 축B(2026-07-22) 이후 웨이포인트 표시명은 서버가 중립 라벨("지점 N")로 부여하고
@@ -406,8 +428,14 @@ def _apply_pitstop_name(route: RouteResponse, pick) -> None:
 
     - pick=None(키워드 없음·해석 실패)이면 무동작 → 중립 라벨 유지(이름 원칙: v87
       발명 좌표는 중립, 실 POI만 실명).
-    - 좌표는 미변경: 비-redraw는 pre-snap이 이미 실좌표로 스냅했고, redraw는 폴리라인
-      정합(마커가 그려진 경로 위)을 보존 — 표시 이름·설명만 실명화.
+    - **overwrite_coord=True(source=user_place — 유저가 앱에서 직접 탭한 POI, A-2)**:
+      마커 좌표도 지정 POI로 덮어쓴다. redraw/rescue 서빙은 pre-snap writeback을 못
+      받아 마커가 재추첨 슬롯(폴리라인 스냅점)에 남아 지정 POI에서 밀렸다(이반 898m
+      실측). 유저가 명시 지정한 POI는 마커가 정확해야 하므로 좌표까지 실값으로 덮고,
+      폴리라인이 그 좌표를 지나도록 보장(마커 부유 방지).
+    - **overwrite_coord=False(source=keyword_search — 서버가 검색·선정)**: 좌표 미변경.
+      서버가 고른 POI라 좌표 정확성을 보장 못 하니 폴리라인 정합(마커가 그려진 경로
+      위)이 맞다 — 표시 이름·설명만 실명화(종전 동작).
     - 첫 is_pitstop 웨이포인트 1개만(pre-snap과 동형). 이미 실명이면 동일값 재적용(멱등).
     """
     if pick is None:
@@ -416,6 +444,9 @@ def _apply_pitstop_name(route: RouteResponse, pick) -> None:
         if wp.is_pitstop:
             wp.name = pick.name
             wp.description = pick.address
+            if overwrite_coord and getattr(pick, "coordinate", None) is not None:
+                wp.coordinate = pick.coordinate
+                _ensure_polyline_through(route.polyline, pick.coordinate)
             return
 
 
@@ -1561,7 +1592,10 @@ async def create_running_route(
     # _adaptive_redraw로 서빙된 best가 pre-snap writeback을 못 받아 중립 '지점 N' 잔존).
     # _save_route(아래)·응답 반환 이전이라 DB·응답 양쪽 커버. 이미 해석된 pitstop_pick
     # 재사용 — Gemini·Kakao 추가 콜 0. 비-redraw는 동일 이름 재적용(멱등).
-    _apply_pitstop_name(best, pitstop_pick)
+    # source=user_place(유저 지정 POI, A-2)면 마커 좌표까지 지정값으로 덮어쓴다 —
+    # redraw/rescue 서빙에서 마커가 폴리라인 스냅점에 남아 지정 POI에서 밀리던 것 교정
+    # (이반 898m 실측). keyword 재검색은 종전대로 폴리라인 정합(name-only).
+    _apply_pitstop_name(best, pitstop_pick, overwrite_coord=(req.pitstop_place is not None))
 
     # 계측 요약 — 병목 분포 관측 (v2.7 배치 풀: pool·snapped·tmap_legs)
     _total = time.perf_counter() - _t0
