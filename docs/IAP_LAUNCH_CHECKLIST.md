@@ -36,8 +36,9 @@ lazy 강등). **비어 있는 건 JWS "검증"뿐** — `iap_service._verify`(ap
 **최소 스코프(출시 필수)**: ① `_verify` apple(구매→premium) ② 웹훅 4타입 —
 DID_RENEW(연장)·EXPIRED(lazy 강등)·REFUND/REVOKE(즉시 강등) ③ Sandbox 1사이클
 (구매·갱신·만료·환불·재구독·409) ④ **BETA_DEFAULT_PREMIUM OFF**(출시 직전, IAP 실동작
-검증 후 — fly secret 제거+재배포 + `grant_beta_premium.py --revoke --apply`, IAP
-구매자는 subscriptions 행으로 자동 보호) ⑤ production `IAP_MODE=mock` 부팅거부 확인.
+검증 후 — **fly secret 제거+재배포만**(신규 free). **정책 확정 2026-08-28: 기존 베타
+테스터는 영구 프리미엄 → `--revoke` 실행 안 함**. §5 상세) ⑤ production `IAP_MODE=mock`
+부팅거부 확인.
 **나중(post-launch)**: GRACE_PERIOD/Billing Retry 정교화 · Server API 주기 재조회 ·
 가족 공유 · restore UX.
 
@@ -79,21 +80,29 @@ DID_RENEW(연장)·EXPIRED(lazy 강등)·REFUND/REVOKE(즉시 강등) ③ Sandbo
 
 ## 5. 배포 가드 확인
 
-- [ ] **`BETA_DEFAULT_PREMIUM` OFF + 베타 테스터 tier 정리** (2026-07-27 등재) —
-  베타 신규 가입 자동 premium 플래그(fly secrets)를 제거·재배포하고, 승급된 베타
-  테스터를 `scripts/grant_beta_premium.py --revoke --apply`로 리셋(IAP 구매자는
-  subscriptions 행으로 자동 보호). 일괄 승급 이력: `db/2026-07-27_beta_testers_premium.sql`
-  - **✅ 사전 점검 완료(2026-08-28, 읽기전용 dry-run)**: revoke 가드 실확인 —
-    ① 강등 대상 = `profiles.tier=premium` **AND** `subscriptions` 행 부재(스크립트
-    line 96). ② **IAP 구매자 보호 가드 있음**(line 79 `iap_uids`←subscriptions,
-    line 98-99 `🔒 IAP 구매자 보호` 로그). ③ 시드(test1·test2·demo1~5)·운영진
-    (freshrun0609) 이중 제외. ④ **dry-run이 기본**(변경엔 `--apply` 필수). 현
-    dry-run: **강등 대상 71명·IAP 보호 0명**(pre-IAP = subscriptions 0행이라 지금은
-    전원 강등이 정상). **출시 후엔 구매자가 subscriptions 행을 가져 자동 제외**되므로
-    가드 추가 불요. ⚠️ **전환 순서**: BETA off는 IAP Sandbox 검증 후 — 그래야
-    구매자 subscriptions 행이 존재해 revoke가 보호. ⚠️ dry-run에 `te***@freshrun.com`
-    (nick=지연) 등 비-시드 `@freshrun.com` 계정 포함 — 오너가 유지 원하면 SEED_EMAILS
-    추가 또는 수동 재승급(개인 계정 강등 방지 확인 필요).
+- [ ] **`BETA_DEFAULT_PREMIUM` OFF (신규만 free) — 베타 테스터는 영구 프리미엄**
+  (**정책 확정 2026-08-28, 오너 결정**) — 초기 기여 보답·로열티로 **기존 베타
+  테스터(TestFlight 외부·DB premium, 수는 실측 기준)는 출시 후에도 프리미엄 유지**.
+  신규 가입자만 free→IAP 결제. **전환 = `BETA_DEFAULT_PREMIUM` fly secret 제거·재배포
+  단 하나**(신규 자동 승급만 차단). **`--revoke`는 실행하지 않는다**(기존 베타 강등 금지).
+  일괄 승급 이력: `db/2026-07-27_beta_testers_premium.sql`.
+  - **코드 정합 실확인(2026-08-28, 읽기전용)**: ⓐ **신규 free** — `profile_service`
+    L103 `if is_new and settings.beta_default_premium:` → OFF면 tier 미설정 → 컬럼
+    default `free`(신규 최초 프로필만 영향). ⓑ **기존 베타 유지** — OFF는 `is_new`
+    분기만 건드림, 기존 프로필 tier 무접촉 + `--revoke` 미실행 → premium 그대로.
+    ⓒ **lazy 훅 무강등** — `quota_service._lazy_iap_downgrade` L119 `if not res.data:
+    return "premium"` → **subscriptions 행 없는 premium(수동 부여·베타)은 만료 개념이
+    없어 영구 유지**(test1 전례 경로). 즉 베타는 구독 행 없이 premium이라 모든
+    프리미엄 게이트를 계속 통과.
+  - **`--revoke` 스크립트·`SEED_EMAILS`는 보존**(표준 전환엔 미사용 — 만약의 수동
+    강등·오남용 대비). 가드 실확인분(읽기전용 dry-run 이력): 강등 대상 = premium
+    **AND** subscriptions 부재(L96), IAP 구매자 `🔒` 보호(L79/98), 시드·운영진 이중
+    제외, dry-run 기본(변경엔 `--apply`). 공동대표 계정(`test3@freshrun.com`·
+    `cvcv0824@gmail.com`)은 `SEED_EMAILS` 추가로 이중 보호(만약 revoke 시에도 불가침).
+  - **전환 절차**: ① IAP Sandbox 1사이클 검증 → ② `fly secrets unset BETA_DEFAULT_PREMIUM
+    --app freshrun-api`(재배포) → ③ **신규 가입 1건 free 확인** → ④ **기존 베타 표본
+    tier=premium 유지 확인**(`--revoke` 미실행이라 무변경). 테스터 수는 TestFlight/DB
+    실측(하드코딩 금지 — 정책은 "전원 유지"라 수치 무관).
 - [ ] 배포 환경 변수 `ENVIRONMENT=production` 설정
 - [ ] production에서 `IAP_MODE=mock`이면 **부팅 자체가 거부**되는지 확인 (main.py 가드)
 - [ ] `iap_notifications_raw` 테이블 용량 모니터링 (처리 구현 후 정리 정책)
