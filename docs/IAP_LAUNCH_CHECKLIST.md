@@ -83,6 +83,17 @@ DID_RENEW(연장)·EXPIRED(lazy 강등)·REFUND/REVOKE(즉시 강등) ③ Sandbo
   베타 신규 가입 자동 premium 플래그(fly secrets)를 제거·재배포하고, 승급된 베타
   테스터를 `scripts/grant_beta_premium.py --revoke --apply`로 리셋(IAP 구매자는
   subscriptions 행으로 자동 보호). 일괄 승급 이력: `db/2026-07-27_beta_testers_premium.sql`
+  - **✅ 사전 점검 완료(2026-08-28, 읽기전용 dry-run)**: revoke 가드 실확인 —
+    ① 강등 대상 = `profiles.tier=premium` **AND** `subscriptions` 행 부재(스크립트
+    line 96). ② **IAP 구매자 보호 가드 있음**(line 79 `iap_uids`←subscriptions,
+    line 98-99 `🔒 IAP 구매자 보호` 로그). ③ 시드(test1·test2·demo1~5)·운영진
+    (freshrun0609) 이중 제외. ④ **dry-run이 기본**(변경엔 `--apply` 필수). 현
+    dry-run: **강등 대상 71명·IAP 보호 0명**(pre-IAP = subscriptions 0행이라 지금은
+    전원 강등이 정상). **출시 후엔 구매자가 subscriptions 행을 가져 자동 제외**되므로
+    가드 추가 불요. ⚠️ **전환 순서**: BETA off는 IAP Sandbox 검증 후 — 그래야
+    구매자 subscriptions 행이 존재해 revoke가 보호. ⚠️ dry-run에 `te***@freshrun.com`
+    (nick=지연) 등 비-시드 `@freshrun.com` 계정 포함 — 오너가 유지 원하면 SEED_EMAILS
+    추가 또는 수동 재승급(개인 계정 강등 방지 확인 필요).
 - [ ] 배포 환경 변수 `ENVIRONMENT=production` 설정
 - [ ] production에서 `IAP_MODE=mock`이면 **부팅 자체가 거부**되는지 확인 (main.py 가드)
 - [ ] `iap_notifications_raw` 테이블 용량 모니터링 (처리 구현 후 정리 정책)
