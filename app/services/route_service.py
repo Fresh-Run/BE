@@ -1471,6 +1471,28 @@ async def create_running_route(
                            snap_errs["quota"], len(scored),
                            snap_errs["legnotroutable"] + snap_errs["other"])
             raise RouteGenerationUnavailable()
+        elif pitstop_obs and pitstop_obs.get("far") and scored:
+            # far-POI best-effort 편입(A-2 계약 ⓓ, 2026-08-27 — 이반 6초 502 실측 교정).
+            # 유저가 명시 지정한 먼 POI(위치밴드 target×0.5 밖)를 via로 편입하면 경로가
+            # target+1.0km(_OVER_SERVE_CAP)를 넘고 왕복 팔(longest_retrace)이 800m를 넘어
+            # _serveable_over_cap이 전멸 → 502였다. 유저가 그 먼 POI를 지정한 것은 "거기까지
+            # 갔다 오는" 긴 코스가 의도 → **최소 초과 후보를 target_missed=true로 서빙**(502
+            # 금지, over-cap·retrace 게이트 완화 — far pitstop 한정). 마커·폴리라인은 아래
+            # _apply_pitstop_name(overwrite_coord=True)가 지정 POI로 정합. 편입 후보 0(scored
+            # 비어 스냅 전멸)이면 이 분기 미발동 → 아래 재추첨/502(+pitstop intent라
+            # _canonical_dedup_last_resort가 canonical 폴백 시도, 빈손 502 최소화).
+            _k, best = min(scored, key=lambda t: abs(t[0] - target_km))
+            best.target_missed = True
+            pitstop_obs["far_served"] = True
+            _cwk = _waypoint_chain_km(best)
+            best_meta = {**_meta, "verdict": "far_pitstop_missed",
+                         "ratio": round(_k / _cwk, 3) if _cwk else None,
+                         "park_coverage": _park_coverage(best, park_coords),
+                         "zigzag_score": _zigzag_score(best),
+                         "retrace": _polyline_retrace(best.polyline),
+                         "max_gap_m": _polyline_max_gap_m(best.polyline)}
+            logger.info("far-POI best-effort 서빙 — km=%.1f target=%.1f (지정 POI 편입·"
+                        "target_missed, 502 회피)", _k, target_km)
         # (2026-07-29 B 정직화) 구 nopath 폴백 서빙 분기 삭제 — "other" 스냅 실패 시
         # 폴리라인 0점 AI 추정 카드를 200으로 내던 레거시("앱은 거짓말하지 않는다"
         # 위반, dentist 실사용 3건). 이제 재추첨/502로 자연 수렴, 실패 태그만 no_path로
