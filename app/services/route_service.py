@@ -1159,7 +1159,10 @@ async def create_running_route(
                 req.start, target_km, probe_dead_end=False)
             for _ar in anchor_service.build_anchor_candidates(
                     req.start, _anchors, target_km, anchor_n,
-                    needs_pitstop=bool(req.pitstop_keyword),
+                    # A-2 갭 교정(2026-08-28): keyword만 보던 게이트가 place-only 요청에
+                    # anchor 슬롯을 미예약해 anchor 서빙 시 pitstop 드롭(0곳)됐다. v87은
+                    # _pitstop_prompt_kw로 이미 place 슬롯 예약 — anchor도 intent 기반으로.
+                    needs_pitstop=_has_pitstop_intent(req),
                     chain_target_km=chain_aim_km):  # 밴드적응 캘리브레이션(격자 팽창 역산)
                 gen_cands.append((_ar, _waypoint_chain_km(_ar), 0.0))
                 engine_of[id(_ar)] = "anchor"
