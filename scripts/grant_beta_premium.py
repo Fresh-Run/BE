@@ -26,7 +26,11 @@ import httpx
 
 _SB = "https://jlmmqnpddkokyintlawd.supabase.co"
 
-SEED_EMAILS = {"test1@freshrun.com", "test2@freshrun.com"} | {
+# 정확 매칭(email in SEED_EMAILS, line 86) — 프리픽스 아님. 그래서 test3은 test1/test2에
+# 안 걸려 명시 추가 필요. 공동대표 2인 앱 로그인 계정은 출시 후에도 프리미엄 영구 유지
+# (2026-08-28): test3@freshrun.com(지연)·cvcv0824@gmail.com(이반). 강등(--revoke) 불가침.
+SEED_EMAILS = {"test1@freshrun.com", "test2@freshrun.com",
+               "test3@freshrun.com", "cvcv0824@gmail.com"} | {
     f"demo{i}@freshrun.com" for i in range(1, 6)
 }
 OPERATOR_EMAIL = "freshrun0609@gmail.com"
