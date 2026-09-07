@@ -16,6 +16,8 @@ from fastapi.responses import JSONResponse
 from app.core.auth import get_current_user, require_admin
 from app.core.validation import validate_uuid_path_params
 from app.models.schemas import (
+    BattleCreate,
+    BattleResponse,
     ActivityFeedItem,
     AnnouncementCreate,
     AvatarUploadUrlResponse,
@@ -96,6 +98,7 @@ from app.models.schemas import (
 )
 from app.services import (
     announcement_service,
+    battle_service,
     coach_service,
     crew_service,
     iap_service,
@@ -3128,3 +3131,80 @@ async def search_places(
     except Exception:  # noqa: BLE001 - 예외 텍스트에 요청 상세가 실리지 않도록 고정 문자열
         logger.warning("장소 검색 실패", exc_info=True)
         raise HTTPException(status_code=502, detail="장소 검색을 일시적으로 사용할 수 없습니다.")
+
+
+# ═══════════════════════ 배틀 (1v1 점수 대전, 2026-09-07) ═══════════════════════
+# 설계: docs/BATTLE_DESIGN_v0_KO.md. 고정 경로(/battles/settle) 먼저 선언(패턴 경로
+# /battles/{id} 앞). uuid path param은 validate_uuid_path_params 자동 커버.
+
+def _battle_http(exc: battle_service.BattleError) -> HTTPException:
+    """BattleError → HTTPException(error_code 동봉)."""
+    return HTTPException(status_code=exc.status,
+                         detail={"error": exc.code, "message": exc.message})
+
+
+@router.post("/battles", response_model=BattleResponse, summary="배틀 생성 + 초대")
+async def create_battle(req: BattleCreate, user: CurrentUser = Depends(get_current_user)) -> BattleResponse:
+    try:
+        b = await battle_service.create_battle(
+            user.user_id, req.opponent_id, req.title, req.emoji, req.duration_days, req.format)
+        return BattleResponse(**b)
+    except battle_service.BattleError as e:
+        raise _battle_http(e)
+    except Exception:  # noqa: BLE001
+        logger.warning("배틀 생성 실패", exc_info=True)
+        raise HTTPException(status_code=502, detail="배틀을 생성할 수 없습니다.")
+
+
+@router.get("/battles", response_model=list[BattleResponse], summary="내 배틀 리스트")
+async def list_battles(status: str | None = None,
+                       user: CurrentUser = Depends(get_current_user)) -> list[BattleResponse]:
+    rows = await battle_service.list_battles(user.user_id, status)
+    return [BattleResponse(**b) for b in rows]
+
+
+@router.post("/battles/settle", summary="정산 배치 재실행 (관리/크론)")
+async def settle_battles(admin: CurrentUser = Depends(require_admin)) -> dict:
+    n = await battle_service.settle_batch()
+    return {"settled": n}
+
+
+@router.get("/battles/{battle_id}", response_model=BattleResponse, summary="배틀 상세")
+async def get_battle(battle_id: str, user: CurrentUser = Depends(get_current_user)) -> BattleResponse:
+    try:
+        return BattleResponse(**await battle_service.get_battle_detail(battle_id, user.user_id))
+    except battle_service.BattleError as e:
+        raise _battle_http(e)
+
+
+@router.post("/battles/{battle_id}/accept", response_model=BattleResponse, summary="배틀 수락")
+async def accept_battle(battle_id: str, user: CurrentUser = Depends(get_current_user)) -> BattleResponse:
+    try:
+        return BattleResponse(**await battle_service.accept_battle(battle_id, user.user_id))
+    except battle_service.BattleError as e:
+        raise _battle_http(e)
+
+
+@router.post("/battles/{battle_id}/decline", summary="배틀 거절")
+async def decline_battle(battle_id: str, user: CurrentUser = Depends(get_current_user)) -> dict:
+    try:
+        await battle_service.decline_battle(battle_id, user.user_id)
+        return {"status": "declined"}
+    except battle_service.BattleError as e:
+        raise _battle_http(e)
+
+
+@router.post("/battles/{battle_id}/forfeit", response_model=BattleResponse, summary="배틀 포기(즉시 패배)")
+async def forfeit_battle(battle_id: str, user: CurrentUser = Depends(get_current_user)) -> BattleResponse:
+    try:
+        return BattleResponse(**await battle_service.forfeit_battle(battle_id, user.user_id))
+    except battle_service.BattleError as e:
+        raise _battle_http(e)
+
+
+@router.post("/battles/{battle_id}/cancel", response_model=BattleResponse, summary="배틀 상호취소")
+async def cancel_battle(battle_id: str, user: CurrentUser = Depends(get_current_user)) -> BattleResponse:
+    try:
+        return BattleResponse(**await battle_service.cancel_battle(battle_id, user.user_id))
+    except battle_service.BattleError as e:
+        raise _battle_http(e)

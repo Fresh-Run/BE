@@ -276,6 +276,24 @@ fetch(`${API_BASE}/api/me/profile`, {
 >
 > **크루 초대 링크 (위 표와 성격 다름 — 알림이 아니라 유저 공유 링크)**: `freshrun://crew-invite?code=XXXXXXXX` (2026-07-09 확정). 발신은 **클라이언트 공유 시트**(서버는 코드만 제공 — `GET·POST /crews/{id}/invite`), 서버가 이 링크를 발송하는 일은 없다. **수신 앱 처리**: `code` 추출 → `POST /crews/preview-by-code`로 크루 확인 모달 → 유저 확인 후 `POST /crews/join-by-code`.
 
+### 배틀 (1v1 점수 대전, 2026-09-07 — 이반 목데이터→실연결)
+
+> 설계: `docs/BATTLE_DESIGN_v0_KO.md`. **⚠️ SQL 실행 후 라이브**(`db/2026-09-07_battles.sql` 오너 실행). 상태 5단계: `pending`(대기)→`active`(진행)→`ended`(종료) + `cancelled`(만료 48h/상호취소)·`forfeited`(포기). 점수는 **KST 자정 daily 배치 정산** = "어제까지 스탠딩"(오늘 run은 다음 자정 반영). anti-cheat = **verified 런만** 집계.
+
+| 화면·용도 | 엔드포인트 | 계약 |
+|---|---|---|
+| **배틀 생성 + 초대** | `POST /battles` | body: `opponent_id`·`title`(≤60)·`emoji?`(≤12)·`duration_days`(1~30)·`format?`(`points` 기본). 응답 `BattleResponse`(status=`pending`). **게이팅**: 무료 티어 최근 30일 관여 3회 초과 시 **403 `battle_free_limit`**(프리미엄·베타 무제한) · 전 티어 동시 active 3개 초과 시 **409 `battle_active_cap`**. 차단/비공개 상대는 **404 은닉**. 초대는 **48h 만료** |
+| **내 배틀 리스트** | `GET /battles?status=` | `status`=`active`\|`pending`\|`ended`(생략 전체). 참가자(생성자·상대)인 배틀만, `created_at` 최신순. `BattleResponse[]` |
+| **배틀 상세** | `GET /battles/{id}` | `BattleResponse` + `scores`(참가자별 누적 점수)·`runs`(battle_runs — run별 `run_score`·`breakdown`{base/completion/pace/early_bird/milestone}·`counted`)·`invite_expires_at`(pending 시). 참가자 아니면 **404**. 점수는 "어제까지"(배치 정산) |
+| **수락** | `POST /battles/{id}/accept` | 초대받은 상대만·만료 전만. `pending`→`active`, `started_at`=now·`ends_at`=KST자정+duration. 게이팅 재검사(수락자). 만료 시 **410 `battle_invite_expired`** |
+| **거절** | `POST /battles/{id}/decline` | 상대만. battle→`cancelled`. `{status:"declined"}` |
+| **포기** | `POST /battles/{id}/forfeit` | active 참가자. **즉시 패배**(status=`forfeited`·winner=상대·상대 점수 유지·감점 없음) |
+| **상호취소** | `POST /battles/{id}/cancel` | active 참가자. v0: `cancelled`(무승부). ⚠️ 양자 합의는 **앱 UX**(확인 다이얼로그)로 — 서버는 요청 즉시 취소 |
+
+- **점수식(서버 진실, FE 프리뷰 미러 — `battle-score.ts` 1:1)**: per-run = `km×10` + 완주 `+20`(≥1.5km) + pace 보너스 + early_bird `+10`(ran_at KST<07:00) + milestone(첫 5k `+30`·첫 10k `+50`). 참가자 = `Σrun × streak_mult`(`1+0.05×min(streak,10)`, cap 1.5). **<1.5km·flagged·unverified = 0점**. ⚠️ **pace 보너스 상수는 이반 lib 도착 시 확정**(현재 서버 플레이스홀더).
+- **알림 3종**: `battle_invited`(초대받음)·`battle_overtaken`(정산서 역전, 1일 1회)·`battle_won`(승리). 카테고리 `battle`(설정 토글 신설).
+- **소비 규칙**: 리스트/상세 `scores`로 리더보드, `runs[].breakdown`으로 점수 분해 표시. `status`로 화면 분기(대기/진행/종료). `winner`==내 id면 승리 UI. 점수는 실시간 아님("어제까지 스탠딩" 명시).
+
 ### 프로필
 
 | 데이터 | 메서드/경로 | 주요 응답 필드 |

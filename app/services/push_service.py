@@ -49,6 +49,9 @@ _CATEGORY: dict[str, str] = {
     "challenge_completed": "crewChallenge",
     "crew_chat": "crewChat",             # 선등록
     "pb_achieved": "pb",                 # PB 축하 (자기 대상)
+    "battle_invited": "battle",          # 배틀(2026-09-07)
+    "battle_overtaken": "battle",
+    "battle_won": "battle",
 }
 
 
@@ -96,6 +99,12 @@ _TEMPLATES: dict[str, dict[str, str]] = {
     # 인앱 개인 초대 (crew_invited는 _CATEGORY에 이미 crewJoin — 이제 발송 시작)
     "crew_invited": {"ko": "{nickname}님이 크루에 초대했어요",
                      "en": "{nickname} invited you to a crew"},
+    # 배틀(2026-09-07) — invited는 상대 닉네임, won/overtaken은 자기 대상(닉네임 없음)
+    "battle_invited": {"ko": "{nickname}님이 배틀을 신청했어요 ⚔️",
+                       "en": "{nickname} challenged you to a battle ⚔️"},
+    "battle_overtaken": {"ko": "배틀에서 상대에게 역전당했어요! 힘내세요 🔥",
+                         "en": "You've been overtaken in your battle! 🔥"},
+    "battle_won": {"ko": "배틀에서 승리했어요! 🏆", "en": "You won your battle! 🏆"},
 }
 
 # 댓글 답글 세분(2026-08-04 run · 2026-08-06 route 동형 확장, Ivan) —

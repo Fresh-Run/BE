@@ -2035,3 +2035,60 @@ class ReportDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     status: Literal["reviewed", "dismissed"]
+
+
+# --- Battle (1v1 점수 배틀, 2026-09-07) — docs/BATTLE_DESIGN_v0_KO.md ------------
+
+class BattleCreate(BaseModel):
+    """POST /battles 입력 — 1v1 배틀 생성(+초대)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    opponent_id: str = Field(..., min_length=1, description="상대(초대 대상) user_id.")
+    title: str = Field(..., min_length=1, max_length=60)
+    emoji: Optional[str] = Field(None, max_length=12, description="프리셋 emoji(문자).")
+    duration_days: int = Field(..., ge=1, le=30, description="배틀 기간(1~30일).")
+    format: Literal["points", "pure"] = "points"
+
+
+class BattleRunItem(BaseModel):
+    """배틀 상세의 run별 점수 행."""
+
+    run_id: str
+    user_id: str
+    counted: bool
+    run_score: float
+    breakdown: Optional[dict] = None
+    attributed_at: Optional[str] = None
+
+
+class BattleParticipantScore(BaseModel):
+    """참가자 누적 점수(정산 산출)."""
+
+    user_id: str
+    score: float = 0.0
+    streak_multiplier: float = 1.0
+    breakdown: Optional[dict] = None
+
+
+class BattleResponse(BaseModel):
+    """배틀 상세/리스트 항목 — 상태·기간·점수·순위."""
+
+    id: str
+    created_by: str
+    opponent: str
+    title: str
+    emoji: Optional[str] = None
+    format: str = "points"
+    metric: str = "distance_km"
+    duration_days: int
+    status: str
+    started_at: Optional[str] = None
+    ends_at: Optional[str] = None
+    settled_at: Optional[str] = None
+    winner: Optional[str] = None
+    created_at: Optional[str] = None
+    # 상세 전용(리스트에선 생략 가능 — Optional 기본 None)
+    invite_expires_at: Optional[str] = None
+    scores: Optional[list[BattleParticipantScore]] = None
+    runs: Optional[list[BattleRunItem]] = None
