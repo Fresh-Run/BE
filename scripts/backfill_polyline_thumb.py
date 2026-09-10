@@ -1,56 +1,65 @@
-"""run_tracks.polyline_thumb 백필 — 멱등 (null인 행만, 재실행 시 0건).
+"""run_tracks.polyline_thumb 백필/재생성 — points(전체)에서 make_polyline_thumb 재계산.
 
-저장 파이프라인이 2026-07-11부터 저장 시 박제하므로 이 스크립트는 그 이전
-트랙 전용. points(저장 폴리라인)에서 동일 로직(make_polyline_thumb)으로 생성.
-실행: .venv/bin/python scripts/backfill_polyline_thumb.py
+두 용도:
+  ① null 채움(2026-07-11 이전 트랙 — 저장 시 미박제분).
+  ② eps 변경 소급(2026-09-11 THUMB_EPSILON_M 25→15) — 기존 non-null thumb는 옛 eps라
+     신 thumb와 다르면 갱신. points·상세(get_run_track)는 무접촉·불변.
+
+멱등: 같은 points → 같은 thumb. 이미 신 thumb면 동일(스킵). 재실행 시 대상 0건.
+mass 업데이트라 dry-run 기본 — 대상 수·표본만. --apply로 실제 갱신.
+
+실행:
+  python scripts/backfill_polyline_thumb.py            # dry-run
+  python scripts/backfill_polyline_thumb.py --apply    # 실제 갱신
 """
 from __future__ import annotations
 
 import os
 import sys
 
-import httpx
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, ROOT)
-
-from app.services.track_service import make_polyline_thumb  # noqa: E402
-
-
-def _keys() -> str:
-    with open(os.path.join(ROOT, ".env")) as f:
-        for line in f:
-            line = line.strip()
-            if line.startswith("SUPABASE_SERVICE_ROLE_KEY="):
-                return line.split("=", 1)[1]
-    raise RuntimeError("SUPABASE_SERVICE_ROLE_KEY not found")
-
-
-_SB = "https://jlmmqnpddkokyintlawd.supabase.co"
-_SVC = _keys()
-_ADM = {"apikey": _SVC, "Authorization": f"Bearer {_SVC}", "Content-Type": "application/json"}
+from app.core.supabase_client import get_supabase_admin  # noqa: E402
+from app.services import track_service as ts  # noqa: E402
 
 
 def main() -> None:
-    c = httpx.Client(timeout=60)
-    rows = c.get(f"{_SB}/rest/v1/run_tracks", headers=_ADM,
-                 params={"polyline_thumb": "is.null", "select": "run_id,points",
-                         "limit": 1000}).json()
-    print(f"백필 대상: {len(rows)}행 (polyline_thumb null)")
-    done = 0
+    apply_ = "--apply" in sys.argv
+    print(f"[backfill polyline_thumb] eps={ts.THUMB_EPSILON_M} max={ts.THUMB_MAX_POINTS} · "
+          f"{'실행(--apply)' if apply_ else 'DRY-RUN(--apply로 실행)'}")
+    sb = get_supabase_admin()
+    rows, off = [], 0
+    while True:
+        b = (sb.table("run_tracks").select("run_id, points, polyline_thumb")
+             .range(off, off + 999).execute().data)
+        rows += b
+        if len(b) < 1000:
+            break
+        off += 1000
+    print(f"run_tracks {len(rows)}행 스캔")
+
+    changed = same = skipped = 0
     for r in rows:
-        points = r.get("points") or []
-        if not points:
-            print(f"  ! {r['run_id'][:8]}…: points 비어 있음 — 스킵")
+        pts = r.get("points") or []
+        if len(pts) < 2:
+            skipped += 1
             continue
-        thumb = make_polyline_thumb(points)
-        resp = c.patch(f"{_SB}/rest/v1/run_tracks", headers=_ADM,
-                       params={"run_id": f"eq.{r['run_id']}"},
-                       json={"polyline_thumb": thumb})
-        assert resp.status_code in (200, 204), f"{r['run_id']}: {resp.status_code} {resp.text[:150]}"
-        done += 1
-        print(f"  ✓ {r['run_id'][:8]}…: {len(points)}pt → {len(thumb)}pt")
-    print(f"완료: {done}건 채움 (재실행 시 0건이어야 멱등)")
+        new_thumb = ts.make_polyline_thumb(pts)
+        old_thumb = r.get("polyline_thumb") or []
+        if new_thumb == old_thumb:
+            same += 1
+            continue
+        changed += 1
+        if apply_:
+            sb.table("run_tracks").update({"polyline_thumb": new_thumb}).eq(
+                "run_id", r["run_id"]).execute()
+        elif changed <= 6:  # dry-run 표본
+            print(f"  {r['run_id'][:8]}: {len(old_thumb)}점 → {len(new_thumb)}점")
+
+    print(f"\n대상 {changed}행 {'갱신 완료' if apply_ else '(dry-run — 미변경)'} · "
+          f"동일 {same} · 스킵 {skipped}(포인트 부족)")
+    if not apply_ and changed:
+        print("실제 갱신하려면 --apply.")
 
 
 if __name__ == "__main__":

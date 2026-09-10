@@ -369,7 +369,11 @@ def classify(processed: ProcessedTrack | None, app_distance_km: float) -> str:
 
 # ── 카드 지도용 축약 폴리라인 (~30pt) ────────────────────────────────────────
 
-THUMB_EPSILON_M = 25.0   # 실측: 실트랙 85pt → 33pt (설계 목표 ~30)
+THUMB_EPSILON_M = 15.0   # 25→15 완화(2026-09-11, 옵션ⓑ) — 피드 썸네일 곡선 각짐 개선.
+# eps 25는 곡선 트랙을 130m 간격 직선으로 잇어 각짐(몽미 런 실측). 15는 곡선 점을 더
+# 보존(≤36 상한 유지 → 페이로드 불변). 상한 초과 시 폴백(2×eps=30m → 균등 30pt).
+# 실측: 몽미 2.88km 22pt/132m→34pt/61m·3.09km 23pt/137m→31pt/82m 개선, 장거리는 상한서
+# 폴백 30m라 소폭. 상세(전체 points)는 무변경.
 THUMB_MAX_POINTS = 36
 
 
