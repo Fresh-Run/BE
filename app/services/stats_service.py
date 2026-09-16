@@ -38,9 +38,20 @@ async def _excluded_uids() -> set[str]:
         lambda: supabase.auth.admin.list_users()
     )
     users = page if isinstance(page, list) else getattr(page, "users", page)
-    _excluded_uids_cache = {
+    excluded = {
         u.id for u in users if getattr(u, "email", None) in _EXCLUDED_EMAILS
     }
+    # dual-read(P2, 이관): 이메일 집합 ∪ account_kind. stats_exclude 행동을 가진 kind의
+    # profiles.user_id도 제외에 union — 이메일이 놓친 계정도 통계에서 빠짐(과보호=안전:
+    # 소셜프루프에 내부자 유입 방지, 표본은 더 보수적으로만). 이메일 매칭은 P3까지 유지.
+    from app.core.account_kinds import kinds_with
+    exclude_kinds = list(kinds_with("stats_exclude"))
+    kind_rows = await asyncio.to_thread(
+        lambda: supabase.table("profiles").select("user_id")
+        .in_("account_kind", exclude_kinds).execute()
+    )
+    excluded |= {r["user_id"] for r in (kind_rows.data or [])}
+    _excluded_uids_cache = excluded
     return _excluded_uids_cache
 
 

@@ -21,6 +21,7 @@ from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 from supabase import create_client  # noqa: E402
+from app.core.account_kinds import kinds_with  # noqa: E402  (순수 상수 모듈 — 부작용 0)
 
 sb = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_ROLE_KEY"])
 
@@ -130,12 +131,21 @@ def main():
             break
         page += 1
     email = {u["id"]: (u.get("email") or "") for u in users}
-    nick = {p["user_id"]: p["nickname"] for p in
-            sb.table("profiles").select("user_id,nickname").execute().data}
+    _profs = sb.table("profiles").select("user_id,nickname,account_kind").execute().data
+    nick = {p["user_id"]: p["nickname"] for p in _profs}
+    # dual-read(P2, 이관): seed_exclude 행동 kind의 uid → 시드 재료에서 제외.
+    _seed_exclude_kinds = kinds_with("seed_exclude")
+    _kind_excluded_uids = {p["user_id"] for p in _profs
+                           if p.get("account_kind") in _seed_exclude_kinds}
 
     def is_real(uid):
+        # 이메일 힌트 ∪ _EXCLUDED_USER_IDS ∪ account_kind(seed_exclude) — 셋 중 하나라도
+        # 걸리면 시드 재료 제외(union=과제외, 안전: 비실사용 계정 트랙이 시드에 유입 방지).
+        # 이메일/uid 매칭은 P3까지 유지(제거 아님).
         e = email.get(uid, "")
         if any(h in e for h in _EXCLUDED_EMAIL_HINTS):
+            return False
+        if uid in _kind_excluded_uids:
             return False
         return uid not in _EXCLUDED_USER_IDS
 

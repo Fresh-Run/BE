@@ -22,6 +22,9 @@ import sys
 
 import httpx
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from app.core.account_kinds import kinds_with  # noqa: E402  (순수 상수 모듈 — 부작용 0)
+
 _SB = "https://jlmmqnpddkokyintlawd.supabase.co"
 
 # ⚠️ 삭제 대상은 이 5개 이메일로 고정. 절대 확장 금지.
@@ -71,26 +74,47 @@ def main() -> None:
     users = _all_auth_users(c)
     by_email = {u.get("email"): u["id"] for u in users if u.get("email")}
 
+    # dual-read(P2, 이관): profiles.account_kind → uid별 kind 조회.
+    # ⚠️ 파괴 스크립트 원칙: **PROTECTION만 union으로 확장**한다. 삭제 target은 이메일
+    #    그대로(확장 금지 — target을 넓히면 "삭제 과다"라 unsafe 방향). kind는 ①보호 집합
+    #    확장 ②disjoint assert 강화에만 쓴다. 이메일 매칭은 P3까지 유지(제거 아님).
+    profs = c.get(f"{_SB}/rest/v1/profiles", headers=_ADM,
+                  params={"select": "user_id,account_kind", "limit": "5000"}).json()
+    uid2kind = {p["user_id"]: p.get("account_kind") for p in profs}
+    # wipe_protect 보유 kind(owner/internal/qa)의 uid — 절대 삭제 금지 집합.
+    kind_protected_uids = {uid for uid, k in uid2kind.items()
+                           if k in kinds_with("wipe_protect")}
+
     # 대상·보호 uid 해석
-    target = {e: by_email[e] for e in _DEMO_EMAILS if e in by_email}
+    target = {e: by_email[e] for e in _DEMO_EMAILS if e in by_email}   # 이메일 그대로(확장 금지)
     protected = {e: by_email[e] for e in _PROTECTED_EMAILS if e in by_email}
     target_uids = set(target.values())
-    protected_uids = set(protected.values())
+    protected_uids = set(protected.values()) | kind_protected_uids     # ← 보호만 union(과보호=안전)
 
     # ── self-assert (하나라도 어긋나면 즉시 중단) ──────────────────────────
+    # 이제 protected_uids가 kind 보호(owner/internal/qa)까지 포함 → 이 disjoint가 더 강함.
     assert target_uids.isdisjoint(protected_uids), \
-        "FATAL: 대상 uid가 test1/test2 uid와 겹침 — 중단"
+        "FATAL: 삭제 대상 uid가 보호 계정(test1/test2 또는 owner/internal/qa kind)과 겹침 — 중단"
     demo_only = {by_email[e] for e in _DEMO_EMAILS if e in by_email}
     assert target_uids == demo_only, "FATAL: 대상이 데모 5개 외를 포함 — 중단"
     # 대상 이메일이 정확히 데모 패턴인지 재확인
     for e in target:
         assert e in _DEMO_EMAILS, f"FATAL: 비데모 이메일 {e} — 중단"
+    # dual-read 강화: 삭제 대상 uid는 owner/internal/qa kind를 절대 안 가진다(과삭제 봉쇄).
+    # demo 이메일이 실수로 보호 kind로 태깅됐으면 여기서 즉시 abort.
+    for uid in target_uids:
+        k = uid2kind.get(uid)
+        assert k in (None, "demo"), \
+            f"FATAL: 삭제 대상 {uid} 의 account_kind={k} (demo/null 아님 — 보호 kind 오염) 중단"
 
     print("=" * 60)
     print(f"데모 데이터 초기화 {'(실제 삭제)' if execute else '(DRY-RUN — 아무것도 안 지움)'}")
     print("=" * 60)
-    print(f"\n총 auth.users {len(users)}명 · 보호 계정 {len(protected_uids)}명(test1/test2) "
+    print(f"\n총 auth.users {len(users)}명 · 보호 계정 {len(protected_uids)}명"
+          f"(test1/test2 이메일 ∪ owner/internal/qa kind {len(kind_protected_uids)}명) "
           f"· 데모 외 {len(users) - len(target_uids) - len(protected_uids)}명(미접촉)")
+    # requirement 5: 삭제 대상에 보호 계정 0 을 명시(assert가 이미 보장, 여기선 눈으로 확인).
+    print(f"  삭제 대상 ∩ 보호 계정 = {len(target_uids & protected_uids)}명 (0이어야 정상)")
 
     if not target:
         print("\n삭제할 데모 계정 없음(이미 정리됨). 종료.")
@@ -164,6 +188,10 @@ def reset_test_data(c, execute: bool) -> None:
 
     users = _all_auth_users(c)
     by_email = {u.get("email"): u["id"] for u in users if u.get("email")}
+    # dual-read(P2, 이관) 판단: 이 리셋은 **파괴 target**(test1/2 러닝 삭제)이라 kind로
+    # 확장하지 않는다(target 확장 = 삭제 과다 = unsafe 방향, wipe 원칙). target은 이메일
+    # 정확 2개로 고정 유지. 보호는 이미 테이블 화이트리스트(_RESET_PROTECT_TABLES)+계정
+    # 무접촉+before/after 불변 assert가 담당 — kind union 불요. (union은 protection에만.)
     uids = {e: by_email[e] for e in _RESET_EMAILS if e in by_email}
     assert set(uids) == _RESET_EMAILS, "FATAL: test1/test2 uid 해석 실패"
     uid_list = list(uids.values())

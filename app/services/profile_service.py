@@ -315,11 +315,22 @@ async def delete_account(user_id: str, email: str | None) -> None:
     본인뿐인 소유 크루는 자동 삭제. 아바타는 FK가 없어 명시 삭제(best-effort).
     """
     from app.services import crew_service  # 순환 import 방지 (crew→profile 역방향)
-
-    if email and email.lower() in _DEMO_EMAILS:
-        raise DemoAccountError()
+    from app.core.account_kinds import kinds_with
 
     supabase = get_supabase_admin()
+
+    # dual-read(P2, 이관): 이메일 집합 ∪ account_kind 로 탈퇴 차단 판정. 둘 중 하나라도
+    # 해당하면 보호 — union이라 이메일 경로가 놓친 계정도 kind로 추가 차단(과보호=안전
+    # 방향, behavior 변화는 "더 막는" 쪽으로만). 이메일 매칭은 P3까지 유지(제거 아님).
+    if email and email.lower() in _DEMO_EMAILS:
+        raise DemoAccountError()
+    kind_row = await asyncio.to_thread(
+        lambda: supabase.table("profiles").select("account_kind")
+        .eq("user_id", user_id).limit(1).execute()
+    )
+    account_kind = (kind_row.data[0].get("account_kind") if kind_row.data else None)
+    if account_kind in kinds_with("delete_block"):
+        raise DemoAccountError()
 
     owned = await asyncio.to_thread(
         lambda: supabase.table("crews").select("id").eq("owner_id", user_id).execute()

@@ -24,6 +24,9 @@ import sys
 
 import httpx
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from app.core.account_kinds import kinds_with  # noqa: E402  (순수 상수 모듈 — 부작용 0)
+
 _SB = "https://jlmmqnpddkokyintlawd.supabase.co"
 
 # 정확 매칭(email in SEED_EMAILS, line 86) — 프리픽스 아님. 그래서 test3은 test1/test2에
@@ -76,7 +79,9 @@ def main() -> None:
     uid2email = {u["id"]: (u.get("email") or "") for u in users}
 
     profs = c.get(f"{_SB}/rest/v1/profiles", headers=adm,
-                  params={"select": "user_id,nickname,tier", "limit": "1000"}).json()
+                  params={"select": "user_id,nickname,tier,account_kind", "limit": "1000"}).json()
+    # dual-read(P2): grant_skip 행동을 가진 kind = 자동 승급/회수 모두 스킵(보호).
+    _grant_skip_kinds = kinds_with("grant_skip")
     # IAP 구매자 식별 (revoke 보호용)
     subs = c.get(f"{_SB}/rest/v1/subscriptions", headers=adm,
                  params={"select": "user_id", "limit": "5000"}).json()
@@ -87,6 +92,11 @@ def main() -> None:
         email = uid2email.get(p["user_id"], "")
         if not email:
             continue  # auth에 없는 고아 프로필은 손대지 않음
+        # dual-read(P2, 이관): 이메일 집합 ∪ account_kind. 둘 중 하나라도 보호면 스킵 —
+        # union이라 이메일이 놓친 계정도 kind로 스킵(과보호=안전: 엉뚱 계정 승급/회수
+        # 방지, 이 스크립트의 핵심 리스크 봉쇄). 이메일 매칭은 P3까지 유지(제거 아님).
+        if p.get("account_kind") in _grant_skip_kinds:
+            continue  # kind 보호 — 승급/회수 대상에서 제외
         if email in SEED_EMAILS:
             continue  # 시드 — 시드 스크립트가 tier 관리
         if email == OPERATOR_EMAIL:
