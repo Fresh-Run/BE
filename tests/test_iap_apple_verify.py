@@ -24,7 +24,10 @@ import httpx  # noqa: E402
 from app.core.config import settings  # noqa: E402
 from app.core.supabase_client import get_supabase_admin  # noqa: E402
 from app.models.schemas import IapVerifyRequest  # noqa: E402
-from app.services import iap_service, quota_service  # noqa: E402
+from app.services import iap_apple, iap_service, quota_service  # noqa: E402
+# 리팩터(2026-09-17): 애플 검증/디코드 내부 helper는 iap_apple로 이동. 공개 API
+# (verify_purchase·store_notification·reprocess_unprocessed·예외)는 iap_service가
+# re-export하므로 그대로 호출 — 아래 monkeypatch만 iap_apple로 경로 이동(동작 assert 불변).
 
 TS = int(time.time())
 _SB = os.environ.get("SUPABASE_URL") or settings.supabase_url
@@ -73,17 +76,17 @@ class FakeNotif:
 
 
 def _patch_tx(tx: FakeTx):
-    iap_service._verify_signed_transaction = lambda jws: tx
+    iap_apple._verify_signed_transaction = lambda jws: tx
 
 
 def _patch_notif(notif: FakeNotif, tx: FakeTx):
-    iap_service._verify_notification = lambda sp: notif
-    iap_service._verify_signed_transaction = lambda jws: tx
+    iap_apple._verify_notification = lambda sp: notif
+    iap_apple._verify_signed_transaction = lambda jws: tx
 
 
 def _restore():
     import importlib
-    importlib.reload(iap_service)  # 원본 함수 복원
+    importlib.reload(iap_apple)  # 패치된 helper 원본 복원(이제 iap_apple 소유)
 
 
 def _sub(otid):
@@ -105,26 +108,26 @@ def _reset_subs():
 # ── A. 구성 가드 (무DB) ─────────────────────────────────────────────────
 def guard_tests():
     print("[A. 구성 가드]")
-    assert len(iap_service._apple_root_cas()) >= 1
-    ok(f"Apple Root CA 번들 로드({len(iap_service._apple_root_cas())}개)")
+    assert len(iap_apple._apple_root_cas()) >= 1
+    ok(f"Apple Root CA 번들 로드({len(iap_apple._apple_root_cas())}개)")
 
-    v = iap_service._verifier("sandbox")   # bundle_id만으로 생성(app_apple_id 불요)
+    v = iap_apple._verifier("sandbox")   # bundle_id만으로 생성(app_apple_id 불요)
     assert v is not None
     ok("sandbox verifier 생성(app_apple_id 없이 — 출시 전 Sandbox 가능)")
 
     # prod는 app_apple_id 필수 — 미설정(Track A 전)이면 IapNotConfigured
     assert settings.appstore_app_apple_id is None
     try:
-        iap_service._verifier("production")
+        iap_apple._verifier("production")
         raise AssertionError("prod verifier가 app_apple_id 없이 생성됨")
-    except iap_service.IapNotConfigured:
+    except iap_service.IapNotConfigured:   # facade re-export = iap_common.IapNotConfigured 동일 객체
         ok("production verifier → IapNotConfigured(app_apple_id 필수·503 safe)")
 
     # 안전장치 ③: production+mock 요청 거부
     orig = (settings.iap_mode, settings.environment)
     try:
         settings.iap_mode, settings.environment = "mock", "production"
-        assert iap_service._mock_allowed() is False
+        assert iap_apple._mock_allowed() is False
     finally:
         settings.iap_mode, settings.environment = orig
     ok("production+mock 조합 거부(_mock_allowed=False, 부팅거부 ①과 이중)")

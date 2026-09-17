@@ -432,7 +432,8 @@ class MockIapTransaction(BaseModel):
 class IapVerifyRequest(BaseModel):
     """POST /iap/verify 입력.
 
-    apple 모드: StoreKit 2 구매 완료 후 받은 signedTransaction(JWS)을 jws로.
+    apple(기본): StoreKit 2 구매 완료 후 받은 signedTransaction(JWS)을 jws로.
+    google(2026-09-17 additive): store="google" + purchase_token(Play Billing 구매 토큰).
     mock 모드: mock 객체로 (개발/테스트 전용).
     """
 
@@ -440,6 +441,11 @@ class IapVerifyRequest(BaseModel):
 
     jws: Optional[str] = None
     mock: Optional[MockIapTransaction] = None
+    # 안드 동시출시(additive) — 기본 'apple'이라 기존 {jws} 클라 하위호환.
+    store: Literal["apple", "google"] = "apple"
+    purchase_token: Optional[str] = Field(
+        None, description="Google Play Billing 구매 토큰 (store='google'일 때)."
+    )
 
 
 class IapVerifyResponse(BaseModel):

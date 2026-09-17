@@ -358,6 +358,22 @@ async def iap_notifications(request: Request, body: dict) -> dict:
     return {"status": "ok"}
 
 
+@router.post("/iap/google/notifications", summary="Google RTDN(Pub/Sub) 수신 — 스텁")
+async def iap_google_notifications(request: Request, body: dict) -> dict:
+    """Google Real-time Developer Notifications 수신 — **인터페이스 스텁**(2026-09-17).
+
+    별도 경로(Apple /iap/notifications와 envelope·auth·디코드 상이). 구현은 서비스계정 +
+    Pub/Sub 토픽 후. TODO 흐름: ① Pub/Sub push OIDC JWT 출처 검증 ② body
+    {message:{data:<base64>}} 디코드 → subscriptionNotification{purchaseToken,notificationType}
+    ③ Play API 재조회(RTDN은 트리거일 뿐 — 권위 상태 아님) ④ 정규화 → 공유 엔타이틀먼트
+    반영(iap_common) ⑤ raw는 iap_notifications_raw(store='google')에 보관·reprocess.
+    ⚠️ Google CANCELED(3)=자동갱신 OFF·만료 전 유지 → **강등 금지**(EXPIRED/13·REVOKED/12만).
+    Pub/Sub는 200 아닌 응답에 재시도하므로 항상 200 반환.
+    """
+    logger.info("RTDN 수신(스텁 — 서비스계정+Pub/Sub 후 구현, 현재 미처리)")
+    return {"status": "ok"}
+
+
 # --- Users: public profiles & follows ----------------------------------------
 # NOTE: any future fixed path (e.g. /users/search) must be declared BEFORE
 # these /users/{user_id}/... routes.

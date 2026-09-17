@@ -112,6 +112,14 @@ class Settings(BaseSettings):
     appstore_bundle_id: str = "com.freshrun.app"
     appstore_app_apple_id: Optional[int] = None
 
+    # Google Play Billing (안드로이드 동시출시, 2026-09-17) — Apple 패턴 미러.
+    # 'google' = 실검증(Play Developer API subscriptionsv2.get — 서비스계정 후 구현),
+    # 'mock'   = 개발/테스트 전용(서명/API 스킵, 페이로드 구조 검증만). production에서
+    # mock이면 부팅 거부(main.py 가드 — Apple과 동일). 실 secret은 이반 서비스계정 후 주입.
+    google_iap_mode: Literal["google", "mock"] = "google"
+    google_service_account_json: str = ""   # 서비스계정 JSON 전문(secret, androidpublisher auth)
+    google_package_name: str = "com.freshrun.app"  # Play packageName(API 호출 인자)
+
     # per-IP rate limit (보안 감사 #11, 2026-08-26) — 자사 레이어 브루트포스/남용
     # 방어. 우리 API엔 login/signup 엔드포인트가 없어(Supabase Auth 측) 전역 IP
     # 베이스라인으로 적용. 정상 모바일 사용(피크 수십/분) 대비 넉넉한 기본값 —

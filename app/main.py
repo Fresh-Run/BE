@@ -67,6 +67,12 @@ if settings.iap_mode == "mock" and settings.environment == "production":
         "IAP_MODE=mock은 production에서 금지입니다. "
         "ENVIRONMENT 또는 IAP_MODE 설정을 확인하세요."
     )
+# Google Play Billing mock 모드도 동일 가드(2026-09-17, Apple과 병렬).
+if settings.google_iap_mode == "mock" and settings.environment == "production":
+    raise RuntimeError(
+        "GOOGLE_IAP_MODE=mock은 production에서 금지입니다. "
+        "ENVIRONMENT 또는 GOOGLE_IAP_MODE 설정을 확인하세요."
+    )
 
 # #18(보안 감사): production에선 /docs·/redoc·/openapi.json 비활성(브라우저 은닉).
 # 스테이징·로컬(environment != production)은 유지 — 개발 편의. 하위호환(앱은 스키마
