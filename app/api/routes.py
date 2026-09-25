@@ -854,7 +854,30 @@ async def generate_route(
                 "message": "코스 생성이 잠시 혼잡해요. 잠시 후 다시 시도해 주세요.",
             },
         )
+    except route_service.RouteGenerationFailed as exc:
+        # 저밀도/장거리 정직 실패(band_cap_zero·no_path) — 502·error_code 유지(구클라 재시도
+        # 버튼 무변경) + additive 힌트(reason·suggested_target_km)로 신클라가 "이 지역/거리
+        # 어려움" 맞춤 안내. 성공 경로는 이 except를 안 탐(실패 raise 전용). 쿼터 미소모.
+        await quota_service.release_ai_generation(reservation_id)
+        logger.warning("코스 생성 실패 — fail=%s best_km=%s", exc.fail, exc.best_km)
+        detail = {
+            "error": "route_generation_failed",  # error_code 불변(하위호환)
+            "message": "코스 생성에 실패했어요. 잠시 후 다시 시도해 주세요.",
+        }
+        # 사유 → additive reason enum (no_gen_cands·미상은 생략 → 기존 generic 해석)
+        reason = {"band_cap_zero": "area_distance_infeasible",
+                  "no_path": "unroutable_area"}.get(exc.fail)
+        if reason:
+            detail["reason"] = reason
+        # 추천거리: band_cap_zero만(달성 최대 − 안전마진 0.5, floor). 루프 최소 미만이면
+        # 생략(추천이 즉시 422로 되튕기는 것 방지 — no_path/no_gen_cands는 추천 없음).
+        if exc.fail == "band_cap_zero" and exc.best_km is not None:
+            suggested = int(exc.best_km - 0.5)  # int()=floor(양수), 안전마진 0.5km
+            if suggested >= route_service._LOOP_MIN_TARGET_KM:
+                detail["suggested_target_km"] = suggested
+        raise HTTPException(status_code=502, detail=detail)
     except Exception:  # noqa: BLE001
+        # 진짜 서버 오류 전용(미처리 예외) — reason 없는 기존 route_generation_failed 502.
         # 생성 실패 = 무료: 예약 해제 (기존 "실패는 쿼터 미소모" 시맨틱 보존)
         await quota_service.release_ai_generation(reservation_id)
         logger.warning("코스 생성 실패", exc_info=True)

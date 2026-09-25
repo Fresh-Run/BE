@@ -56,7 +56,18 @@ class CommentAccessDenied(Exception):
 
 
 class RouteGenerationFailed(Exception):
-    """Gemini never produced a usable route across all radius attempts."""
+    """Gemini never produced a usable route across all radius attempts.
+
+    fail: 실패 사유 태그 — 'band_cap_zero'(스냅 성공·거리밴드 전패=저밀도 미폐합/언더슈트)·
+      'no_path'(T-map leg 라우팅 실패=unroutable 좌표)·'no_gen_cands'(전 롤 파싱/검증 실패).
+      엔드포인트가 additive reason/suggested_target_km로 매핑(저밀도 우아한 실패 안내, 2026-09).
+    best_km: band_cap_zero 시 후보가 실제 달성한 최대 거리(추천거리 산출 기준). 그 외 None.
+    ⚠️ 무인자 raise 하위호환(기본값 None) — 사유 미상이면 기존 generic 502 그대로.
+    """
+    def __init__(self, fail: str | None = None, best_km: float | None = None):
+        self.fail = fail
+        self.best_km = best_km
+        super().__init__(fail or "route generation failed")
 
 
 class RouteGenerationUnavailable(Exception):
@@ -1187,7 +1198,7 @@ async def create_running_route(
                                   {"pool_size": 0, "snapped_count": 0, "tmap_legs": 0,
                                    "snap_errors": {}}, initial_ratio, "no_gen_cands",
                                   user_id=user_id)
-        raise RouteGenerationFailed()  # 전 롤 파싱/검증 실패(혼합 포함) — 기존 502
+        raise RouteGenerationFailed(fail="no_gen_cands")  # 전 롤 파싱/검증 실패 — best_km 없음
 
     # 2) pre-gate: 체인 aim×[0.75,1.25] 통과분. 통과 0이면 전체(salvage). aim
     #    최근접 순 정렬 — 좋은 후보 먼저 스냅(leg 상한 컷 시 유리).
@@ -1533,17 +1544,21 @@ async def create_running_route(
                             rd_meta["redraw_aim"], best.total_distance_km)
             else:
                 _log_perf_failed(_t0, _perf)
+                # 사유 단일 소스(_record_gen_failure·raise 공용, 드리프트 방지).
+                _fail = "no_path" if nopath_fallback is not None else "band_cap_zero"
+                # band_cap_zero면 후보 최대 달성 거리(추천거리 기준). scored 비면 None.
+                _best_km = (max((k for k, _ in scored), default=None)
+                            if _fail == "band_cap_zero" else None)
                 await _record_gen_failure(req, target_km, _t0, snaps,
                                           {**_meta, "redraw": rd_meta}, initial_ratio,
-                                          "no_path" if nopath_fallback is not None
-                                          else "band_cap_zero", pitstop=pitstop_obs,
+                                          _fail, pitstop=pitstop_obs,
                                           user_id=user_id)
                 # dedup 바닥(오너 규칙 4) — 캐노니컬 회피 스킵분이 있으면 502 대신 재서빙.
                 _lr = await _canonical_dedup_last_resort(
                     req, target_km, lang, user_id, _dedup_obs.get("skipped", 0))
                 if _lr is not None:
                     return _lr
-                raise RouteGenerationFailed()  # 재추첨도 실패 — 정직한 502
+                raise RouteGenerationFailed(fail=_fail, best_km=_best_km)  # 정직한 502 + 사유 힌트
 
     # 아파트 관통 관측(백로그 #6, 2026-07-23) — 선택 route의 중간 waypoint 역지오코딩해
     # 아파트 신호 카운트. **관측 전용(필터 아님)**, best-effort. 실발생률 축적으로
