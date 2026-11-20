@@ -1573,7 +1573,19 @@ async def create_running_route(
             rd_meta = None
             _v87 = [(k, r) for k, r in scored if engine_of.get(id(r)) == "v87"]
             all_under = bool(_v87) and all(k < target_km for k, _ in _v87)
-            if all_under and not any(snap_errs.values()):
+            # S2(방향 무관 재추첨, ROUTE_NEAREST_SERVE_DESIGN): in-band 0이면 후보가 over/
+            # under/mixed 무관 **1회** 재추첨(snap_errs 0 전제). 트리거만 all_under→_v87로
+            # 확장 — chains는 전 v87(over 포함)이라 median_ratio가 over면↑(aim↓)·under면↓
+            # (aim↑). **all_under 경로 불변**: all_under면 _v87 비어있지 않고 over 없어 chains·
+            # median이 종전과 동일 → _adaptive_redraw 입력·결과 동일. 재귀 없음(1회).
+            _over = [k for k, _ in _v87 if k > target_km]
+            _under = [k for k, _ in _v87 if k < target_km]
+            _rd_dir = ("under" if _v87 and not _over else
+                       "over" if _v87 and not _under else
+                       "mixed" if _v87 else None)
+            _nearest_before = min((k for k, _ in scored),
+                                  key=lambda k: abs(k - target_km), default=None)
+            if _v87 and not any(snap_errs.values()):
                 chains = [k / _waypoint_chain_km(r) for k, r in _v87
                           if _waypoint_chain_km(r) > 0]
                 if chains:
@@ -1610,14 +1622,24 @@ async def create_running_route(
                     _obs_extra["candidate_obs"] = await asyncio.to_thread(
                         _candidate_obs, scored, target_km, engine_of, _spur_of,
                         _road_segs_of)
+                    # S2 재추첨 관측(additive) — 방향·보정 전후 aim·재추첨 전후 최근접 km.
+                    _rd_obs = {
+                        "ran": rd_meta is not None,
+                        "direction": _rd_dir,
+                        "aim_before": chain_aim_km,
+                        "aim_after": (rd_meta or {}).get("redraw_aim"),
+                        "nearest_km_before": (round(_nearest_before, 2)
+                                              if _nearest_before is not None else None),
+                        "nearest_km_after": (round(best.total_distance_km, 2)
+                                             if rd_meta is not None and best is not None else None),
+                    }
                     if rd_meta is not None:
-                        _obs_extra["redraw_obs"] = {
-                            "ran": True, "redraw_hit": bool(rd_meta.get("redraw_hit"))}
-                    else:
-                        _skip = ("not_all_under" if not all_under
-                                 else "snap_errors_present" if any(snap_errs.values())
-                                 else "no_v87_chain")
-                        _obs_extra["redraw_obs"] = {"ran": False, "skip_reason": _skip}
+                        _rd_obs["redraw_hit"] = bool(rd_meta.get("redraw_hit"))
+                    else:  # S2: 방향 무관 트리거라 not_all_under 사유 소멸
+                        _rd_obs["skip_reason"] = (
+                            "snap_errors_present" if any(snap_errs.values())
+                            else "no_v87_candidates" if not _v87 else "no_v87_chain")
+                    _obs_extra["redraw_obs"] = _rd_obs
                 except Exception:  # noqa: BLE001 — 관측 생성 실패가 생성/응답을 막지 않음
                     logger.warning("candidate_obs 관측 생성 실패 — 무시", exc_info=True)
                 await _record_gen_failure(req, target_km, _t0, snaps,
