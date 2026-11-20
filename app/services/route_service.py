@@ -630,6 +630,32 @@ def _serveable_over_cap(scored: list, target_km: float, engine_of: dict) -> list
             and _spur_metrics(r.polyline)["longest_retrace_m"] <= _OVER_SERVE_MAX_SPUR_M]
 
 
+_S3_DEV = 0.30   # S3 최근접 서빙 허용 편차(±30%, 오너 확정 ROUTE_NEAREST_SERVE §4)
+
+
+def _nearest_quality_serve(scored: list, target_km: float, engine_of: dict,
+                           spur_of: dict, dev: float = _S3_DEV):
+    """S3 최근접 품질 서빙(ROUTE_NEAREST_SERVE_DESIGN) — 재추첨도 밴드 실패 후, 요청의
+    ±dev(기본 30%) 내 **품질 통과** 후보 중 요청 거리 최근접을 서빙. 반환 (k, route) 또는 None.
+
+    품질(현행 유지·회랑 완화는 4·5단계 몫이라 미포함): ① 일반 앵커 제외(engine≠anchor,
+    _serveable_over_cap 동일) ② longest_retrace_m ≤ _OVER_SERVE_MAX_SPUR_M(800). spur_of에
+    없으면 _spur_metrics로 폴백."""
+    lo, hi = target_km * (1 - dev), target_km * (1 + dev)
+
+    def _retr(r):
+        v = spur_of.get(id(r))
+        return v if v is not None else _spur_metrics(r.polyline)["longest_retrace_m"]
+
+    cands = [(k, r) for k, r in scored
+             if lo - 1e-9 <= k <= hi + 1e-9
+             and engine_of.get(id(r)) != "anchor"
+             and _retr(r) <= _OVER_SERVE_MAX_SPUR_M]
+    if not cands:
+        return None
+    return min(cands, key=lambda t: abs(t[0] - target_km))
+
+
 def _best_in_band(in_band: list, target_km: float, quals: dict):
     """밴드 내 후보 선택 — 1개면 그대로(현행), 복수면 tiebreak
     [park desc · zigzag asc · retrace asc · **crossing asc(4순위, 2026-08-03
@@ -1606,6 +1632,21 @@ async def create_running_route(
                 logger.info("적응 재추첨 %s — measured=%.3f blended=%.3f aim=%.1f km=%.1f",
                             _rv, rd_meta["measured_ratio"], rd_meta.get("blended_ratio", 0),
                             rd_meta["redraw_aim"], best.total_distance_km)
+            elif (_s3 := _nearest_quality_serve(scored, target_km, engine_of, _spur_of)) is not None:
+                # S3 최근접 품질 서빙(ROUTE_NEAREST_SERVE_DESIGN) — 재추첨도 밴드 실패 →
+                # ±30% 내 품질통과(비앵커·retrace≤800) 최근접 서빙. 502 대신 가까운 코스 + 안내.
+                # best는 scored 소속이라 quals에 품질 존재(if over 분기와 동형 best_meta).
+                _k, best = _s3
+                best.target_missed = True
+                best.requested_distance_km = target_km
+                best.actual_distance_km = best.total_distance_km
+                best.distance_reason = "nearest_served"
+                best_meta = {**_meta, "verdict": "nearest_served",
+                             "ratio": round(_k / _waypoint_chain_km(best), 3),
+                             "park_coverage": quals[id(best)][0], "zigzag_score": quals[id(best)][1],
+                             "retrace": quals[id(best)][2], "max_gap_m": _polyline_max_gap_m(best.polyline)}
+                logger.info("S3 최근접 품질 서빙 — km=%.1f target=%.1f (±30%% 내 nearest, nearest_served)",
+                            _k, target_km)
             else:
                 _log_perf_failed(_t0, _perf)
                 # 사유 단일 소스(_record_gen_failure·raise 공용, 드리프트 방지).

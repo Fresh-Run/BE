@@ -683,6 +683,16 @@ class RouteResponse(BaseModel):
         description="일방통행 코스(생성 시 end 좌표 동봉) 여부. 생성 직후 뱃지용 — "
         "저장 조회(StoredRoute)와 동일 값. 2026-07-21 additive.",
     )
+    # S3 최근접 품질 서빙 (2026-11, ROUTE_NEAREST_SERVE_DESIGN) — additive, 하위호환.
+    # 밴드·재추첨 실패 후 ±30% 내 품질통과 최근접을 서빙할 때만 채워진다(그 외 None).
+    requested_distance_km: Optional[float] = Field(
+        None, description="S3 nearest_served일 때 유저 요청 거리(km). 그 외 None.")
+    actual_distance_km: Optional[float] = Field(
+        None, description="S3 nearest_served일 때 실제 서빙 거리(=total_distance_km). 그 외 None.")
+    distance_reason: Optional[str] = Field(
+        None, description="S3 서빙 사유. 현재 'nearest_served'만(요청과 다른 거리를 최근접 "
+        "서빙). None=정상 밴드/missed 서빙. target_missed와 병행(nearest_served는 항상 "
+        "target_missed=true).")
 
 
 class CoachCue(BaseModel):

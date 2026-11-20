@@ -117,7 +117,7 @@ async def main():
 
         print("\n[2. mixed(over+under 혼재) → S2 재추첨 발동(신규)]")
         _redraw_calls.clear()
-        map_service.get_pedestrian_route = _snap_alt([7.0, 4.0])  # 7.0 over + 4.0 under
+        map_service.get_pedestrian_route = _snap_alt([7.0, 3.0])  # 7.0 over + 3.0 under (둘 다 ±30%[3.5,6.5] 밖 → S3 미서빙·502 유지)
         try:
             await route_service.create_running_route(req, user_id=_uid)
             raise AssertionError("서빙되면 안 됨")
@@ -130,7 +130,7 @@ async def main():
 
         print("\n[3. under(all_under) → 기존대로 발동·동작 불변]")
         _redraw_calls.clear()
-        map_service.get_pedestrian_route = _snap_const(4.0)   # 4.0km: 전부 언더
+        map_service.get_pedestrian_route = _snap_const(3.0)   # 3.0km: 전부 언더(<3.5=±30% 밖 → S3 미서빙·502)
         try:
             await route_service.create_running_route(req, user_id=_uid)
             raise AssertionError("서빙되면 안 됨")
@@ -141,7 +141,7 @@ async def main():
         assert ro and ro["direction"] == "under", ro
         # all_under 불변 근거: measured_ratio = 전 v87 ratio의 median(변경 전 식과 동일).
         import statistics as st
-        exp = st.median([4.0 / route_service._waypoint_chain_km(_mk_candidate(req.start))])
+        exp = st.median([3.0 / route_service._waypoint_chain_km(_mk_candidate(req.start))])
         assert abs(_redraw_calls[0] - exp) < 1e-6, (_redraw_calls[0], exp)
         ok(f"under(all_under) → 재추첨 1회·direction=under·measured_ratio={_redraw_calls[0]}(전 v87 median, 불변)")
 

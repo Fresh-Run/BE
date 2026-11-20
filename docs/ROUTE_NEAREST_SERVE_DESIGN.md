@@ -1,10 +1,15 @@
 # 가까운 코스 서빙 (Nearest-Serve) 설계
 
-> 상태: **S1(관측)+S2(방향 무관 재추첨) 구현**. S3(최근접 서빙)는 후속. 오너 결정 6건 확정(§4).
+> 상태: **S1+S2+S3 구현 완료**(2026-11-20). S2·S3 함께 배포(S2 단독 배포 안 함). 오너 결정 6건 확정(§4).
+> **S3 완료**: 재추첨도 밴드 실패 시 **±30%(_S3_DEV=0.30) 내 품질통과(비앵커·longest_retrace≤800)
+> 최근접 서빙**(`_nearest_quality_serve`, verdict `nearest_served`). 응답 additive
+> `requested_distance_km`·`actual_distance_km`·`distance_reason`(target_missed 재사용). ±30% 밖/
+> 품질통과 0이면 502(reason `no_quality_candidate`/`unroutable_area`), **suggested_target_km 발신
+> 중단**(스키마 필드 아님—계약 무변). nearest_served는 **주간 무료 한도 미차감**(예약 해제). 밴드 안
+> 서빙 불변. 회랑 완화는 4·5단계 몫(미포함). 과거 실패 재생·효과·프론트 요약: §9·§10.
 > **S2 완료(2026-11-20)**: in-band 0이면 over/under/mixed 무관 1회 재추첨(종전 all_under만 →
 > `_v87`로 확장). all_under 결과 불변(chains=전 v87 동일). redraw_obs에 direction·aim 전후·
-> nearest 전후 additive. 서빙 응답·한도·suggested 무변경. 재추첨 추가 호출 ≈Gemini 8·T-map
-> ≤8레그, 지연 ≈+4~5s(9.9s vs 4.7s 실측). 효과: §9.
+> nearest 전후 additive. 재추첨 추가 호출 ≈Gemini 8·T-map ≤8레그, 지연 ≈+4~5s. 효과: §9.
 > 진실의 원천: `app/services/route_service.py` 서빙 판정 흐름, `docs/API_GUIDE.md` §에러규약.
 
 ## 1. 배경 · 제품 원칙 (오너 결정, 2026-11)
@@ -114,6 +119,46 @@
 in-band를 맞추진 않지만(aim 보정의 한계) **보장 502를 재추첨 기회로 전환**이 핵심 개선. Gemini
 비결정성이라 N=5는 신호 수준(절대값 아님). **추가 호출**: 재추첨 시 Gemini +8·T-map ≤8레그,
 **지연 +4~5s**(9.9s vs 4.7s). 임시 데이터(route 4·gen_failures 16) 전삭(잔존 0).
+
+## 10. S3 — 과거 실패 재생·비율·프론트 요약 (2026-11-20)
+
+**과거 실패 재생**(이준 2026-11-18~19 gen_failures 10건, Gemini/T-map 실호출 0 — snaps 거리
+재생): S3 적용 시 **서빙 9 / 실패 1**. 실패 1 = target 5·후보 [3.4,7.7,8.4](±30% [3.5,6.5] 밖).
+⚠️ 10건 모두 candidate_obs(품질) 없는 과거 기록이라 **거리 기준 상한치**(품질 탈락 반영 시 ≤9).
+
+| target | 후보(snaps) | S3 결과 |
+|---|---|---|
+| 5 | 4.4,7.3,7.8 | 서빙 4.4 | | 7 | 8.3,8.7,9.1,9.1,9.8,11.2 | 서빙 8.3 | | 10 | 8,13.8,13.9 | 서빙 8 |
+| 5 | 6.1,6.4,6.5,6.8 | 서빙 6.1 | | 5 | 6.5,7.5,7.6,8.6,8.7 | 서빙 6.5 | | 3 | 3.5,4.6,4.8 | 서빙 3.5 |
+| 5 | 3.9,7.9 | 서빙 3.9 | | 5 | **3.4,7.7,8.4** | **실패(±30% 밖)** | | 5 | 5.6,7.2,9.1,12.6 | 서빙 5.6 |
+| 5 | 3.1,3.9,7.8 | 서빙 3.9 | | | | |
+
+**최근 14일 서빙 비율**(routes 읽기 전용, 순환 12건): **밴드 안 83%(10) · 밴드 밖 17%(2)**
+(verdict: hit 7·hit_redraw 1·missed 4).
+
+### §10.1 프론트 연동 요약 (RouteResponse additive, 2026-11)
+| 필드 | 타입 | 의미 |
+|---|---|---|
+| `requested_distance_km` | `float \| null` | nearest_served일 때 유저 요청 거리. 그 외 null |
+| `actual_distance_km` | `float \| null` | nearest_served일 때 실제 서빙 거리(=total_distance_km). 그 외 null |
+| `distance_reason` | `string \| null` | `"nearest_served"`만(요청과 다른 거리 최근접 서빙). null=정상/missed |
+| `target_missed`(기존 재사용) | `bool` | nearest_served는 항상 true. 부호(actual−requested)로 "N.Nkm 길/짧은 코스" 배너 |
+
+**소비 규칙**: `distance_reason=="nearest_served"`면 "요청과 다른 거리의 코스예요"(actual/requested로
+문구), 그 외 기존 그대로. **실패 502**: `detail.reason`이 `no_quality_candidate`(±30% 내 쓸 만한
+후보 없음) / `unroutable_area`(경로 없음) — `suggested_target_km`은 **더 이상 안 옴**(S3가 가까운
+코스를 주므로). 기존 필드·형식 불변.
+
+**예시 — nearest_served 성공(200)**:
+```json
+{"route_id":"…","summary":"6.5km 순환 코스","total_distance_km":6.5,"target_missed":true,
+ "requested_distance_km":5.0,"actual_distance_km":6.5,"distance_reason":"nearest_served",
+ "waypoints":[…],"polyline":[…]}
+```
+**예시 — 실패(502)**:
+```json
+{"detail":{"error":"route_generation_failed","message":"코스 생성에 실패했어요. 잠시 후 다시 시도해 주세요.","reason":"no_quality_candidate"},"error_code":"route_generation_failed"}
+```
 
 ## 결정 이력 · 재검토 조건
 
