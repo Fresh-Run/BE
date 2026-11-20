@@ -99,6 +99,13 @@ async def main():
         assert m["fail"] == "band_cap_zero"
         ok(f"user_id 병기 ✓ 기존 8필드 무영향 ✓ fail={m['fail']}")
 
+        # S1 관측(ROUTE_NEAREST_SERVE_DESIGN §6) — candidate_obs·redraw_obs 적재(additive)
+        assert isinstance(m.get("candidate_obs"), list) and m["candidate_obs"], m.get("candidate_obs")
+        c0 = m["candidate_obs"][0]
+        assert {"km", "engine", "longest_retrace_m", "band", "reject"} <= set(c0), c0
+        assert isinstance(m.get("redraw_obs"), dict) and "ran" in m["redraw_obs"], m.get("redraw_obs")
+        ok(f"S1 관측 적재 ✓ candidate_obs {len(m['candidate_obs'])}건·redraw_obs={m['redraw_obs']}")
+
         print("\n[2. 미인증 — user_id null 명시]")
         try:
             await route_service.create_running_route(req, user_id=None)

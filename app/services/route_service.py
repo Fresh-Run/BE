@@ -331,6 +331,41 @@ async def _record_gen_failure(
         logger.warning("gen_failures 관측 저장 실패 — 무시", exc_info=True)
 
 
+def _candidate_obs(scored: list, target_km: float, engine_of: dict,
+                   spur_of: dict) -> list[dict]:
+    """실패 후보별 미서빙 사유 관측(S1, 2026-11, ROUTE_NEAREST_SERVE_DESIGN §6).
+
+    **서빙 무영향·기록 전용** — "왜 이 후보가 서빙 안 됐나"를 거리+engine+retrace로 분류해
+    gen_failures.meta.candidate_obs에 적재(기존엔 거리만 있어 확정 불가였음). 순수 함수.
+    band: in(=밴드 내)/under(target−0.3 미만)/over(target+0.5 초과). reject: 서빙 게이트
+    기준 미서빙 사유(현 _within_band·_serveable_over_cap 로직 거울 — 판정은 안 바꾸고 설명만).
+    scored: [(km, route)], engine_of: id→engine, spur_of: id→longest_retrace_m.
+    """
+    obs: list[dict] = []
+    for k, r in scored:
+        rid = id(r)
+        eng = engine_of.get(rid, "v87")
+        retrace = spur_of.get(rid)
+        if _within_band(k, target_km):
+            band, reject = "in", "in_band"
+        elif k < target_km - _UNDER_TOLERANCE_KM:
+            band, reject = "under", "out_of_band_under"
+        else:  # over (k > target+0.5)
+            band = "over"
+            if k <= target_km + _OVER_SERVE_CAP_KM + 1e-9:
+                if retrace is not None and retrace > _OVER_SERVE_MAX_SPUR_M:
+                    reject = "retrace_over_cap"
+                elif eng == "anchor":
+                    reject = "anchor_excluded"
+                else:
+                    reject = "serveable_over"  # 거리·retrace 합격인데 band_cap_zero 동반(엣지)
+            else:
+                reject = "out_of_band_over"
+        obs.append({"km": k, "engine": eng, "longest_retrace_m": retrace,
+                    "band": band, "reject": reject})
+    return obs
+
+
 def _quota_dominant(snap_errs: dict, n_success: int) -> bool:
     """스냅 실패의 지배 원인이 T-map 429(쿼터)인가 — 503 정직화 분기 판정.
 
@@ -1196,7 +1231,11 @@ async def create_running_route(
             raise _upstream[0]
         await _record_gen_failure(req, target_km, _t0, [],
                                   {"pool_size": 0, "snapped_count": 0, "tmap_legs": 0,
-                                   "snap_errors": {}}, initial_ratio, "no_gen_cands",
+                                   "snap_errors": {},
+                                   # S1 관측(§6) — 후보 0이라 빈 리스트·재추첨 미실행
+                                   "candidate_obs": [],
+                                   "redraw_obs": {"ran": False, "skip_reason": "no_gen_cands"}},
+                                  initial_ratio, "no_gen_cands",
                                   user_id=user_id)
         raise RouteGenerationFailed(fail="no_gen_cands")  # 전 롤 파싱/검증 실패 — best_km 없음
 
@@ -1549,9 +1588,25 @@ async def create_running_route(
                 # band_cap_zero면 후보 최대 달성 거리(추천거리 기준). scored 비면 None.
                 _best_km = (max((k for k, _ in scored), default=None)
                             if _fail == "band_cap_zero" else None)
+                # S1 관측(ROUTE_NEAREST_SERVE_DESIGN §6) — 후보별 미서빙 사유 + 재추첨 스킵
+                # 이유를 meta에 additive. **서빙·응답 무영향**, best-effort(관측 실패는 삼킴).
+                _obs_extra: dict = {}
+                try:
+                    _obs_extra["candidate_obs"] = _candidate_obs(
+                        scored, target_km, engine_of, _spur_of)
+                    if rd_meta is not None:
+                        _obs_extra["redraw_obs"] = {
+                            "ran": True, "redraw_hit": bool(rd_meta.get("redraw_hit"))}
+                    else:
+                        _skip = ("not_all_under" if not all_under
+                                 else "snap_errors_present" if any(snap_errs.values())
+                                 else "no_v87_chain")
+                        _obs_extra["redraw_obs"] = {"ran": False, "skip_reason": _skip}
+                except Exception:  # noqa: BLE001 — 관측 생성 실패가 생성/응답을 막지 않음
+                    logger.warning("candidate_obs 관측 생성 실패 — 무시", exc_info=True)
                 await _record_gen_failure(req, target_km, _t0, snaps,
-                                          {**_meta, "redraw": rd_meta}, initial_ratio,
-                                          _fail, pitstop=pitstop_obs,
+                                          {**_meta, "redraw": rd_meta, **_obs_extra},
+                                          initial_ratio, _fail, pitstop=pitstop_obs,
                                           user_id=user_id)
                 # dedup 바닥(오너 규칙 4) — 캐노니컬 회피 스킵분이 있으면 502 대신 재서빙.
                 _lr = await _canonical_dedup_last_resort(
