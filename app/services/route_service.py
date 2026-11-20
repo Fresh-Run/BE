@@ -332,7 +332,7 @@ async def _record_gen_failure(
 
 
 def _candidate_obs(scored: list, target_km: float, engine_of: dict,
-                   spur_of: dict) -> list[dict]:
+                   spur_of: dict, road_segs_of: dict | None = None) -> list[dict]:
     """실패 후보별 미서빙 사유 관측(S1, 2026-11, ROUTE_NEAREST_SERVE_DESIGN §6).
 
     **서빙 무영향·기록 전용** — "왜 이 후보가 서빙 안 됐나"를 거리+engine+retrace로 분류해
@@ -361,16 +361,21 @@ def _candidate_obs(scored: list, target_km: float, engine_of: dict,
                     reject = "serveable_over"  # 거리·retrace 합격인데 band_cap_zero 동반(엣지)
             else:
                 reject = "out_of_band_over"
-        # SQ1 모양 관측 — 후보별 retrace_ratio·branch_count(additive). 계산 예외는
-        # 삼키고 해당 키만 null(서빙·응답 무영향, 관측 전용).
+        # SQ1 모양 + 회랑 1단계 관측 — 후보별 additive. 계산 예외는 삼키고 해당 키만 null.
         try:
             _so = shape_metrics.shape_obs(r.polyline)
         except Exception:  # noqa: BLE001
             _so = {"retrace_ratio": None, "branch_count": None}
+        try:
+            _co = shape_metrics.corridor_obs(
+                r.polyline, (road_segs_of or {}).get(id(r)))
+        except Exception:  # noqa: BLE001
+            _co = {"friendly_ratio": None, "retrace_friendly_m": None,
+                   "retrace_road_m": None, "branch_count_strict": None}
         obs.append({"km": k, "engine": eng, "longest_retrace_m": retrace,
                     "band": band, "reject": reject,
                     "retrace_ratio": _so["retrace_ratio"],
-                    "branch_count": _so["branch_count"]})
+                    "branch_count": _so["branch_count"], **_co})
     return obs
 
 
@@ -1603,7 +1608,8 @@ async def create_running_route(
                     # _candidate_obs는 후보별 shape_obs(격자 가속이나 CPU 계산)를 포함 —
                     # 이벤트 루프 점유 방지로 스레드에서 실행(관측 전용, 서빙 무영향).
                     _obs_extra["candidate_obs"] = await asyncio.to_thread(
-                        _candidate_obs, scored, target_km, engine_of, _spur_of)
+                        _candidate_obs, scored, target_km, engine_of, _spur_of,
+                        _road_segs_of)
                     if rd_meta is not None:
                         _obs_extra["redraw_obs"] = {
                             "ran": True, "redraw_hit": bool(rd_meta.get("redraw_hit"))}
@@ -1722,7 +1728,10 @@ async def create_running_route(
                 "pitstop": pitstop_obs}  # 채택 pitstop 관측(2026-07-22, gen_failures와 대칭)
 
     # Step 4: persist the generated route to Supabase (best-effort).
-    await _save_route(req, best, user_id, target_distance_km=target_km, gen_meta=gen_meta)
+    # 회랑 1단계 관측 — 서빙 후보의 road_segments 전달(friendly_ratio·왕복 분할). 재추첨/구제
+    # best는 _road_segs_of에 없을 수 있어 or []로 안전(그땐 friendly 키 null).
+    await _save_route(req, best, user_id, target_distance_km=target_km, gen_meta=gen_meta,
+                      road_segments=_road_segs_of.get(id(best)))
 
     return best
 
@@ -1733,8 +1742,12 @@ async def _save_route(
     user_id: str | None = None,
     target_distance_km: float | None = None,
     gen_meta: dict | None = None,
+    road_segments: list | None = None,
 ) -> None:
     """Insert the generated route into the Supabase `routes` table.
+
+    road_segments: 서빙 후보의 T-map (roadType,name,dist) — 회랑 1단계 관측(friendly_ratio·
+    왕복 친화/도로 분할)용. None이면(canonical 등) 그 키들은 null, branch_count_strict만 계산.
 
     Best-effort: saving is a side feature, so any failure is logged and
     swallowed rather than breaking route generation. user_id is left NULL
@@ -1768,6 +1781,16 @@ async def _save_route(
             gen_meta["retrace_ratio"] = None
             gen_meta["branch_count"] = None
             logger.warning("shape_obs(성공 기록) 계산 실패 — null 기록", exc_info=True)
+    if gen_meta is not None and "friendly_ratio" not in gen_meta:
+        try:
+            # 회랑 1단계 관측(friendly_ratio·왕복 친화/도로 분할·보정 가지수) — 스레드에서.
+            _co = await asyncio.to_thread(
+                shape_metrics.corridor_obs, route.polyline, road_segments)
+            gen_meta.update(_co)
+        except Exception:  # noqa: BLE001
+            gen_meta.update({"friendly_ratio": None, "retrace_friendly_m": None,
+                             "retrace_road_m": None, "branch_count_strict": None})
+            logger.warning("corridor_obs(성공 기록) 계산 실패 — null 기록", exc_info=True)
 
     record = {
         # Owner (from a validated token; None when anonymous)

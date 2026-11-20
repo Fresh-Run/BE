@@ -130,6 +130,76 @@ def branch_count(polyline):
     return sum(1 for r in runs if r > _BRANCH_MIN_M)
 
 
+# 러닝 친화 roadType(SQ 회랑 1단계, RUNNING_CORRIDOR_DESIGN) — T-map 보행자 roadType.
+# 21=보행자도로1(차도 분리 보도 — 가장 러닝 친화)만 friendly로 분류. 22·23·24(미분리/대로변/
+# 불쾌)·0·None은 non-friendly. ⚠️ roadType 의미는 2차 출처(블로그)라 강변북로=23 같은 반례
+# 존재 — 보수적으로 21만 채택. **name 기반 회랑 멤버십(4단계 회랑 데이터)로 정밀화 예정**.
+_FRIENDLY_ROADTYPES = frozenset({"21"})
+_BRANCH_STRICT_M = 150.0   # 막다른 가지 보정: 이 길이 초과 run만 가지로(50m는 왕복 노이즈 과다)
+
+
+def branch_count_strict(polyline):
+    """막다른 가지(>150m 연속 왕복 run) 개수 — branch_count(>50m)의 노이즈 보정판. <4점 None."""
+    pts = _norm(polyline)
+    if len(pts) < 4:
+        return None
+    _, _, runs = _retrace_runs(pts)
+    return sum(1 for r in runs if r > _BRANCH_STRICT_M)
+
+
+def _seg_roadtypes(pts, road_segments):
+    """polyline 선분(n-1개)별 roadType(str) — road_segments 누적거리로 정렬 매칭(근사)."""
+    seg_len = [_hav(pts[i], pts[i + 1]) for i in range(len(pts) - 1)]
+    rs = [(str(rt), float(d or 0)) for rt, _name, d in road_segments if (d or 0) > 0]
+    out, ri, consumed = [], 0, 0.0
+    for sl in seg_len:
+        if ri < len(rs):
+            out.append(rs[ri][0])
+            consumed += sl
+            if consumed >= rs[ri][1]:
+                ri += 1
+                consumed = 0.0
+        else:
+            out.append(None)
+    return out
+
+
+def corridor_obs(polyline, road_segments) -> dict:
+    """회랑 1단계 관측(RUNNING_CORRIDOR_DESIGN) — friendly_ratio·왕복 친화/도로 분할·보정 가지수.
+
+    반환 {friendly_ratio(0~1|None), retrace_friendly_m, retrace_road_m, branch_count_strict}.
+    road_segments 없으면(canonical 등) friendly/split은 None, branch_count_strict만 계산.
+    순수 함수 — 호출측(서빙 성공/실패 기록)이 예외를 삼킨다.
+    """
+    pts = _norm(polyline)
+    res = {"friendly_ratio": None, "retrace_friendly_m": None,
+           "retrace_road_m": None, "branch_count_strict": None}
+    if len(pts) >= 4:
+        _, _, runs = _retrace_runs(pts)
+        res["branch_count_strict"] = sum(1 for r in runs if r > _BRANCH_STRICT_M)
+    if not road_segments:
+        return res
+    total = sum(float(d or 0) for _, _, d in road_segments)
+    if total > 0:
+        fr = sum(float(d or 0) for rt, _, d in road_segments
+                 if str(rt) in _FRIENDLY_ROADTYPES)
+        res["friendly_ratio"] = round(fr / total, 4)
+    if len(pts) >= 4:
+        flags = _retraced_flags(pts)
+        segrt = _seg_roadtypes(pts, road_segments)
+        seg_len = [_hav(pts[i], pts[i + 1]) for i in range(len(pts) - 1)]
+        f = r = 0.0
+        for i in range(len(pts) - 1):
+            if flags[i] and flags[i + 1]:
+                if str(segrt[i]) in _FRIENDLY_ROADTYPES:
+                    f += seg_len[i]
+                else:
+                    r += seg_len[i]
+        res["retrace_friendly_m"] = round(f)
+        res["retrace_road_m"] = round(r)
+    return res
+
+
 def shape_obs(polyline) -> dict:
     """retrace_ratio + branch_count를 **_retrace_runs 1회로** 계산(개별 호출보다 2배 빠름).
 

@@ -81,6 +81,23 @@ def main():
     assert sm.shape_obs(as_obj) == sm.shape_obs(as_dict) == sm.shape_obs(OUT_AND_BACK)
     ok("Coordinate·dict·tuple 입력 등가")
 
+    print("\n[D. 회랑 1단계 — corridor_obs·branch_count_strict]")
+    # friendly(21) road_segments → friendly_ratio=1, 왕복 전부 친화 / road(23) → 0, 전부 도로
+    co_f = sm.corridor_obs(OUT_AND_BACK, [("21", "보행자도로", 680.0)])
+    co_r = sm.corridor_obs(OUT_AND_BACK, [("23", "강변북로", 680.0)])
+    assert co_f["friendly_ratio"] == 1.0 and co_f["retrace_road_m"] == 0 and co_f["retrace_friendly_m"] > 0, co_f
+    assert co_r["friendly_ratio"] == 0.0 and co_r["retrace_friendly_m"] == 0 and co_r["retrace_road_m"] > 0, co_r
+    ok(f"roadType21→friendly_ratio=1·왕복 친화 / roadType23→0·왕복 도로")
+    # road_segments 없으면 friendly/split None, branch_count_strict만 계산
+    co_none = sm.corridor_obs(OUT_AND_BACK, None)
+    assert co_none["friendly_ratio"] is None and co_none["retrace_friendly_m"] is None
+    assert co_none["branch_count_strict"] is not None
+    ok("road_segments 없음 → friendly/split None·branch_count_strict만 계산")
+    # branch_count_strict(>150m)가 branch_count(>50m)보다 노이즈 보정(작거나 같음)
+    assert sm.branch_count_strict(OUT_AND_BACK) <= sm.branch_count(OUT_AND_BACK)
+    assert sm.branch_count_strict([(37.5, 127.0), (37.5, 127.001)]) is None  # <4점
+    ok(f"branch_count_strict(>150m) ≤ branch_count(>50m) · <4점 None")
+
 
 if __name__ == "__main__":
     main()

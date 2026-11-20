@@ -92,7 +92,13 @@ async def main():
         gm = sb.table("routes").select("gen_meta").eq("id", route.route_id).single().execute().data["gen_meta"]
         assert "retrace_ratio" in gm and "branch_count" in gm, gm
         assert gm["branch_count"] is not None, gm   # clean_path(4점)=계산됨
-        ok(f"성공 gen_meta: retrace_ratio={gm['retrace_ratio']}·branch_count={gm['branch_count']}")
+        # 회랑 1단계 — friendly_ratio·retrace_friendly_m·retrace_road_m·branch_count_strict
+        for ck in ("friendly_ratio", "retrace_friendly_m", "retrace_road_m", "branch_count_strict"):
+            assert ck in gm, (ck, gm)
+        # mock snap road_segments=[(21,...)] → roadType21=friendly → friendly_ratio=1.0
+        assert gm["friendly_ratio"] == 1.0, gm
+        ok(f"성공 gen_meta: retrace_ratio={gm['retrace_ratio']}·branch_count={gm['branch_count']} "
+           f"·friendly_ratio={gm['friendly_ratio']}·branch_count_strict={gm['branch_count_strict']}")
 
         print("\n[2. 실패(band_cap_zero) → candidate_obs 각 후보에 두 지표 적재]")
         map_service.get_pedestrian_route = snap_under
@@ -105,9 +111,11 @@ async def main():
         assert rows, "실패행 미적재"
         _fail_ids.extend(x["id"] for x in rows)
         cobs = rows[-1]["meta"]["candidate_obs"]
-        assert cobs and all("retrace_ratio" in c and "branch_count" in c for c in cobs), cobs
-        ok(f"실패 candidate_obs {len(cobs)}건 각각 retrace_ratio·branch_count 보유 "
-           f"(예: rr={cobs[0]['retrace_ratio']}·bc={cobs[0]['branch_count']})")
+        _keys = ("retrace_ratio", "branch_count", "friendly_ratio",
+                 "retrace_friendly_m", "retrace_road_m", "branch_count_strict")
+        assert cobs and all(all(k in c for k in _keys) for c in cobs), cobs
+        ok(f"실패 candidate_obs {len(cobs)}건 각각 6지표 보유(SQ1 2 + 회랑 4) "
+           f"(예: friendly_ratio={cobs[0]['friendly_ratio']}·branch_count_strict={cobs[0]['branch_count_strict']})")
 
         print("\n[3. 지표 예외 시 생성 결과 불변 — shape_obs가 raise해도 서빙 성공]")
         def _boom(_poly):
