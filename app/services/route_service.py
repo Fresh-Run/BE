@@ -37,7 +37,7 @@ from app.models.schemas import (
 from app.core.config import settings
 from app.services import (
     anchor_service, canonical_service, feedback_service, map_service,
-    notification_service, openai_service, profile_service,
+    notification_service, openai_service, profile_service, shape_metrics,
 )
 
 logger = logging.getLogger(__name__)
@@ -361,8 +361,16 @@ def _candidate_obs(scored: list, target_km: float, engine_of: dict,
                     reject = "serveable_over"  # 거리·retrace 합격인데 band_cap_zero 동반(엣지)
             else:
                 reject = "out_of_band_over"
+        # SQ1 모양 관측 — 후보별 retrace_ratio·branch_count(additive). 계산 예외는
+        # 삼키고 해당 키만 null(서빙·응답 무영향, 관측 전용).
+        try:
+            _so = shape_metrics.shape_obs(r.polyline)
+        except Exception:  # noqa: BLE001
+            _so = {"retrace_ratio": None, "branch_count": None}
         obs.append({"km": k, "engine": eng, "longest_retrace_m": retrace,
-                    "band": band, "reject": reject})
+                    "band": band, "reject": reject,
+                    "retrace_ratio": _so["retrace_ratio"],
+                    "branch_count": _so["branch_count"]})
     return obs
 
 
@@ -1744,6 +1752,19 @@ async def _save_route(
         if _thc is not None:
             gen_meta["tmap_http"] = _thc
             gen_meta["tmap_cache_hit"] = map_service.tmap_cache_hits()
+
+    # SQ1 모양 관측(ROUTE_SHAPE_QUALITY_DESIGN) — 서빙된 코스의 retrace_ratio·branch_count를
+    # gen_meta에 additive 기록(전 서빙 분기가 이 함수를 지남, 단일 지점). **서빙·응답 무영향**.
+    # 계산 예외/지연은 삼키고 해당 키만 null(생성 결과 불변 — _save_route 자체도 best-effort).
+    if gen_meta is not None and "retrace_ratio" not in gen_meta:
+        try:
+            _so = shape_metrics.shape_obs(route.polyline)
+            gen_meta["retrace_ratio"] = _so["retrace_ratio"]
+            gen_meta["branch_count"] = _so["branch_count"]
+        except Exception:  # noqa: BLE001 — 관측 계산 실패가 생성/저장을 막지 않음
+            gen_meta["retrace_ratio"] = None
+            gen_meta["branch_count"] = None
+            logger.warning("shape_obs(성공 기록) 계산 실패 — null 기록", exc_info=True)
 
     record = {
         # Owner (from a validated token; None when anonymous)

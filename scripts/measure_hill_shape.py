@@ -25,6 +25,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import httpx  # noqa: E402
 
 from app.core.supabase_client import get_supabase_admin  # noqa: E402
+from app.services import shape_metrics as sm  # noqa: E402  (retrace·branch 단일 소스)
 
 # 실측 사례(2026-11-20) 기본 코스
 DEFAULT_IDS = {
@@ -140,25 +141,8 @@ def shape_metrics(pts):
     n = len(pts)
     seg_len = [hav(pts[i], pts[i + 1]) for i in range(n - 1)]
     total_m = sum(seg_len)
-    # 왕복: 각 점이 비인접 선분의 _NEAR_M 내인지 → 왕복 점. 인접(±2) 제외.
-    retraced = [False] * n
-    for i in range(n):
-        for j in range(n - 1):
-            if abs(j - i) <= 2 or abs(j + 1 - i) <= 2:
-                continue
-            if _seg_pt_dist(pts[i], pts[j], pts[j + 1]) < _NEAR_M:
-                retraced[i] = True
-                break
-    retrace_m = sum(seg_len[i] for i in range(n - 1) if retraced[i] and retraced[i + 1])
-    # 왕복 run(연속) → 최장·가지 수(>50m run)
-    runs, cur = [], 0.0
-    for i in range(n - 1):
-        if retraced[i] and retraced[i + 1]:
-            cur += seg_len[i]
-        elif cur > 0:
-            runs.append(cur); cur = 0.0
-    if cur > 0:
-        runs.append(cur)
+    # 왕복·가지: app/services/shape_metrics 공유 코어(단일 소스 — 결과 일치 보장).
+    retrace_m, _tot, runs = sm._retrace_runs(pts)
     # 자기교차(비인접 선분쌍)
     cross = 0
     for i in range(n - 1):
