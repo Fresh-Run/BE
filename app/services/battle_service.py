@@ -51,19 +51,29 @@ class BattleError(Exception):
 
 # ══════════════════════ 스코어 엔진 (순수 — 무DB, 테스트 가능) ══════════════════════
 
-def _pace_bonus(avg_pace_sec_per_km: int | None) -> float:
-    """페이스 보너스 — ⚠️ 플레이스홀더(이반 battle-score.ts 상수 미도착, 착수 전 교체·
-    §7 판단 플래그). 빠를수록 가산, 계단식. None(페이스 없음)이면 0.
-    현 계단: <5:00→+15 · <6:00→+10 · <7:00→+5 · 그 외 0."""
-    if not avg_pace_sec_per_km:
+def _pace_bonus(distance_km: float | None, run_pace: int | None,
+                baseline: int | None) -> float:
+    """페이스 보너스 — 이반 실스펙(2026-10, battle-score.ts): 이 런이 baseline보다 빠르면
+    round(distance_km × 5), 아니면 0.
+
+    baseline = 참가자 all_time 평균 페이스(avg_pace_sec_per_km)의 **배틀 수락 시점 스냅샷**
+    (라이브 재계산 아님). 페이스는 sec/km라 작을수록 빠름 → run_pace < baseline = 더 빠름.
+    조건(전부 충족해야 가산): baseline not null · run_pace not null · run_pace > 0 ·
+    run_pace < baseline. 하나라도 불충족 시 0.
+
+    ⚠️ baseline 스냅샷 **미배선(§B 갭, 2026-10)**: battles 테이블에 스냅샷 컬럼이 없고
+    accept_battle이 안 찍는다. 현재 score_run이 baseline=None을 넘겨 **항상 0** — 스냅샷
+    소스 확정·배선(SQL 컬럼 + accept 계산 + settle 전달) 후 실발효. 함수는 스펙대로 완성이라
+    baseline만 주입되면 즉시 동작.
+
+    rounding: JS Math.round(half-up)로 구현 — 이반 battle-score.ts 정합 + Python round()의
+    banker's rounding(CLAUDE.md §C 함정, round(22.5)=22) 회피. .5 경계 확정은 §B 확인.
+    """
+    if distance_km is None or run_pace is None or baseline is None:
         return 0.0
-    if avg_pace_sec_per_km < 300:
-        return 15.0
-    if avg_pace_sec_per_km < 360:
-        return 10.0
-    if avg_pace_sec_per_km < 420:
-        return 5.0
-    return 0.0
+    if run_pace <= 0 or run_pace >= baseline:
+        return 0.0
+    return float(int(distance_km * 5 + 0.5))  # half-up (distance_km≥0이라 int()=floor)
 
 
 def _is_early_bird(ran_at_iso: str) -> bool:
@@ -74,8 +84,10 @@ def _is_early_bird(ran_at_iso: str) -> bool:
         return False
 
 
-def score_run(run: dict, is_5k_first: bool = False, is_10k_first: bool = False) -> tuple[float, dict, bool]:
+def score_run(run: dict, is_5k_first: bool = False, is_10k_first: bool = False,
+              baseline: int | None = None) -> tuple[float, dict, bool]:
     """per-run 점수. run: {distance_km, avg_pace_sec_per_km, verification, is_flagged, ran_at}.
+    baseline: 참가자 수락시점 페이스 스냅샷(_pace_bonus 조건). None이면 pace=0(현 갭 상태 — §B).
     반환 (run_score, breakdown, counted). counted=false면 0점(창밖 판정은 호출측)."""
     dist = run.get("distance_km") or 0.0
     counted = (run.get("verification") == "verified"
@@ -85,7 +97,7 @@ def score_run(run: dict, is_5k_first: bool = False, is_10k_first: bool = False) 
         return 0.0, {"counted": False, "reason": "not_verified_or_short"}, False
     base = round(dist * _BASE_PER_KM, 2)
     completion = _COMPLETION
-    pace = _pace_bonus(run.get("avg_pace_sec_per_km"))
+    pace = _pace_bonus(dist, run.get("avg_pace_sec_per_km"), baseline)
     early = _EARLY_BIRD if _is_early_bird(run.get("ran_at") or "") else 0.0
     milestone = (_MILESTONE_5K if is_5k_first else 0.0) + (_MILESTONE_10K if is_10k_first else 0.0)
     total = round(base + completion + pace + early + milestone, 2)
@@ -120,9 +132,11 @@ def _current_streak(ran_at_isos: list[str]) -> int:
     return streak
 
 
-def score_participant(runs: list[dict], streak_days: int) -> tuple[float, list[dict]]:
+def score_participant(runs: list[dict], streak_days: int,
+                      baseline: int | None = None) -> tuple[float, list[dict]]:
     """참가자 창내 counted 런 → per-run 점수(milestone 결정론) × streak_mult.
-    runs: ran_at asc 정렬 전제. 반환 (participant_score, per_run breakdown 리스트)."""
+    runs: ran_at asc 정렬 전제. baseline: 참가자 수락시점 페이스 스냅샷(score_run→_pace_bonus로
+    전달, None이면 pace=0 — §B 갭). 반환 (participant_score, per_run breakdown 리스트)."""
     seen_5k = seen_10k = False
     per_run = []
     subtotal = 0.0
@@ -132,7 +146,7 @@ def score_participant(runs: list[dict], streak_days: int) -> tuple[float, list[d
                      and dist >= _MIN_KM)
         first5 = countable and not seen_5k and dist >= 5.0
         first10 = countable and not seen_10k and dist >= 10.0
-        rscore, bd, counted = score_run(r, first5, first10)
+        rscore, bd, counted = score_run(r, first5, first10, baseline=baseline)
         if counted:
             if first5:
                 seen_5k = True
@@ -399,7 +413,9 @@ async def settle_battle(battle: dict) -> None:
     for uid in (battle["created_by"], battle["opponent"]):
         runs = await _participant_window_runs(uid, battle["started_at"], window_end)
         streak = _current_streak(await _all_verified_ran_ats(uid))
-        pscore, per_run = score_participant(runs, streak)
+        # ⚠️ baseline(수락시점 페이스 스냅샷) 미배선(§B 갭) — battles에 스냅샷 컬럼·accept
+        # 계산 부재. 여기가 배선 지점: 스냅샷 확정 후 uid별 baseline을 넘기면 pace 실발효.
+        pscore, per_run = score_participant(runs, streak, baseline=None)
         part_scores[uid] = pscore
         # battle_runs upsert(멱등 — UNIQUE battle_id,run_id)
         for r, pr in zip(sorted(runs, key=lambda x: x.get("ran_at") or ""), per_run):

@@ -38,10 +38,11 @@ def _run(dist, pace=400, ran_h=12, verified=True, flagged=False, rid="r"):
 
 def main():
     print("[A. per-run 공식 + 게이트]")
-    # 5km·pace 5:30(330<360→+10)·낮(early 0)·5k첫(+30) = 50+20+10+0+30 = 110... wait pace 400=6:40 → <420 →+5
+    # 5km·낮(early0)·5k첫(+30). pace는 baseline 미주입(기본 None)이라 0(§B 갭) = 50+20+0+0+30 = 100
     s, bd, c = bs.score_run(_run(5.0, pace=400, ran_h=12), is_5k_first=True)
-    assert c and s == 50 + 20 + 5 + 0 + 30, (s, bd)   # base50 comp20 pace5 early0 mile30
-    ok(f"5km 낮 pace6:40 5k첫 = {s}(base50+comp20+pace5+mile30)")
+    assert c and s == 50 + 20 + 0 + 0 + 30, (s, bd)   # base50 comp20 pace0(no baseline) early0 mile30
+    assert bd["pace"] == 0, bd
+    ok(f"5km 낮 5k첫 = {s}(base50+comp20+pace0[baseline 미주입]+mile30)")
 
     # <1.5km → 0점·counted false
     s, bd, c = bs.score_run(_run(1.2), is_5k_first=False)
@@ -64,11 +65,24 @@ def main():
     assert b1["early_bird"] == 10 and b2["early_bird"] == 0
     ok(f"06:00 early +10 / 07:00 미포함 +0(경계 06:59 포함)")
 
-    print("\n[C. pace 계단]")
-    for pace, exp in [(280, 15), (330, 10), (400, 5), (500, 0)]:
-        _, bd, _ = bs.score_run(_run(2.0, pace=pace))
-        assert bd["pace"] == exp, (pace, bd["pace"])
-    ok("pace <5:00→15 <6:00→10 <7:00→5 그외 0(플레이스홀더)")
+    print("\n[C. pace_bonus 실스펙(이반 2026-10) — baseline 조건부 round(dist×5)]")
+    # 빠름(run_pace < baseline · 둘다 not null · >0) → round(dist×5)
+    assert bs._pace_bonus(5.0, 300, 360) == 25.0, bs._pace_bonus(5.0, 300, 360)  # 5×5=25
+    assert bs._pace_bonus(4.0, 300, 360) == 20.0
+    # 느림/같음(run_pace >= baseline) → 0 (페이스 sec/km라 클수록 느림)
+    assert bs._pace_bonus(5.0, 400, 360) == 0.0   # 느림
+    assert bs._pace_bonus(5.0, 360, 360) == 0.0   # 같음(< 아님 → 0)
+    # null·부호 불충족 → 0
+    assert bs._pace_bonus(5.0, 300, None) == 0.0  # baseline null
+    assert bs._pace_bonus(5.0, None, 360) == 0.0  # run_pace null
+    assert bs._pace_bonus(None, 300, 360) == 0.0  # dist null
+    assert bs._pace_bonus(5.0, 0, 360) == 0.0     # run_pace<=0
+    # half-up rounding(.5 경계) — 4.5×5=22.5 → 23(JS Math.round 정합, Python round()은 banker's 22)
+    assert bs._pace_bonus(4.5, 300, 360) == 23.0, bs._pace_bonus(4.5, 300, 360)
+    # score_run에 baseline 주입 시 breakdown.pace 반영(배선되면 실발효)
+    _, bd_b, _ = bs.score_run(_run(5.0, pace=300), baseline=360)
+    assert bd_b["pace"] == 25.0, bd_b
+    ok("baseline보다 빠름→round(dist×5)·느림/같음/null→0·half-up·score_run baseline 주입 반영")
 
     print("\n[D. streak 배율(cap 1.5)]")
     assert bs.streak_multiplier(0) == 1.0 and bs.streak_multiplier(5) == 1.25
