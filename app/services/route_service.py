@@ -1600,8 +1600,10 @@ async def create_running_route(
                 # 이유를 meta에 additive. **서빙·응답 무영향**, best-effort(관측 실패는 삼킴).
                 _obs_extra: dict = {}
                 try:
-                    _obs_extra["candidate_obs"] = _candidate_obs(
-                        scored, target_km, engine_of, _spur_of)
+                    # _candidate_obs는 후보별 shape_obs(격자 가속이나 CPU 계산)를 포함 —
+                    # 이벤트 루프 점유 방지로 스레드에서 실행(관측 전용, 서빙 무영향).
+                    _obs_extra["candidate_obs"] = await asyncio.to_thread(
+                        _candidate_obs, scored, target_km, engine_of, _spur_of)
                     if rd_meta is not None:
                         _obs_extra["redraw_obs"] = {
                             "ran": True, "redraw_hit": bool(rd_meta.get("redraw_hit"))}
@@ -1758,7 +1760,8 @@ async def _save_route(
     # 계산 예외/지연은 삼키고 해당 키만 null(생성 결과 불변 — _save_route 자체도 best-effort).
     if gen_meta is not None and "retrace_ratio" not in gen_meta:
         try:
-            _so = shape_metrics.shape_obs(route.polyline)
+            # shape_obs는 CPU 계산 — 이벤트 루프 점유 방지로 스레드에서(관측 전용, 서빙 무영향).
+            _so = await asyncio.to_thread(shape_metrics.shape_obs, route.polyline)
             gen_meta["retrace_ratio"] = _so["retrace_ratio"]
             gen_meta["branch_count"] = _so["branch_count"]
         except Exception:  # noqa: BLE001 — 관측 계산 실패가 생성/저장을 막지 않음

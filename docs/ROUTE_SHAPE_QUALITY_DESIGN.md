@@ -4,6 +4,10 @@
 > 구현: `app/services/shape_metrics.py`(retrace_ratio·branch_count 순수함수, 스크립트와 단일소스).
 > 서빙 성공 → `gen_meta.retrace_ratio`·`gen_meta.branch_count`; 실패 → `candidate_obs[].retrace_ratio`·
 > `.branch_count`. 계산 예외는 삼키고 해당 키 null(서빙 결과 불변). 전부 additive(스키마 변경 0).
+> **비용 상한(2026-11-20)**: `_retrace_runs`를 **공간 격자 가속**(O(n²)→O(n) 기대, 결과는
+> 브루트포스와 완전 동일 — 41코스 0 불일치)해 최장 763pt가 **443ms→4.5ms**. 두 경로 모두
+> `asyncio.to_thread`로 **이벤트 루프 밖** 실행(관측이 요청 지연·루프 점유 안 함). 후보당 ≤20ms,
+> 실패경로(9후보 최장) 추가지연 ≤100ms 실측. **다운샘플 아님**(정확도 손실 0, 단일소스 유지).
 > 실측 도구: `scripts/measure_hill_shape.py`. 언덕은 `docs/HILL_AVOID_DESIGN.md`.
 
 ## 0. 문제 (실측 사례)

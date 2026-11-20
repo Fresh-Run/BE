@@ -63,9 +63,14 @@ def main():
 
     print("\n[B. 필드 shape · engine·retrace 보존]")
     c = res[0]
-    assert set(c) == {"km", "engine", "longest_retrace_m", "band", "reject"}, set(c)
+    # SQ1(2026-11-20)에 retrace_ratio·branch_count 2키 additive — 계약 확장 반영.
+    assert set(c) == {"km", "engine", "longest_retrace_m", "band", "reject",
+                      "retrace_ratio", "branch_count"}, set(c)
     assert c["km"] == 5.0 and c["engine"] == "v87" and c["longest_retrace_m"] == 100
-    ok("각 후보 5키(km·engine·longest_retrace_m·band·reject) · 값 보존")
+    # 이 테스트의 mock r=object()엔 polyline 없음 → shape_obs 예외 삼킴 → 두 지표 null(예외 안전)
+    assert c["retrace_ratio"] is None and c["branch_count"] is None, c
+    ok("각 후보 7키(km·engine·longest_retrace_m·band·reject·retrace_ratio·branch_count) · "
+       "shape 예외 시 두 지표 null(안전)")
 
     print("\n[C. 빈 입력 · retrace None 내성]")
     assert rs._candidate_obs([], 5.0, {}, {}) == []
